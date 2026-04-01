@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <radialGradient id="doorFace" cx="40%" cy="35%">
+      <stop offset="0%" stop-color="#2a2a46"/>
+      <stop offset="100%" stop-color="#16162a"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="200" height="200" rx="30" fill="#111122"/>
+
+  <!-- Combination dial outer ring (gold band) -->
+  <circle cx="100" cy="100" r="86" fill="#a07828"/>
+  <!-- Dial inner cutout -->
+  <circle cx="100" cy="100" r="80" fill="#111122"/>
+
+  <!-- Tick marks: major (every 90°) and minor (every 15°) -->
+  <g id="tmaj"><line x1="100" y1="14" x2="100" y2="21" stroke="#e8c860" stroke-width="2.2" stroke-linecap="round"/></g>
+  <g id="tmin"><line x1="100" y1="14" x2="100" y2="18" stroke="#b08030" stroke-width="1.4" stroke-linecap="round"/></g>
+
+  <use href="#tmaj"/>
+  <use href="#tmin" transform="rotate(15,100,100)"/>
+  <use href="#tmin" transform="rotate(30,100,100)"/>
+  <use href="#tmin" transform="rotate(45,100,100)"/>
+  <use href="#tmin" transform="rotate(60,100,100)"/>
+  <use href="#tmin" transform="rotate(75,100,100)"/>
+  <use href="#tmaj" transform="rotate(90,100,100)"/>
+  <use href="#tmin" transform="rotate(105,100,100)"/>
+  <use href="#tmin" transform="rotate(120,100,100)"/>
+  <use href="#tmin" transform="rotate(135,100,100)"/>
+  <use href="#tmin" transform="rotate(150,100,100)"/>
+  <use href="#tmin" transform="rotate(165,100,100)"/>
+  <use href="#tmaj" transform="rotate(180,100,100)"/>
+  <use href="#tmin" transform="rotate(195,100,100)"/>
+  <use href="#tmin" transform="rotate(210,100,100)"/>
+  <use href="#tmin" transform="rotate(225,100,100)"/>
+  <use href="#tmin" transform="rotate(240,100,100)"/>
+  <use href="#tmin" transform="rotate(255,100,100)"/>
+  <use href="#tmaj" transform="rotate(270,100,100)"/>
+  <use href="#tmin" transform="rotate(285,100,100)"/>
+  <use href="#tmin" transform="rotate(300,100,100)"/>
+  <use href="#tmin" transform="rotate(315,100,100)"/>
+  <use href="#tmin" transform="rotate(330,100,100)"/>
+  <use href="#tmin" transform="rotate(345,100,100)"/>
+
+  <!-- Vault door face -->
+  <circle cx="100" cy="100" r="76" fill="url(#doorFace)"/>
+  <!-- Face inner ring bevel detail -->
+  <circle cx="100" cy="100" r="76" fill="none" stroke="#242442" stroke-width="2"/>
+
+  <!-- Vault bolts at 45° diagonals (r=62): between the fan blades -->
+  <!-- 45°:  (100+43.84, 100-43.84) = (143.8, 56.2)  -->
+  <circle cx="143.8" cy="56.2"  r="7" fill="#181830" stroke="#a07828" stroke-width="2.2"/>
+  <!-- 135°: (100+43.84, 100+43.84) = (143.8, 143.8) -->
+  <circle cx="143.8" cy="143.8" r="7" fill="#181830" stroke="#a07828" stroke-width="2.2"/>
+  <!-- 225°: (100-43.84, 100+43.84) = (56.2,  143.8) -->
+  <circle cx="56.2"  cy="143.8" r="7" fill="#181830" stroke="#a07828" stroke-width="2.2"/>
+  <!-- 315°: (100-43.84, 100-43.84) = (56.2,  56.2)  -->
+  <circle cx="56.2"  cy="56.2"  r="7" fill="#181830" stroke="#a07828" stroke-width="2.2"/>
+  <!-- Bolt centre pins -->
+  <circle cx="143.8" cy="56.2"  r="2.8" fill="#a07828"/>
+  <circle cx="143.8" cy="143.8" r="2.8" fill="#a07828"/>
+  <circle cx="56.2"  cy="143.8" r="2.8" fill="#a07828"/>
+  <circle cx="56.2"  cy="56.2"  r="2.8" fill="#a07828"/>
+
+  <!-- Center medallion to carry the Klipper-style mark -->
+  <circle cx="100" cy="100" r="33" fill="#121b2c" stroke="#a07828" stroke-width="3"/>
+
+  <!-- Klipper-style chevron mark (inspired by the official shape) -->
+  <g transform="translate(100 98)">
+    <!-- Outer shell -->
+    <path d="M-46 -34 L0 10 L46 -34 L58 -22 L0 36 L-58 -22 Z" fill="#415264"/>
+    <!-- Inner red accent -->
+    <path d="M-36 -30 L0 4 L36 -30 L44 -22 L0 20 L-44 -22 Z" fill="#bf2f34"/>
+    <!-- Center stem -->
+    <rect x="-7" y="16" width="14" height="18" rx="3" fill="#bf2f34"/>
+  </g>
+</svg>
