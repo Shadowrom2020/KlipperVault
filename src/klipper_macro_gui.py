@@ -31,6 +31,13 @@ from klipper_vault_i18n import set_language, t
 DEFAULT_CONFIG_DIR = str((Path.home() / "printer_data" / "config").resolve())
 DEFAULT_DB_PATH = str((Path.home() / "printer_data" / "db" / "klipper_macros.db").resolve())
 
+_STATUS_BADGE_CLASSES: dict[str, str] = {
+    "deleted": "text-[10px] uppercase tracking-wide text-white bg-grey-6 rounded px-1.5 py-0.5",
+    "renamed": "text-[10px] uppercase tracking-wide text-white bg-blue-8 rounded px-1.5 py-0.5",
+    "active": "text-[10px] uppercase tracking-wide text-white bg-green-8 rounded px-1.5 py-0.5",
+    "inactive": "text-[10px] uppercase tracking-wide text-black bg-yellow-6 rounded px-1.5 py-0.5",
+}
+
 
 def build_ui(app_version: str = "unknown") -> None:
     """Build the full NiceGUI interface and wire all callbacks."""
@@ -75,6 +82,10 @@ def build_ui(app_version: str = "unknown") -> None:
     print_lock_popup_open: bool = False
     watcher = ConfigWatcher(config_dir)
     duplicate_compare_view = MacroCompareView()
+
+    def flat_dialog_button(label_key: str, on_click) -> None:
+        """Render a standard flat no-caps dialog action button."""
+        ui.button(t(label_key), on_click=on_click).props("flat no-caps")
 
     with ui.dialog().props("persistent") as print_lock_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
         ui.label(t("Printer is currently printing")).classes("text-lg font-semibold text-warning")
@@ -133,7 +144,7 @@ def build_ui(app_version: str = "unknown") -> None:
         backup_name_input = ui.input(label=t("Backup name")).props("outlined autofocus").classes("w-full mt-2")
         backup_error_label = ui.label("").classes("text-sm text-negative mt-1")
         with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            ui.button(t("Cancel"), on_click=backup_dialog.close).props("flat no-caps")
+            flat_dialog_button("Cancel", backup_dialog.close)
             create_backup_button = ui.button(t("Create backup")).props("color=primary no-caps")
 
     with ui.dialog() as backup_view_dialog, ui.card().classes("w-[74rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col"):
@@ -151,7 +162,7 @@ def build_ui(app_version: str = "unknown") -> None:
             pagination=40,
         ).classes("w-full flex-1 overflow-auto mt-2")
         with ui.row().classes("w-full justify-end mt-3"):
-            ui.button(t("Close"), on_click=backup_view_dialog.close).props("flat no-caps")
+            flat_dialog_button("Close", backup_view_dialog.close)
 
     restore_target_id: int | None = None
     restore_target_name = ""
@@ -160,7 +171,7 @@ def build_ui(app_version: str = "unknown") -> None:
         restore_confirm_label = ui.label("").classes("text-sm text-grey-5")
         restore_error_label = ui.label("").classes("text-sm text-negative mt-1")
         with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            ui.button(t("Cancel"), on_click=restore_dialog.close).props("flat no-caps")
+            flat_dialog_button("Cancel", restore_dialog.close)
             confirm_restore_button = ui.button(t("Restore")).props("color=warning no-caps")
 
     delete_target_id: int | None = None
@@ -170,7 +181,7 @@ def build_ui(app_version: str = "unknown") -> None:
         delete_confirm_label = ui.label("").classes("text-sm text-grey-5")
         delete_error_label = ui.label("").classes("text-sm text-negative mt-1")
         with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            ui.button(t("Cancel"), on_click=delete_dialog.close).props("flat no-caps")
+            flat_dialog_button("Cancel", delete_dialog.close)
             confirm_delete_button = ui.button(t("Delete")).props("color=negative no-caps")
 
     with ui.dialog() as duplicate_wizard_dialog, ui.card().classes("w-[48rem] max-w-[98vw]"):
@@ -194,7 +205,7 @@ def build_ui(app_version: str = "unknown") -> None:
         with ui.row().classes("w-full justify-between gap-2 mt-3"):
             duplicate_prev_button = ui.button(t("Previous")).props("flat no-caps")
             with ui.row().classes("gap-2"):
-                ui.button(t("Cancel"), on_click=duplicate_wizard_dialog.close).props("flat no-caps")
+                flat_dialog_button("Cancel", duplicate_wizard_dialog.close)
                 duplicate_next_button = ui.button(t("Next")).props("flat no-caps")
                 duplicate_apply_button = ui.button(t("Apply")).props("color=warning no-caps")
 
@@ -223,10 +234,22 @@ def build_ui(app_version: str = "unknown") -> None:
 
     viewer.set_open_macro_handler(open_macro_by_identity)
 
+    def blocked_by_print_state(
+        *,
+        status_message: str,
+        local_error_label: ui.label | None = None,
+    ) -> bool:
+        """Set consistent blocked messages when printer is currently printing."""
+        if not printer_is_printing:
+            return False
+        if local_error_label is not None:
+            local_error_label.set_text(t("Blocked while printer is printing."))
+        status_label.set_text(t(status_message))
+        return True
+
     def remove_deleted_macro_from_db(file_path: str, macro_name: str) -> None:
         """Permanently remove selected deleted macro from SQLite history."""
-        if printer_is_printing:
-            status_label.set_text(t("Blocked: printer is currently printing. Editing is disabled."))
+        if blocked_by_print_state(status_message="Blocked: printer is currently printing. Editing is disabled."):
             return
         if not file_path or not macro_name:
             status_label.set_text(t("Cannot remove deleted macro: missing identity."))
@@ -261,8 +284,7 @@ def build_ui(app_version: str = "unknown") -> None:
     def restore_macro_version_from_viewer(version_row: dict) -> None:
         """Restore selected macro version into cfg file, then rescan."""
         nonlocal force_latest_for_key
-        if printer_is_printing:
-            status_label.set_text(t("Blocked: printer is currently printing. Editing is disabled."))
+        if blocked_by_print_state(status_message="Blocked: printer is currently printing. Editing is disabled."):
             return
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
@@ -334,6 +356,20 @@ def build_ui(app_version: str = "unknown") -> None:
         """Sync active/inactive cycle button text with current filter state."""
         active_filter_button.set_text(t("Filter: {state}", state=active_filter))
 
+    def status_badge_key(macro: dict[str, object]) -> str:
+        """Resolve macro row status key for consistent badge rendering."""
+        if macro.get("is_deleted", False):
+            return "deleted"
+        if macro.get("is_active", False) and macro.get("renamed_from"):
+            return "renamed"
+        if macro.get("is_active", False):
+            return "active"
+        return "inactive"
+
+    def render_status_badge(status_key: str) -> None:
+        """Render a status badge with centralized label/class mapping."""
+        ui.label(t(status_key)).classes(_STATUS_BADGE_CLASSES[status_key])
+
     def on_sort_change(e) -> None:
         """Radio selection change handler for sort order."""
         nonlocal sort_order
@@ -343,7 +379,7 @@ def build_ui(app_version: str = "unknown") -> None:
     def _default_keep_file(entries: list[dict[str, object]]) -> str:
         """Choose default keep target, preferring currently active entry."""
         for entry in entries:
-            if bool(entry.get("is_active", False)):
+            if entry.get("is_active", False):
                 return str(entry.get("file_path", ""))
         return str(entries[0].get("file_path", "")) if entries else ""
 
@@ -390,10 +426,8 @@ def build_ui(app_version: str = "unknown") -> None:
                 with ui.row().classes("w-full items-center gap-2 no-wrap"):
                     ui.label(str(entry.get("file_path", "-"))).classes("flex-1 text-sm")
                     ui.label(f"v{entry.get('version', '-')}").classes("text-[11px] text-grey-5")
-                    if bool(entry.get("is_active", False)):
-                        ui.label(t("active")).classes(
-                            "text-[10px] uppercase tracking-wide text-white bg-green-8 rounded px-1.5 py-0.5"
-                        )
+                    if entry.get("is_active", False):
+                        render_status_badge("active")
 
         options = {
             str(entry.get("file_path", "")): str(entry.get("file_path", ""))
@@ -630,22 +664,7 @@ def build_ui(app_version: str = "unknown") -> None:
                                     name_classes += " text-grey-5"
                                 ui.label(str(macro.get("display_name") or macro.get("macro_name", ""))).classes(name_classes)
                                 ui.label(f"({file_name})").classes(file_label_classes + " leading-tight")
-                    if is_deleted:
-                        ui.label(t("deleted")).classes(
-                            "text-[10px] uppercase tracking-wide text-white bg-grey-6 rounded px-1.5 py-0.5"
-                        )
-                    elif bool(macro.get("is_active", False)) and bool(macro.get("renamed_from")):
-                        ui.label(t("renamed")).classes(
-                            "text-[10px] uppercase tracking-wide text-white bg-blue-8 rounded px-1.5 py-0.5"
-                        )
-                    elif bool(macro.get("is_active", False)):
-                        ui.label(t("active")).classes(
-                            "text-[10px] uppercase tracking-wide text-white bg-green-8 rounded px-1.5 py-0.5"
-                        )
-                    else:
-                        ui.label(t("inactive")).classes(
-                            "text-[10px] uppercase tracking-wide text-black bg-yellow-6 rounded px-1.5 py-0.5"
-                        )
+                    render_status_badge(status_badge_key(macro))
 
         active_macro = find_active_override(selected_macro, cached_macros)
 
@@ -693,7 +712,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     "macro_name": item["macro_name"],
                     "file_path": item["file_path"],
                     "version": item["version"],
-                    "status": t("active") if bool(item.get("is_active", False)) else t("inactive"),
+                    "status": t("active") if item.get("is_active", False) else t("inactive"),
                 }
                 for item in items
             ]
@@ -748,9 +767,10 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def perform_restore() -> None:
         """Restore backup to DB and cfg files, then rescan to reflect on-disk state."""
-        if printer_is_printing:
-            restore_error_label.set_text(t("Blocked while printer is printing."))
-            status_label.set_text(t("Blocked: printer is currently printing. Restore is disabled."))
+        if blocked_by_print_state(
+            status_message="Blocked: printer is currently printing. Restore is disabled.",
+            local_error_label=restore_error_label,
+        ):
             return
         if restore_target_id is None:
             restore_error_label.set_text(t("No backup selected."))
@@ -790,9 +810,10 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def perform_delete_backup() -> None:
         """Delete selected backup and refresh the backup list."""
-        if printer_is_printing:
-            delete_error_label.set_text(t("Blocked while printer is printing."))
-            status_label.set_text(t("Blocked: printer is currently printing. Delete is disabled."))
+        if blocked_by_print_state(
+            status_message="Blocked: printer is currently printing. Delete is disabled.",
+            local_error_label=delete_error_label,
+        ):
             return
         if delete_target_id is None:
             delete_error_label.set_text(t("No backup selected."))
