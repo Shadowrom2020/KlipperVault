@@ -19,6 +19,7 @@ from klipper_macro_gui_logic import (
     find_active_override,
     macro_key,
     selected_or_first_macro,
+    sort_macros,
 )
 from klipper_macro_gui_service import MacroGuiService
 from klipper_macro_viewer import MacroViewer, format_ts as _format_ts
@@ -67,6 +68,7 @@ def build_ui(app_version: str = "unknown") -> None:
     search_query: str = ""
     show_duplicates_only: bool = False
     active_filter: str = "all"
+    sort_order: str = "load_order"
     is_indexing: bool = False
     deleted_macro_count: int = 0
     printer_is_printing: bool = False
@@ -89,6 +91,16 @@ def build_ui(app_version: str = "unknown") -> None:
             with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
                 duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
                 active_filter_button = ui.button(t("Filter: {state}", state="all")).props("flat dense no-caps")
+            with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
+                ui.label(t("Sort:")).classes("text-xs text-grey-4")
+                sort_radio = (
+                    ui.radio(
+                        options={"load_order": t("Load order"), "alpha_asc": "A → Z", "alpha_desc": "Z → A"},
+                        value="load_order",
+                    )
+                    .props("inline dense")
+                    .classes("text-xs")
+                )
             macro_count_label = ui.label(t("Items: {visible}", visible=0)).classes("text-sm text-grey-4 shrink-0")
             macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
 
@@ -321,6 +333,12 @@ def build_ui(app_version: str = "unknown") -> None:
     def update_active_filter_button_label() -> None:
         """Sync active/inactive cycle button text with current filter state."""
         active_filter_button.set_text(t("Filter: {state}", state=active_filter))
+
+    def on_sort_change(e) -> None:
+        """Radio selection change handler for sort order."""
+        nonlocal sort_order
+        sort_order = e.value
+        render_macro_list()
 
     def _default_keep_file(entries: list[dict[str, object]]) -> str:
         """Choose default keep target, preferring currently active entry."""
@@ -555,6 +573,7 @@ def build_ui(app_version: str = "unknown") -> None:
             active_filter=active_filter,
             duplicate_names=duplicate_names,
         )
+        visible_macros = sort_macros(visible_macros, sort_order)
         query = search_query.strip().lower()
         filter_active = bool(query) or show_duplicates_only or active_filter != "all"
         macro_count_label.set_text(
@@ -994,6 +1013,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     update_duplicates_button_label()
     update_active_filter_button_label()
+    sort_radio.on_value_change(on_sort_change)
     duplicate_keep_select.on_value_change(_on_duplicate_keep_change)
     duplicate_compare_with_select.on_value_change(_on_duplicate_compare_with_change)
     duplicate_compare_button.on_click(open_duplicate_pair_compare)
