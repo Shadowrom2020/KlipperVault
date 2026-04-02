@@ -1284,6 +1284,25 @@ def save_macro_edit(
     }
 
 
+def delete_macro_from_cfg(
+    config_dir: Path,
+    file_path: str,
+    macro_name: str,
+) -> Dict[str, object]:
+    """Delete one [gcode_macro ...] section from its source cfg file."""
+    if not file_path or not macro_name:
+        raise ValueError("missing macro identity")
+
+    config_dir = config_dir.expanduser().resolve()
+    cfg_file = _safe_cfg_path(config_dir, file_path)
+    removed_sections = _remove_macro_sections_from_cfg(cfg_file, macro_name)
+    return {
+        "file_path": file_path,
+        "macro_name": macro_name,
+        "removed_sections": int(removed_sections),
+    }
+
+
 def remove_deleted_macro(db_path: Path, file_path: str, macro_name: str) -> Dict[str, object]:
     """Permanently delete one macro identity from DB when marked as deleted.
 

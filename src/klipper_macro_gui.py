@@ -348,6 +348,50 @@ def build_ui(app_version: str = "unknown") -> None:
 
     viewer.set_save_macro_edit_handler(save_macro_edit_from_viewer)
 
+    def delete_macro_source_from_viewer(version_row: dict) -> None:
+        """Delete selected macro section from cfg file and re-index."""
+        nonlocal force_latest_for_key
+
+        if printer_is_printing:
+            raise ValueError(t("Blocked: printer is currently printing. Editing is disabled."))
+
+        file_path = str(version_row.get("file_path", ""))
+        macro_name = str(version_row.get("macro_name", ""))
+        selected_version = int(version_row.get("version", 0) or 0)
+
+        if not file_path or not macro_name:
+            raise ValueError(t("Cannot delete macro from cfg: missing identity."))
+        if bool(version_row.get("is_deleted", False)):
+            raise ValueError(t("Cannot delete a deleted macro version."))
+
+        latest_row = service.load_latest_for_file(macro_name, file_path)
+        if latest_row is None:
+            raise ValueError(t("Cannot delete macro from cfg: latest version not found."))
+
+        latest_version = int(latest_row.get("version", 0) or 0)
+        if selected_version != latest_version:
+            raise ValueError(t("Only the latest macro version can be deleted from cfg."))
+
+        try:
+            result = service.delete_macro_source(file_path, macro_name)
+        except Exception as exc:
+            raise ValueError(t("Failed to delete macro from cfg: {error}", error=exc)) from exc
+
+        removed = int(result.get("removed_sections", 0))
+        if removed <= 0:
+            raise ValueError(t("Macro section not found in cfg file."))
+
+        status_label.set_text(t(
+            "Deleted macro '{macro_name}' from {file_path} ({removed} section(s)). Re-indexing...",
+            macro_name=result["macro_name"],
+            file_path=result["file_path"],
+            removed=removed,
+        ))
+        force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
+        perform_index("macro delete")
+
+    viewer.set_delete_macro_from_cfg_handler(delete_macro_source_from_viewer)
+
     def update_duplicates_button_label() -> None:
         """Sync duplicates filter button text with current filter state."""
         duplicates_button.set_text(t("Show all macros") if show_duplicates_only else t("Show duplicates"))

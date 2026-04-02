@@ -23,6 +23,7 @@ from klipper_macro_backup import (
     restore_macro_backup,
 )
 from klipper_macro_indexer import (
+    delete_macro_from_cfg,
     load_duplicate_macro_groups,
     load_macro_list,
     load_macro_versions,
@@ -135,6 +136,14 @@ class MacroGuiService:
             file_path=file_path,
             macro_name=macro_name,
             section_text=section_text,
+        )
+
+    def delete_macro_source(self, file_path: str, macro_name: str) -> dict[str, object]:
+        """Delete one macro section from its source cfg file."""
+        return delete_macro_from_cfg(
+            config_dir=self._config_dir,
+            file_path=file_path,
+            macro_name=macro_name,
         )
 
     def list_duplicates(self) -> list[dict[str, object]]:
