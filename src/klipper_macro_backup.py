@@ -13,6 +13,15 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from klipper_vault_db import open_sqlite_connection
+
+
+_LATEST_VERSION_SUBQUERY = """
+SELECT file_path, macro_name, MAX(version) AS max_version
+FROM macros
+GROUP BY file_path, macro_name
+""".strip()
+
 
 def ensure_backup_schema(conn: sqlite3.Connection) -> None:
     """Ensure backup-related tables and indexes exist."""
@@ -110,11 +119,11 @@ def create_macro_backup(
 
     ts = int(now_ts) if now_ts is not None else int(time.time())
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        ensure_backup_schema(conn)
+    with open_sqlite_connection(
+        db_path,
+        ensure_schema=ensure_backup_schema,
+        pragmas=("PRAGMA foreign_keys=ON",),
+    ) as conn:
 
         backup_id = int(
             conn.execute(
@@ -132,7 +141,7 @@ def create_macro_backup(
         rows = []
         if has_macros_table:
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     m.section_type,
                     m.macro_name,
@@ -147,9 +156,7 @@ def create_macro_backup(
                     m.is_active
                 FROM macros AS m
                 INNER JOIN (
-                    SELECT file_path, macro_name, MAX(version) AS max_version
-                    FROM macros
-                    GROUP BY file_path, macro_name
+                    {_LATEST_VERSION_SUBQUERY}
                 ) AS latest
                     ON m.file_path = latest.file_path
                    AND m.macro_name = latest.macro_name
@@ -218,8 +225,6 @@ def create_macro_backup(
             raise ValueError(f"backup aborted: config directory not found: {config_dir}")
 
         conn.commit()
-    finally:
-        conn.close()
 
     return {
         "backup_id": backup_id,
@@ -232,10 +237,7 @@ def create_macro_backup(
 
 def list_macro_backups(db_path: Path, limit: int = 200) -> List[Dict[str, object]]:
     """Return available backups, newest first."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_backup_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_backup_schema) as conn:
         rows = conn.execute(
             """
             SELECT
@@ -252,8 +254,6 @@ def list_macro_backups(db_path: Path, limit: int = 200) -> List[Dict[str, object
             """,
             (limit,),
         ).fetchall()
-    finally:
-        conn.close()
 
     return [
         {
@@ -268,10 +268,7 @@ def list_macro_backups(db_path: Path, limit: int = 200) -> List[Dict[str, object
 
 def load_backup_items(db_path: Path, backup_id: int) -> List[Dict[str, object]]:
     """Load the macro rows stored in one backup snapshot."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_backup_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_backup_schema) as conn:
         rows = conn.execute(
             """
             SELECT
@@ -292,8 +289,6 @@ def load_backup_items(db_path: Path, backup_id: int) -> List[Dict[str, object]]:
             """,
             (int(backup_id),),
         ).fetchall()
-    finally:
-        conn.close()
 
     return [
         {
@@ -433,11 +428,11 @@ def restore_macro_backup(
     """Restore one backup snapshot into the active macros table."""
     ts = int(now_ts) if now_ts is not None else int(time.time())
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        ensure_backup_schema(conn)
+    with open_sqlite_connection(
+        db_path,
+        ensure_schema=ensure_backup_schema,
+        pragmas=("PRAGMA foreign_keys=ON",),
+    ) as conn:
         _ensure_macros_schema_for_restore(conn)
 
         backup_meta = conn.execute(
@@ -531,8 +526,6 @@ def restore_macro_backup(
             )
 
         conn.commit()
-    finally:
-        conn.close()
 
     restored_cfg_files = 0
     removed_cfg_files = 0
@@ -568,11 +561,11 @@ def restore_macro_backup(
 
 def delete_macro_backup(db_path: Path, backup_id: int) -> Dict[str, object]:
     """Delete one backup and all its snapshot items."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        ensure_backup_schema(conn)
+    with open_sqlite_connection(
+        db_path,
+        ensure_schema=ensure_backup_schema,
+        pragmas=("PRAGMA foreign_keys=ON",),
+    ) as conn:
 
         backup_meta = conn.execute(
             "SELECT id, backup_name FROM macro_backups WHERE id = ?",
@@ -583,8 +576,6 @@ def delete_macro_backup(db_path: Path, backup_id: int) -> Dict[str, object]:
 
         conn.execute("DELETE FROM macro_backups WHERE id = ?", (int(backup_id),))
         conn.commit()
-    finally:
-        conn.close()
 
     return {
         "backup_id": int(backup_meta[0]),

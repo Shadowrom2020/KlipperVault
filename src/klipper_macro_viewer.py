@@ -148,7 +148,7 @@ class MacroViewer:
         """Return True when selected macro is editable in-place."""
         return (
             macro is not None
-            and not bool(macro.get("is_deleted", False))
+            and not macro.get("is_deleted", False)
             and self._is_latest_version_selected(macro)
         )
 
@@ -156,7 +156,7 @@ class MacroViewer:
         """Invoke callback to purge selected deleted macro from DB."""
         if self._remove_deleted_handler is None or self._current_macro is None:
             return
-        if not bool(self._current_macro.get("is_deleted", False)):
+        if not self._current_macro.get("is_deleted", False):
             return
         self._remove_deleted_handler(
             str(self._current_macro.get("file_path", "")),
@@ -201,15 +201,15 @@ class MacroViewer:
 
     def _version_status_label(self, version_row: dict) -> str:
         """Return compact status label for one version option."""
-        if bool(version_row.get("is_deleted", False)):
+        if version_row.get("is_deleted", False):
             return t("DELETED")
-        if bool(version_row.get("is_active", False)):
+        if version_row.get("is_active", False):
             return "★"
         return t("inactive")
 
     def _update_inactive_hint(self, macro: dict | None) -> None:
         """Update inactive explanation line and optional jump button."""
-        if macro is None or bool(macro.get("is_active", False)):
+        if macro is None or macro.get("is_active", False):
             self._inactive_hint.set_visibility(False)
             self._open_active_button.set_visibility(False)
             return

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from klipper_macro_backup import ensure_backup_schema
+from klipper_vault_db import open_sqlite_connection
 
 
 @dataclass
@@ -36,6 +37,19 @@ class MacroRecord:
     gcode: Optional[str]
     variables_json: str
     body_checksum: str
+
+
+_LATEST_VERSION_SUBQUERY = """
+SELECT file_path, macro_name, MAX(version) AS max_version
+FROM macros
+GROUP BY file_path, macro_name
+""".strip()
+
+_LATEST_VERSION_WITH_COUNT_SUBQUERY = """
+SELECT file_path, macro_name, MAX(version) AS max_version, COUNT(*) AS version_count
+FROM macros
+GROUP BY file_path, macro_name
+""".strip()
 
 
 def _iter_included_files(file_path: Path, config_dir: Path) -> Iterable[Path]:
@@ -653,13 +667,7 @@ def index_macros(
 
     # Mark latest rows as deleted when their macro is no longer present on disk.
     seen_identities = {(rec.file_path, rec.macro_name) for rec in records}
-    latest_rows = conn.execute(
-        """
-        SELECT file_path, macro_name, MAX(version) AS max_version
-        FROM macros
-        GROUP BY file_path, macro_name
-        """
-    ).fetchall()
+    latest_rows = conn.execute(_LATEST_VERSION_SUBQUERY).fetchall()
     for file_path, macro_name, max_version in latest_rows:
         is_deleted = 0 if (str(file_path), str(macro_name)) in seen_identities else 1
         conn.execute(
@@ -746,16 +754,13 @@ def run_indexing(
         all_records.extend(parse_macros_from_cfg(cfg_file, config_dir))
 
     now_ts = int(time.time())
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        ensure_schema(conn)
+    with open_sqlite_connection(
+        db_path,
+        ensure_schema=ensure_schema,
+        pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
+    ) as conn:
         inserted, unchanged = index_macros(conn, all_records, now_ts, max_versions=max_versions)
         conn.commit()
-    finally:
-        conn.close()
 
     return {
         "cfg_files_scanned": cfg_count,
@@ -777,21 +782,16 @@ def load_stats(db_path: Path) -> Dict[str, object]:
             "macros_per_file": [],
         }
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         # Count distinct latest, non-deleted macros to reflect current cfg state.
         total_macros = int(conn.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM (
                 SELECT m.file_path, m.macro_name
                 FROM macros AS m
                 INNER JOIN (
-                    SELECT file_path, macro_name, MAX(version) AS max_version
-                    FROM macros
-                    GROUP BY file_path, macro_name
+                    {_LATEST_VERSION_SUBQUERY}
                 ) AS latest
                     ON m.file_path = latest.file_path
                    AND m.macro_name = latest.macro_name
@@ -801,15 +801,13 @@ def load_stats(db_path: Path) -> Dict[str, object]:
             """
         ).fetchone()[0])
         deleted_macros = int(conn.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM (
                 SELECT m.file_path, m.macro_name
                 FROM macros AS m
                 INNER JOIN (
-                    SELECT file_path, macro_name, MAX(version) AS max_version
-                    FROM macros
-                    GROUP BY file_path, macro_name
+                    {_LATEST_VERSION_SUBQUERY}
                 ) AS latest
                     ON m.file_path = latest.file_path
                    AND m.macro_name = latest.macro_name
@@ -819,13 +817,11 @@ def load_stats(db_path: Path) -> Dict[str, object]:
             """
         ).fetchone()[0])
         distinct_macro_names = int(conn.execute(
-            """
+            f"""
             SELECT COUNT(DISTINCT m.macro_name)
             FROM macros AS m
             INNER JOIN (
-                SELECT file_path, macro_name, MAX(version) AS max_version
-                FROM macros
-                GROUP BY file_path, macro_name
+                {_LATEST_VERSION_SUBQUERY}
             ) AS latest
                 ON m.file_path = latest.file_path
                AND m.macro_name = latest.macro_name
@@ -834,13 +830,11 @@ def load_stats(db_path: Path) -> Dict[str, object]:
             """
         ).fetchone()[0])
         distinct_cfg_files = int(conn.execute(
-            """
+            f"""
             SELECT COUNT(DISTINCT m.file_path)
             FROM macros AS m
             INNER JOIN (
-                SELECT file_path, macro_name, MAX(version) AS max_version
-                FROM macros
-                GROUP BY file_path, macro_name
+                {_LATEST_VERSION_SUBQUERY}
             ) AS latest
                 ON m.file_path = latest.file_path
                AND m.macro_name = latest.macro_name
@@ -850,13 +844,11 @@ def load_stats(db_path: Path) -> Dict[str, object]:
         ).fetchone()[0])
         latest_update_ts = conn.execute("SELECT MAX(indexed_at) FROM macros").fetchone()[0]
         rows = conn.execute(
-            """
+            f"""
             SELECT m.file_path, COUNT(DISTINCT m.macro_name) AS macro_count
             FROM macros AS m
             INNER JOIN (
-                SELECT file_path, macro_name, MAX(version) AS max_version
-                FROM macros
-                GROUP BY file_path, macro_name
+                {_LATEST_VERSION_SUBQUERY}
             ) AS latest
                 ON m.file_path = latest.file_path
                AND m.macro_name = latest.macro_name
@@ -871,8 +863,6 @@ def load_stats(db_path: Path) -> Dict[str, object]:
             {"file_path": str(file_path), "macro_count": int(macro_count)}
             for file_path, macro_count in rows
         ]
-    finally:
-        conn.close()
 
     return {
         "total_macros": total_macros,
@@ -889,12 +879,9 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
     if not db_path.exists():
         return []
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 m.macro_name,
                 m.file_path,
@@ -912,9 +899,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
                 cnt.version_count
             FROM macros AS m
             INNER JOIN (
-                SELECT file_path, macro_name, MAX(version) AS max_version, COUNT(*) AS version_count
-                FROM macros
-                GROUP BY file_path, macro_name
+                {_LATEST_VERSION_WITH_COUNT_SUBQUERY}
             ) AS cnt
                 ON m.file_path = cnt.file_path
                AND m.macro_name = cnt.macro_name
@@ -924,8 +909,6 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             """,
             (limit,),
         ).fetchall()
-    finally:
-        conn.close()
 
     return [
         {
@@ -969,10 +952,7 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
     if not db_path.exists():
         return []
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         rows = conn.execute(
             """
             SELECT
@@ -995,8 +975,6 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
             """,
             (file_path, macro_name),
         ).fetchall()
-    finally:
-        conn.close()
 
     return [
         {
@@ -1038,16 +1016,11 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
     if not db_path.exists():
         return []
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         rows = conn.execute(
-            """
+            f"""
             WITH latest AS (
-                SELECT file_path, macro_name, MAX(version) AS max_version
-                FROM macros
-                GROUP BY file_path, macro_name
+                {_LATEST_VERSION_SUBQUERY}
             ), duplicated AS (
                 SELECT macro_name
                 FROM latest
@@ -1071,8 +1044,6 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
             ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
             """
         ).fetchall()
-    finally:
-        conn.close()
 
     groups: Dict[str, List[Dict[str, object]]] = {}
     for macro_name, file_path, version, indexed_at, is_active in rows:
@@ -1264,10 +1235,7 @@ def restore_macro_version(
     if version <= 0:
         raise ValueError("version must be a positive integer")
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         row = conn.execute(
             """
             SELECT section_type, macro_name, description, rename_existing, gcode, variables_json
@@ -1277,8 +1245,6 @@ def restore_macro_version(
             """,
             (file_path, macro_name, int(version)),
         ).fetchone()
-    finally:
-        conn.close()
 
     if row is None:
         raise ValueError("macro version not found")
@@ -1324,10 +1290,7 @@ def remove_deleted_macro(db_path: Path, file_path: str, macro_name: str) -> Dict
     Removes all stored versions for (file_path, macro_name) only if its latest
     version is currently marked is_deleted=1.
     """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         latest = conn.execute(
             """
             SELECT version, is_deleted
@@ -1356,8 +1319,6 @@ def remove_deleted_macro(db_path: Path, file_path: str, macro_name: str) -> Dict
             (file_path, macro_name),
         ).rowcount
         conn.commit()
-    finally:
-        conn.close()
 
     return {
         "removed": int(removed or 0),
@@ -1367,20 +1328,15 @@ def remove_deleted_macro(db_path: Path, file_path: str, macro_name: str) -> Dict
 
 def remove_all_deleted_macros(db_path: Path) -> Dict[str, object]:
     """Permanently remove all macro identities whose latest version is deleted."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        ensure_schema(conn)
+    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         removed = conn.execute(
-            """
+            f"""
             DELETE FROM macros
             WHERE (file_path, macro_name) IN (
                 SELECT m.file_path, m.macro_name
                 FROM macros AS m
                 INNER JOIN (
-                    SELECT file_path, macro_name, MAX(version) AS max_version
-                    FROM macros
-                    GROUP BY file_path, macro_name
+                    {_LATEST_VERSION_SUBQUERY}
                 ) AS latest
                     ON m.file_path = latest.file_path
                    AND m.macro_name = latest.macro_name
@@ -1390,8 +1346,6 @@ def remove_all_deleted_macros(db_path: Path) -> Dict[str, object]:
             """
         ).rowcount
         conn.commit()
-    finally:
-        conn.close()
 
     return {
         "removed": int(removed or 0),
