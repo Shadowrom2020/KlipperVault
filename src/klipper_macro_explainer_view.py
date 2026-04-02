@@ -84,7 +84,7 @@ class MacroExplainerView:
                 )
                 ui.button(
                     label,
-                    on_click=lambda ref=reference: self._open_reference_dialog(ref),
+                    on_click=lambda ref=reference: self._open_reference(ref),
                 ).props("flat dense no-caps").classes("text-blue-4")
 
     def _render_lines(self, lines: list[dict[str, object]]) -> None:
@@ -115,8 +115,20 @@ class MacroExplainerView:
                                     for reference in references:
                                         ui.button(
                                             str(reference.get("display_name") or reference.get("macro_name", "macro")),
-                                            on_click=lambda ref=reference: self._open_reference_dialog(ref),
+                                            on_click=lambda ref=reference: self._open_reference(ref),
                                         ).props("flat dense no-caps").classes("text-yellow-5")
+
+    def _open_reference(self, reference: dict[str, object]) -> None:
+        """Jump to a referenced macro and close explanation overlays."""
+        if self._open_macro_handler is None:
+            return
+        self._selected_reference = reference
+        self._reference_dialog.close()
+        self._dialog.close()
+        self._open_macro_handler(
+            str(reference.get("file_path", "")),
+            str(reference.get("macro_name", "")),
+        )
 
     def _open_reference_dialog(self, reference: dict[str, object]) -> None:
         """Open popup with details for one referenced macro."""
@@ -145,8 +157,4 @@ class MacroExplainerView:
         """Jump from the popup to the referenced macro."""
         if self._selected_reference is None or self._open_macro_handler is None:
             return
-        self._reference_dialog.close()
-        self._open_macro_handler(
-            str(self._selected_reference.get("file_path", "")),
-            str(self._selected_reference.get("macro_name", "")),
-        )
+        self._open_reference(self._selected_reference)
