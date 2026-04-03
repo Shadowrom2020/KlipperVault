@@ -117,7 +117,7 @@ def create_macro_backup(
     if config_dir is None:
         raise ValueError("backup aborted: config_dir is required for fully restorable backups")
 
-    ts = int(now_ts) if now_ts is not None else int(time.time())
+    ts = now_ts if now_ts is not None else int(time.time())
 
     with open_sqlite_connection(
         db_path,
@@ -125,12 +125,14 @@ def create_macro_backup(
         pragmas=("PRAGMA foreign_keys=ON",),
     ) as conn:
 
-        backup_id = int(
-            conn.execute(
-                "INSERT INTO macro_backups (backup_name, created_at) VALUES (?, ?)",
-                (name, ts),
-            ).lastrowid
+        insert_result = conn.execute(
+            "INSERT INTO macro_backups (backup_name, created_at) VALUES (?, ?)",
+            (name, ts),
         )
+        backup_id_raw = insert_result.lastrowid
+        if backup_id_raw is None:
+            raise RuntimeError("failed to create backup row")
+        backup_id = int(backup_id_raw)
 
         has_macros_table = bool(
             conn.execute(

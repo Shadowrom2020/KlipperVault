@@ -39,6 +39,36 @@ _STATUS_BADGE_CLASSES: dict[str, str] = {
 }
 
 
+def _to_int(value: object, default: int = 0) -> int:
+    """Convert dynamic dictionary payload values to int with fallback."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _as_dict_list(value: object) -> list[dict[str, object]]:
+    """Normalize dynamic values into a list of dict payloads."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _to_optional_int(value: object) -> int | None:
+    """Convert dynamic payload value to int or None when unavailable."""
+    if value is None:
+        return None
+    return _to_int(value)
+
+
 def build_ui(app_version: str = "unknown") -> None:
     """Build the full NiceGUI interface and wire all callbacks."""
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
@@ -262,7 +292,7 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         reason = str(result.get("reason", ""))
-        removed = int(result.get("removed", 0))
+        removed = _to_int(result.get("removed", 0))
         if removed > 0:
             status_label.set_text(t(
                 "Removed deleted macro '{macro_name}' from {file_path} ({removed} row(s)).",
@@ -288,7 +318,7 @@ def build_ui(app_version: str = "unknown") -> None:
             return
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
-        version = int(version_row.get("version", 0) or 0)
+        version = _to_int(version_row.get("version", 0) or 0)
         is_deleted = bool(version_row.get("is_deleted", False))
 
         if not file_path or not macro_name or version <= 0:
@@ -323,7 +353,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
-        selected_version = int(version_row.get("version", 0) or 0)
+        selected_version = _to_int(version_row.get("version", 0) or 0)
         if not file_path or not macro_name:
             raise ValueError("Cannot save macro: missing identity.")
         if bool(version_row.get("is_deleted", False)):
@@ -332,7 +362,7 @@ def build_ui(app_version: str = "unknown") -> None:
         latest_row = service.load_latest_for_file(macro_name, file_path)
         if latest_row is None:
             raise ValueError("Cannot save macro: latest version not found.")
-        latest_version = int(latest_row.get("version", 0) or 0)
+        latest_version = _to_int(latest_row.get("version", 0) or 0)
         if selected_version != latest_version:
             raise ValueError("Only the latest macro version can be edited.")
 
@@ -357,7 +387,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
-        selected_version = int(version_row.get("version", 0) or 0)
+        selected_version = _to_int(version_row.get("version", 0) or 0)
 
         if not file_path or not macro_name:
             raise ValueError(t("Cannot delete macro from cfg: missing identity."))
@@ -368,7 +398,7 @@ def build_ui(app_version: str = "unknown") -> None:
         if latest_row is None:
             raise ValueError(t("Cannot delete macro from cfg: latest version not found."))
 
-        latest_version = int(latest_row.get("version", 0) or 0)
+        latest_version = _to_int(latest_row.get("version", 0) or 0)
         if selected_version != latest_version:
             raise ValueError(t("Only the latest macro version can be deleted from cfg."))
 
@@ -377,7 +407,7 @@ def build_ui(app_version: str = "unknown") -> None:
         except Exception as exc:
             raise ValueError(t("Failed to delete macro from cfg: {error}", error=exc)) from exc
 
-        removed = int(result.get("removed_sections", 0))
+        removed = _to_int(result.get("removed_sections", 0))
         if removed <= 0:
             raise ValueError(t("Macro section not found in cfg file."))
 
@@ -457,7 +487,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
         group = duplicate_wizard_groups[duplicate_wizard_index]
         macro_name = str(group.get("macro_name", ""))
-        entries = list(group.get("entries", []))
+        entries = _as_dict_list(group.get("entries", []))
 
         duplicate_wizard_title.set_text(t("Resolve duplicates: {macro_name}", macro_name=macro_name))
         duplicate_wizard_subtitle.set_text(
@@ -500,7 +530,7 @@ def build_ui(app_version: str = "unknown") -> None:
         macro_name = str(duplicate_wizard_groups[duplicate_wizard_index].get("macro_name", ""))
         keep_file = str(e.value or "")
         duplicate_keep_choices[macro_name] = keep_file
-        entries = list(duplicate_wizard_groups[duplicate_wizard_index].get("entries", []))
+        entries = _as_dict_list(duplicate_wizard_groups[duplicate_wizard_index].get("entries", []))
         _update_duplicate_compare_choice(entries, keep_file)
 
     def _on_duplicate_compare_with_change(e) -> None:
@@ -629,10 +659,12 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         duplicate_wizard_dialog.close()
+        touched_files_raw = result.get("touched_files", [])
+        touched_files_count = len(touched_files_raw) if isinstance(touched_files_raw, list) else 0
         status_label.set_text(t(
             "Removed {removed_sections} duplicate section(s) in {file_count} file(s). Re-indexing...",
             removed_sections=result["removed_sections"],
-            file_count=len(result["touched_files"]),
+            file_count=touched_files_count,
         ))
         perform_index("duplicate wizard")
 
@@ -694,7 +726,7 @@ def build_ui(app_version: str = "unknown") -> None:
                 with ui.row().classes("w-full items-center gap-2 no-wrap"):
                     file_name = Path(str(macro["file_path"])).name
                     is_deleted = bool(macro.get("is_deleted", False))
-                    vc = int(macro.get("version_count", 1))
+                    vc = _to_int(macro.get("version_count", 1), default=1)
                     with ui.button(on_click=lambda m=macro: choose_macro(m)).props(
                         "flat no-caps align=left"
                     ).classes(button_classes):
@@ -739,13 +771,13 @@ def build_ui(app_version: str = "unknown") -> None:
 
         def open_backup_contents(backup: dict[str, object]) -> None:
             """Open contents dialog for one backup snapshot."""
-            backup_id = int(backup.get("backup_id", 0))
+            backup_id = _to_int(backup.get("backup_id", 0))
             items = service.load_backup_contents(backup_id)
             backup_view_title.set_text(t("Backup: {backup_name}", backup_name=backup.get("backup_name", "-")))
             backup_view_subtitle.set_text(
                 t(
                     "Created {created_at} - {macro_count} macro(s)",
-                    created_at=_format_ts(int(backup.get("created_at", 0))),
+                    created_at=_format_ts(_to_int(backup.get("created_at", 0))),
                     macro_count=len(items),
                 )
             )
@@ -767,7 +799,7 @@ def build_ui(app_version: str = "unknown") -> None:
             """Prepare and open restore confirmation dialog for one backup."""
             nonlocal restore_target_id
             nonlocal restore_target_name
-            restore_target_id = int(backup.get("backup_id", 0))
+            restore_target_id = _to_int(backup.get("backup_id", 0))
             restore_target_name = str(backup.get("backup_name", "-")).strip() or "-"
             restore_error_label.set_text("")
             restore_confirm_label.set_text(
@@ -782,7 +814,7 @@ def build_ui(app_version: str = "unknown") -> None:
             """Prepare and open delete confirmation dialog for one backup."""
             nonlocal delete_target_id
             nonlocal delete_target_name
-            delete_target_id = int(backup.get("backup_id", 0))
+            delete_target_id = _to_int(backup.get("backup_id", 0))
             delete_target_name = str(backup.get("backup_name", "-")).strip() or "-"
             delete_error_label.set_text("")
             delete_confirm_label.set_text(
@@ -796,7 +828,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     ui.label(str(backup.get("backup_name", "-")).strip() or "-").classes(
                         "flex-1 text-sm"
                     )
-                    ui.label(_format_ts(int(backup.get("created_at", 0)))).classes(
+                    ui.label(_format_ts(_to_int(backup.get("created_at", 0)))).classes(
                         "text-[11px] text-grey-5"
                     )
                     ui.button(icon="search", on_click=lambda b=backup: open_backup_contents(b)).props(
@@ -828,8 +860,8 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         restore_dialog.close()
-        restored_label = _format_ts(int(result["restored_at"]))
-        rewritten = int(result.get("restored_cfg_files", 0))
+        restored_label = _format_ts(_to_int(result.get("restored_at", 0)))
+        rewritten = _to_int(result.get("restored_cfg_files", 0))
         if rewritten > 0:
             status_label.set_text(
                 t(
@@ -879,7 +911,7 @@ def build_ui(app_version: str = "unknown") -> None:
         nonlocal cached_macros
         nonlocal deleted_macro_count
         stats, cached_macros = service.load_dashboard()
-        deleted_macros = int(stats.get("deleted_macros", 0))
+        deleted_macros = _to_int(stats.get("deleted_macros", 0))
         deleted_macro_count = deleted_macros
         duplicate_macros = duplicate_count_from_stats(stats)
         duplicate_warning_button.set_visibility(duplicate_macros > 0)
@@ -888,7 +920,7 @@ def build_ui(app_version: str = "unknown") -> None:
         deleted_macros_label.set_text(t("Deleted macros: {count}", count=deleted_macros))
         purge_deleted_button.set_visibility(deleted_macros > 0)
         distinct_files_label.set_text(t("Config files: {count}", count=stats["distinct_cfg_files"]))
-        last_update_label.set_text(t("Last update: {value}", value=_format_ts(stats["latest_update_ts"])))
+        last_update_label.set_text(t("Last update: {value}", value=_format_ts(_to_optional_int(stats.get("latest_update_ts")))))
 
         render_macro_list()
         render_backup_list()
@@ -943,7 +975,7 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         backup_dialog.close()
-        created_label = _format_ts(int(result["created_at"]))
+        created_label = _format_ts(_to_int(result.get("created_at", 0)))
         status_label.set_text(
             t(
                 "Backup '{backup_name}' created at {created_at} with {macro_count} macro(s) from {cfg_file_count} cfg file(s).",
@@ -966,7 +998,7 @@ def build_ui(app_version: str = "unknown") -> None:
             status_label.set_text(t("Failed to purge deleted macros: {error}", error=exc))
             return
 
-        removed = int(result.get("removed", 0))
+        removed = _to_int(result.get("removed", 0))
         if removed > 0:
             status_label.set_text(t("Purged {removed} deleted macro row(s) from database.", removed=removed))
         else:
@@ -1006,8 +1038,8 @@ def build_ui(app_version: str = "unknown") -> None:
                 print_lock_label.set_text(
                     t(
                         "Macro editing and auto file watching are disabled until the print job is finished. "
-                        "Moonraker message: {message}",
-                        message=moonraker_message,
+                        "Moonraker message: {moonraker_message}",
+                        moonraker_message=moonraker_message,
                     )
                 )
             else:

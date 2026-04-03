@@ -13,6 +13,13 @@ from klipper_macro_explainer import explain_macro_script
 from klipper_vault_i18n import t
 
 
+def _as_dict_list(value: object) -> list[dict[str, object]]:
+    """Normalize dynamic explain payload entries into list[dict[str, object]]."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
 class MacroExplainerView:
     """Render user-facing explanations for the selected macro."""
 
@@ -66,8 +73,8 @@ class MacroExplainerView:
         self._current_macro = macro
         payload = explain_macro_script(macro, self._available_macros)
         self._summary_label.set_text(str(payload.get("summary", "")))
-        self._render_references(list(payload.get("references", [])))
-        self._render_lines(list(payload.get("lines", [])))
+        self._render_references(_as_dict_list(payload.get("references", [])))
+        self._render_lines(_as_dict_list(payload.get("lines", [])))
 
     def _render_references(self, references: list[dict[str, object]]) -> None:
         """Render top-level referenced macro links."""
@@ -108,7 +115,7 @@ class MacroExplainerView:
                             ui.label(str(line.get("text", ""))).classes(
                                 "text-xs font-mono text-blue-2 whitespace-pre-wrap"
                             )
-                            references = list(line.get("references", []))
+                            references = _as_dict_list(line.get("references", []))
                             if references:
                                 with ui.row().classes("gap-2 items-center mt-1"):
                                     ui.label(t("Open referenced macro:")).classes("text-xs text-grey-5")

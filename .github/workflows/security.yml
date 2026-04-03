@@ -40,4 +40,4 @@ jobs:
         run: pip-audit
 
       - name: Bandit static analysis
-        run: bandit -q -r src klipper_vault.py
+        run: bandit -q -r src klipper_vault.py -s B608

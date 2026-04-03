@@ -1426,7 +1426,8 @@ def resolve_duplicate_macros(
             if not keep_file:
                 continue
 
-            entries = list(group.get("entries", []))
+            raw_entries = group.get("entries", [])
+            entries = raw_entries if isinstance(raw_entries, list) else []
             for entry in entries:
                 rel_path = str(entry.get("file_path", ""))
                 if not rel_path or rel_path == keep_file:
