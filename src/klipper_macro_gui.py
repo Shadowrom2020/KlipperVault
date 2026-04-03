@@ -38,6 +38,7 @@ _STATUS_BADGE_CLASSES: dict[str, str] = {
     "inactive": "text-[10px] uppercase tracking-wide text-black bg-yellow-6 rounded px-1.5 py-0.5",
 }
 
+
 def _to_int(value: object, default: int = 0) -> int:
     """Convert dynamic dictionary payload values to int with fallback."""
     if isinstance(value, bool):
@@ -66,6 +67,7 @@ def _to_optional_int(value: object) -> int | None:
     if value is None:
         return None
     return _to_int(value)
+
 
 def build_ui(app_version: str = "unknown") -> None:
     """Build the full NiceGUI interface and wire all callbacks."""
