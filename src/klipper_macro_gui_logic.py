@@ -8,6 +8,22 @@ from __future__ import annotations
 from collections import Counter
 
 
+def _to_int(value: object, default: int = 0) -> int:
+    """Convert dynamic UI payload values to int with a safe fallback."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
 def _display_macro_name(macro: dict[str, object]) -> str:
     """Return runtime-visible macro name for UI/filtering."""
     return str(macro.get("display_name") or macro.get("runtime_macro_name") or macro.get("macro_name", ""))
@@ -94,7 +110,7 @@ def find_active_override(
 
 def duplicate_count_from_stats(stats: dict[str, object]) -> int:
     """Calculate duplicate count using existing dashboard aggregates."""
-    return max(int(stats["total_macros"]) - int(stats["distinct_macro_names"]), 0)
+    return max(_to_int(stats.get("total_macros")) - _to_int(stats.get("distinct_macro_names")), 0)
 
 
 _SORT_ORDERS = ("alpha_asc", "alpha_desc", "load_order")
@@ -128,5 +144,5 @@ def sort_macros(macros: list[dict[str, object]], order: str) -> list[dict[str, o
     if order == "alpha_desc":
         return sorted(macros, key=lambda m: _display_macro_name(m).lower(), reverse=True)
     if order == "load_order":
-        return sorted(macros, key=lambda m: (str(m.get("file_path", "")), int(m.get("line_number", 0))))
+        return sorted(macros, key=lambda m: (str(m.get("file_path", "")), _to_int(m.get("line_number", 0))))
     return list(macros)

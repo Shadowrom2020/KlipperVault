@@ -27,6 +27,7 @@ class MacroViewer:
         self._open_macro_handler: Callable[[str, str], None] | None = None
         self._remove_deleted_handler: Callable[[str, str], None] | None = None
         self._restore_version_handler: Callable[[dict], None] | None = None
+        self._delete_macro_from_cfg_handler: Callable[[dict], None] | None = None
         self._compare_view = MacroCompareView()
         self._editing_enabled = True
         self._available_macros: list[dict[str, object]] = []
@@ -123,6 +124,11 @@ class MacroViewer:
     def set_save_macro_edit_handler(self, handler: Callable[[dict, str], None] | None) -> None:
         """Register callback used by the in-place macro editor save action."""
         self._editor_panel.set_save_handler(handler)
+
+    def set_delete_macro_from_cfg_handler(self, handler: Callable[[dict], None] | None) -> None:
+        """Register callback used by the preview toolbar delete-from-cfg action."""
+        self._delete_macro_from_cfg_handler = handler
+        self._editor_panel.set_delete_handler(handler)
 
     def set_editing_enabled(self, enabled: bool) -> None:
         """Enable or disable mutating actions while keeping read-only view active."""

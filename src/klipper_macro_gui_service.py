@@ -9,11 +9,10 @@ module can focus on rendering and user interactions.
 
 from __future__ import annotations
 
+import http.client
 import json
 from pathlib import Path
-from urllib.error import URLError
-from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.parse import urlencode, urlparse
 
 from klipper_macro_backup import (
     create_macro_backup,
@@ -23,6 +22,7 @@ from klipper_macro_backup import (
     restore_macro_backup,
 )
 from klipper_macro_indexer import (
+    delete_macro_from_cfg,
     load_duplicate_macro_groups,
     load_macro_list,
     load_macro_versions,
@@ -56,11 +56,31 @@ class MacroGuiService:
         """Query Moonraker print stats and return normalized printer status."""
         query = urlencode({"print_stats": "state,message"})
         url = f"{self._moonraker_base_url}/printer/objects/query?{query}"
+        parsed = urlparse(url)
+
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return {
+                "connected": False,
+                "state": "unknown",
+                "message": "Moonraker URL must use http/https.",
+                "is_printing": False,
+            }
 
         try:
-            with urlopen(url, timeout=timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (OSError, TimeoutError, ValueError, URLError) as exc:
+            connection: http.client.HTTPConnection | http.client.HTTPSConnection
+            if parsed.scheme == "https":
+                connection = http.client.HTTPSConnection(parsed.netloc, timeout=timeout)
+            else:
+                connection = http.client.HTTPConnection(parsed.netloc, timeout=timeout)
+            path = parsed.path or "/"
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            connection.request("GET", path)
+            response = connection.getresponse()
+            raw_payload = response.read().decode("utf-8")
+            connection.close()
+            payload = json.loads(raw_payload)
+        except (OSError, TimeoutError, ValueError, http.client.HTTPException) as exc:
             return {
                 "connected": False,
                 "state": "unknown",
@@ -135,6 +155,14 @@ class MacroGuiService:
             file_path=file_path,
             macro_name=macro_name,
             section_text=section_text,
+        )
+
+    def delete_macro_source(self, file_path: str, macro_name: str) -> dict[str, object]:
+        """Delete one macro section from its source cfg file."""
+        return delete_macro_from_cfg(
+            config_dir=self._config_dir,
+            file_path=file_path,
+            macro_name=macro_name,
         )
 
     def list_duplicates(self) -> list[dict[str, object]]:

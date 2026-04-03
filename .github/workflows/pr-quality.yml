@@ -1,0 +1,58 @@
+name: PR Quality
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: pr-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff mypy pytest
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: MyPy type check
+        env:
+          PYTHONPATH: src
+        run: mypy src klipper_vault.py --ignore-missing-imports
+
+      - name: Python compile check
+        run: python -m py_compile klipper_vault.py src/*.py
+
+      - name: Pytest
+        env:
+          PYTHONPATH: src
+        run: |
+          if python - <<'PY'
+          from pathlib import Path
+          has_tests = any(Path("tests").rglob("*.py")) or any(Path('.').glob('test_*.py'))
+          raise SystemExit(0 if has_tests else 1)
+          PY
+          then
+            pytest -q
+          else
+            echo "No test files found; skipping pytest."
+          fi

@@ -24,12 +24,17 @@ class MacroEditor:
         self._editor_open = False
         self._editable = False
         self._explain_handler: Callable[[], None] | None = None
+        self._delete_handler: Callable[[dict], None] | None = None
 
         with ui.row().classes("w-full items-center gap-2 mt-2 px-3 py-2 bg-grey-8 text-grey-2 rounded-t"):
             ui.label(t("Macro preview")).classes("text-sm font-medium flex-1")
             self._explain_button = ui.button(icon="help_outline", on_click=self._do_explain).props("flat round dense")
             self._explain_button.tooltip(t("Explain this macro"))
             self._explain_button.set_visibility(False)
+            self._delete_button = ui.button(icon="delete_forever", on_click=self._delete_macro).props("flat round dense")
+            self._delete_button.classes("text-negative")
+            self._delete_button.tooltip(t("Delete macro from cfg file"))
+            self._delete_button.set_visibility(False)
             self._edit_button = ui.button(icon="edit", on_click=self._start_editing).props("flat round dense")
             self._edit_button.classes("text-primary")
             self._edit_button.tooltip(t("Edit macro"))
@@ -116,6 +121,7 @@ class MacroEditor:
         self._save_edit_button.set_visibility(editing)
         self._cancel_edit_button.set_visibility(editing)
         self._edit_button.set_visibility((not editing) and self._editable)
+        self._delete_button.set_visibility((not editing) and self._editable and self._delete_handler is not None)
         self._explain_button.set_visibility((not editing) and (self._current_macro is not None))
         if not editing:
             self._edit_status_label.set_visibility(False)
@@ -151,21 +157,37 @@ class MacroEditor:
         """Register callback invoked when the explain button is clicked."""
         self._explain_handler = handler
 
+    def set_delete_handler(self, handler: Callable[[dict], None] | None) -> None:
+        """Register callback invoked when deleting selected macro from cfg."""
+        self._delete_handler = handler
+
     def _do_explain(self) -> None:
         """Invoke the explain handler if one is registered."""
         if self._explain_handler is not None and self._current_macro is not None:
             self._explain_handler()
+
+    def _delete_macro(self) -> None:
+        """Invoke callback to delete selected macro section from cfg file."""
+        if self._delete_handler is None or self._current_macro is None:
+            return
+        try:
+            self._delete_handler(self._current_macro)
+        except Exception as exc:
+            self._edit_status_label.set_text(str(exc))
+            self._edit_status_label.set_visibility(True)
 
     def set_editing_enabled(self, enabled: bool) -> None:
         """Enable or disable mutating actions while keeping read-only view active."""
         self._editing_enabled = enabled
         if enabled:
             self._edit_button.enable()
+            self._delete_button.enable()
             self._save_edit_button.enable()
             self._cancel_edit_button.enable()
             self._editor.enable()
         else:
             self._edit_button.disable()
+            self._delete_button.disable()
             self._save_edit_button.disable()
             self._cancel_edit_button.disable()
             self._editor.disable()
@@ -190,4 +212,5 @@ class MacroEditor:
         if self._editor_open:
             self._set_editor_value(self._current_section_text)
         self._edit_button.set_visibility(self._editable and not self._editor_open)
+        self._delete_button.set_visibility(self._editable and not self._editor_open and self._delete_handler is not None)
         self._explain_button.set_visibility(not self._editor_open)
