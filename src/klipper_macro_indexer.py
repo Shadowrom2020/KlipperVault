@@ -249,12 +249,15 @@ def parse_macros_from_cfg(file_path: Path, base_dir: Path) -> List[MacroRecord]:
         while gcode_lines and _is_trailing_gcode_comment_or_blank(gcode_lines[-1]):
             gcode_lines.pop()
         gcode_text = "\n".join(gcode_lines).rstrip("\n") if gcode_lines else None
-        try:
-            rel_path = str(file_path.relative_to(base_dir))
-        except ValueError:
-            # Includes may reference cfg files outside config_dir. Keep them
-            # indexable by storing an absolute path fallback.
+
+        # Use lexical relpath first (non-throwing) so symlinked cfg paths that
+        # are mounted under config_dir remain stable in the UI/database.
+        rel_candidate = os.path.relpath(str(file_path), str(base_dir))
+        if rel_candidate == ".." or rel_candidate.startswith(f"..{os.sep}"):
+            # Includes may point outside config_dir; keep indexing robust.
             rel_path = str(file_path.resolve())
+        else:
+            rel_path = rel_candidate
 
         results.append(
             MacroRecord(
