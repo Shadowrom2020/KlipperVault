@@ -306,9 +306,6 @@ as_root systemctl enable --now "$SERVICE_NAME"
 setup_mainsail_navigation
 setup_mainsail_update_section
 
-# Display final service state for quick verification.
-as_root systemctl --no-pager --full status "$SERVICE_NAME" || true
-
 echo "Install complete."
 echo "Use: sudo systemctl restart $SERVICE_NAME"
 echo "Logs: sudo journalctl -u $SERVICE_NAME -f"
