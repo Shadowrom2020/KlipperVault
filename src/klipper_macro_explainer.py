@@ -333,8 +333,9 @@ def _parse_parameters(tokens: list[str]) -> dict[str, str]:
             # as key/value pairs. Plain words like PROBE_CALIBRATE should remain
             # command text, not synthetic parameters.
             if re.match(r"^[+\-0-9.{]", candidate_value):
-                current_key = axis_match.group(1).upper()
-                params[current_key] = candidate_value
+                candidate_key = axis_match.group(1).upper()
+                params[candidate_key] = candidate_value
+                current_key = candidate_key
                 continue
 
             current_key = None
