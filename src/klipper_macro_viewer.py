@@ -120,6 +120,7 @@ class MacroViewer:
     def set_restore_version_handler(self, handler: Callable[[dict], None] | None) -> None:
         """Register callback used by the "Revert/Restore" action."""
         self._restore_version_handler = handler
+        self._editor_panel.set_restore_handler(handler)
 
     def set_save_macro_edit_handler(self, handler: Callable[[dict, str], None] | None) -> None:
         """Register callback used by the in-place macro editor save action."""
@@ -217,6 +218,14 @@ class MacroViewer:
         """Update inactive explanation line and optional jump button."""
         if macro is None or macro.get("is_active", False):
             self._inactive_hint.set_visibility(False)
+            self._open_active_button.set_visibility(False)
+            return
+
+        if bool(macro.get("is_deleted", False)):
+            self._inactive_hint.set_text(
+                t("Deleted: this macro no longer exists in the cfg files. It is stored in the vault until removed.")
+            )
+            self._inactive_hint.set_visibility(True)
             self._open_active_button.set_visibility(False)
             return
 

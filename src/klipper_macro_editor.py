@@ -25,12 +25,17 @@ class MacroEditor:
         self._editable = False
         self._explain_handler: Callable[[], None] | None = None
         self._delete_handler: Callable[[dict], None] | None = None
+        self._restore_handler: Callable[[dict], None] | None = None
 
         with ui.row().classes("w-full items-center gap-2 mt-2 px-3 py-2 bg-grey-8 text-grey-2 rounded-t"):
             ui.label(t("Macro preview")).classes("text-sm font-medium flex-1")
             self._explain_button = ui.button(icon="help_outline", on_click=self._do_explain).props("flat round dense")
             self._explain_button.tooltip(t("Explain this macro"))
             self._explain_button.set_visibility(False)
+            self._restore_button = ui.button(icon="restore_page", on_click=self._restore_macro).props("flat round dense")
+            self._restore_button.classes("text-orange-5")
+            self._restore_button.tooltip(t("Restore deleted macro"))
+            self._restore_button.set_visibility(False)
             self._delete_button = ui.button(icon="delete_forever", on_click=self._delete_macro).props("flat round dense")
             self._delete_button.classes("text-negative")
             self._delete_button.tooltip(t("Delete macro from cfg file"))
@@ -122,11 +127,20 @@ class MacroEditor:
         self._cancel_edit_button.set_visibility(editing)
         self._edit_button.set_visibility((not editing) and self._editable)
         self._delete_button.set_visibility((not editing) and self._editable and self._delete_handler is not None)
+        self._restore_button.set_visibility((not editing) and self._can_restore_current_macro())
         self._explain_button.set_visibility((not editing) and (self._current_macro is not None))
         if not editing:
             self._edit_status_label.set_visibility(False)
 
         self.set_editing_enabled(self._editing_enabled)
+
+    def _can_restore_current_macro(self) -> bool:
+        """Return True when current macro can be restored from deleted state."""
+        return (
+            self._current_macro is not None
+            and bool(self._current_macro.get("is_deleted", False))
+            and self._restore_handler is not None
+        )
 
     def _start_editing(self) -> None:
         """Open the in-place editor for the current macro."""
@@ -161,6 +175,10 @@ class MacroEditor:
         """Register callback invoked when deleting selected macro from cfg."""
         self._delete_handler = handler
 
+    def set_restore_handler(self, handler: Callable[[dict], None] | None) -> None:
+        """Register callback invoked when restoring selected deleted macro."""
+        self._restore_handler = handler
+
     def _do_explain(self) -> None:
         """Invoke the explain handler if one is registered."""
         if self._explain_handler is not None and self._current_macro is not None:
@@ -176,18 +194,30 @@ class MacroEditor:
             self._edit_status_label.set_text(str(exc))
             self._edit_status_label.set_visibility(True)
 
+    def _restore_macro(self) -> None:
+        """Invoke callback to restore selected deleted macro."""
+        if self._restore_handler is None or self._current_macro is None:
+            return
+        try:
+            self._restore_handler(self._current_macro)
+        except Exception as exc:
+            self._edit_status_label.set_text(str(exc))
+            self._edit_status_label.set_visibility(True)
+
     def set_editing_enabled(self, enabled: bool) -> None:
         """Enable or disable mutating actions while keeping read-only view active."""
         self._editing_enabled = enabled
         if enabled:
             self._edit_button.enable()
             self._delete_button.enable()
+            self._restore_button.enable()
             self._save_edit_button.enable()
             self._cancel_edit_button.enable()
             self._editor.enable()
         else:
             self._edit_button.disable()
             self._delete_button.disable()
+            self._restore_button.disable()
             self._save_edit_button.disable()
             self._cancel_edit_button.disable()
             self._editor.disable()
@@ -213,4 +243,5 @@ class MacroEditor:
             self._set_editor_value(self._current_section_text)
         self._edit_button.set_visibility(self._editable and not self._editor_open)
         self._delete_button.set_visibility(self._editable and not self._editor_open and self._delete_handler is not None)
+        self._restore_button.set_visibility(not self._editor_open and self._can_restore_current_macro())
         self._explain_button.set_visibility(not self._editor_open)
