@@ -21,6 +21,9 @@ VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-venv}"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 REMOVE_VENV="${REMOVE_VENV:-0}"
 KLIPPER_CONFIG_DIR="${KLIPPER_CONFIG_DIR:-$APP_HOME/printer_data/config}"
+MAINSAIL_THEME_DIR="${MAINSAIL_THEME_DIR:-$KLIPPER_CONFIG_DIR/.theme}"
+MAINSAIL_NAV_FILE="${MAINSAIL_NAV_FILE:-$MAINSAIL_THEME_DIR/navi.json}"
+MAINSAIL_NAV_TITLE="${MAINSAIL_NAV_TITLE:-KlipperVault}"
 MOONRAKER_CONF_FILE="${MOONRAKER_CONF_FILE:-$KLIPPER_CONFIG_DIR/moonraker.conf}"
 UPDATE_MANAGER_NAME="${UPDATE_MANAGER_NAME:-klippervault}"
 
@@ -36,6 +39,9 @@ Environment overrides:
   VENV_DIR        Path to the virtual environment (default: $VENV_DIR)
   REMOVE_VENV     Set to 1 to remove virtualenv without passing --remove-venv.
   KLIPPER_CONFIG_DIR Path to Klipper config dir (default: $KLIPPER_CONFIG_DIR)
+  MAINSAIL_THEME_DIR Path to Mainsail .theme dir (default: $MAINSAIL_THEME_DIR)
+  MAINSAIL_NAV_FILE Path to Mainsail navi.json (default: $MAINSAIL_NAV_FILE)
+  MAINSAIL_NAV_TITLE Mainsail nav title to remove (default: $MAINSAIL_NAV_TITLE)
   MOONRAKER_CONF_FILE Path to moonraker.conf (default: $MOONRAKER_CONF_FILE)
   UPDATE_MANAGER_NAME Update manager section name (default: $UPDATE_MANAGER_NAME)
 EOF
@@ -148,6 +154,41 @@ else:
 PY
 }
 
+remove_mainsail_navigation_entry() {
+  if [[ ! -f "$MAINSAIL_NAV_FILE" ]]; then
+  echo "Mainsail nav file not found; skipping nav cleanup."
+  return
+  fi
+
+  echo "Removing Mainsail navigation entry titled '$MAINSAIL_NAV_TITLE'..."
+  as_user "$PYTHON_BIN" - "$MAINSAIL_NAV_FILE" "$MAINSAIL_NAV_TITLE" <<'PY'
+import json
+import pathlib
+import sys
+
+nav_path = pathlib.Path(sys.argv[1])
+title = sys.argv[2]
+
+try:
+  loaded = json.loads(nav_path.read_text(encoding="utf-8"))
+except Exception:
+  print("Could not parse navi.json; leaving file unchanged.")
+  raise SystemExit(0)
+
+if not isinstance(loaded, list):
+  print("navi.json is not a list; leaving file unchanged.")
+  raise SystemExit(0)
+
+filtered = [item for item in loaded if not (isinstance(item, dict) and item.get("title") == title)]
+
+if len(filtered) == len(loaded):
+  print("No matching navigation entry found.")
+else:
+  nav_path.write_text(json.dumps(filtered, indent=2) + "\n", encoding="utf-8")
+  print("Removed navigation entry.")
+PY
+}
+
 echo "Uninstalling KlipperVault from: $APP_DIR"
 echo "Service user: $APP_USER"
 echo "Service file: $SERVICE_PATH"
@@ -180,6 +221,7 @@ as_root systemctl daemon-reload
 as_root systemctl reset-failed || true
 
 remove_moonraker_update_section
+remove_mainsail_navigation_entry
 
 if [[ "$REMOVE_VENV" == "1" ]]; then
   if [[ -d "$VENV_DIR" ]]; then
