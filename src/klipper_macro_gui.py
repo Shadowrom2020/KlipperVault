@@ -214,6 +214,15 @@ def build_ui(app_version: str = "unknown") -> None:
             flat_dialog_button("Cancel", delete_dialog.close)
             confirm_delete_button = ui.button(t("Delete")).props("color=negative no-caps")
 
+    macro_delete_target: dict[str, object] | None = None
+    with ui.dialog() as macro_delete_dialog, ui.card().classes("w-[30rem] max-w-[96vw]"):
+        ui.label(t("Delete macro from cfg file")).classes("text-lg font-semibold")
+        macro_delete_confirm_label = ui.label("").classes("text-sm text-grey-5")
+        macro_delete_error_label = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            flat_dialog_button("Cancel", macro_delete_dialog.close)
+            confirm_macro_delete_button = ui.button(t("Delete")).props("color=negative no-caps")
+
     with ui.dialog() as duplicate_wizard_dialog, ui.card().classes("w-[48rem] max-w-[98vw]"):
         duplicate_wizard_title = ui.label(t("Resolve duplicate macros")).classes("text-lg font-semibold")
         duplicate_wizard_subtitle = ui.label("").classes("text-sm text-grey-5")
@@ -378,7 +387,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     viewer.set_save_macro_edit_handler(save_macro_edit_from_viewer)
 
-    def delete_macro_source_from_viewer(version_row: dict) -> None:
+    def _perform_delete_macro_source(version_row: dict) -> None:
         """Delete selected macro section from cfg file and re-index."""
         nonlocal force_latest_for_key
 
@@ -419,6 +428,38 @@ def build_ui(app_version: str = "unknown") -> None:
         ))
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro delete")
+
+    def delete_macro_source_from_viewer(version_row: dict) -> None:
+        """Open confirmation dialog before deleting selected macro from cfg."""
+        nonlocal macro_delete_target
+
+        file_path = str(version_row.get("file_path", ""))
+        macro_name = str(version_row.get("macro_name", ""))
+        macro_delete_target = version_row
+        macro_delete_error_label.set_text("")
+        macro_delete_confirm_label.set_text(t(
+            "Delete macro '{macro_name}' from {file_path}? This removes it from the cfg file. It can still be restored from the vault until it is permanently removed.",
+            macro_name=macro_name or "-",
+            file_path=file_path or "-",
+        ))
+        macro_delete_dialog.open()
+
+    def confirm_macro_delete() -> None:
+        """Execute confirmed macro deletion from the viewer dialog."""
+        nonlocal macro_delete_target
+
+        if macro_delete_target is None:
+            macro_delete_error_label.set_text(t("Selected entry data is not available."))
+            return
+
+        try:
+            _perform_delete_macro_source(macro_delete_target)
+        except Exception as exc:
+            macro_delete_error_label.set_text(str(exc))
+            return
+
+        macro_delete_dialog.close()
+        macro_delete_target = None
 
     viewer.set_delete_macro_from_cfg_handler(delete_macro_source_from_viewer)
 
@@ -1126,6 +1167,7 @@ def build_ui(app_version: str = "unknown") -> None:
     purge_deleted_button.on_click(purge_deleted_macros)
     confirm_restore_button.on_click(perform_restore)
     confirm_delete_button.on_click(perform_delete_backup)
+    confirm_macro_delete_button.on_click(confirm_macro_delete)
 
     index_button.on_click(run_index)
 
