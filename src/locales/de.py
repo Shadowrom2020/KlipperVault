@@ -49,6 +49,7 @@ TRANSLATIONS: dict[str, str] = {
     'Delete': 'Löschen',
     'Delete backup': 'Backup löschen',
     'Delete macro from cfg file': 'Makro aus cfg-Datei löschen',
+    'Disclaimer: Macro explanation is an early development feature and may be inaccurate.': 'Hinweis: Die Makro-Erklärung ist eine frühe Entwicklungsfunktion und kann ungenau sein.',
     "Delete backup '{backup_name}'? This cannot be undone.": "Backup '{backup_name}' löschen? Das kann nicht rückgängig gemacht werden.",
     'Delete failed: {error}': 'Löschen fehlgeschlagen: {error}',
     'Deleted macro \'{macro_name}\' from {file_path} ({removed} section(s)). Re-indexing...': "Makro '{macro_name}' aus {file_path} gelöscht ({removed} Abschnitt(e)). Neuindizierung...",

@@ -94,9 +94,18 @@ detect_nav_href() {
     return
   fi
 
-  local printer_host
-  printer_host="$(hostname -f 2>/dev/null || hostname)"
-  echo "http://${printer_host}:${port}"
+  local printer_ip
+  printer_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')"
+
+  if [[ -z "$printer_ip" ]]; then
+    printer_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  fi
+
+  if [[ -z "$printer_ip" ]]; then
+    printer_ip="127.0.0.1"
+  fi
+
+  echo "http://${printer_ip}:${port}"
 }
 
 setup_mainsail_navigation() {
