@@ -856,6 +856,19 @@ def load_stats(db_path: Path) -> Dict[str, object]:
             WHERE m.is_deleted = 0
             """
         ).fetchone()[0])
+        distinct_runtime_macro_names = int(conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT COALESCE(NULLIF(TRIM(m.runtime_macro_name), ''), m.macro_name))
+            FROM macros AS m
+            INNER JOIN (
+                {_LATEST_VERSION_SUBQUERY}
+            ) AS latest
+                ON m.file_path = latest.file_path
+               AND m.macro_name = latest.macro_name
+               AND m.version = latest.max_version
+            WHERE m.is_deleted = 0
+            """
+        ).fetchone()[0])
         distinct_cfg_files = int(conn.execute(
             f"""
             SELECT COUNT(DISTINCT m.file_path)
@@ -895,6 +908,7 @@ def load_stats(db_path: Path) -> Dict[str, object]:
         "total_macros": total_macros,
         "deleted_macros": deleted_macros,
         "distinct_macro_names": distinct_macro_names,
+        "distinct_runtime_macro_names": distinct_runtime_macro_names,
         "distinct_cfg_files": distinct_cfg_files,
         "latest_update_ts": int(latest_update_ts) if latest_update_ts is not None else None,
         "macros_per_file": macros_per_file,
@@ -1048,9 +1062,18 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
             f"""
             WITH latest AS (
                 {_LATEST_VERSION_SUBQUERY}
+            ), latest_rows AS (
+                SELECT m.*
+                FROM macros AS m
+                INNER JOIN latest AS l
+                    ON m.file_path = l.file_path
+                   AND m.macro_name = l.macro_name
+                   AND m.version = l.max_version
+                WHERE m.is_deleted = 0
+                  AND COALESCE(NULLIF(TRIM(m.runtime_macro_name), ''), m.macro_name) = m.macro_name
             ), duplicated AS (
                 SELECT macro_name
-                FROM latest
+                FROM latest_rows
                 GROUP BY macro_name
                 HAVING COUNT(*) > 1
             )
@@ -1060,14 +1083,9 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
                 m.version,
                 m.indexed_at,
                 m.is_active
-            FROM macros AS m
-            INNER JOIN latest AS l
-                ON m.file_path = l.file_path
-               AND m.macro_name = l.macro_name
-               AND m.version = l.max_version
+            FROM latest_rows AS m
             INNER JOIN duplicated AS d
                 ON d.macro_name = m.macro_name
-            WHERE m.is_deleted = 0
             ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
             """
         ).fetchall()

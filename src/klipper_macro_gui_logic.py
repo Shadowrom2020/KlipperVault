@@ -110,6 +110,9 @@ def find_active_override(
 
 def duplicate_count_from_stats(stats: dict[str, object]) -> int:
     """Calculate duplicate count using existing dashboard aggregates."""
+    distinct_runtime_names = _to_int(stats.get("distinct_runtime_macro_names"), default=-1)
+    if distinct_runtime_names >= 0:
+        return max(_to_int(stats.get("total_macros")) - distinct_runtime_names, 0)
     return max(_to_int(stats.get("total_macros")) - _to_int(stats.get("distinct_macro_names")), 0)
 
 

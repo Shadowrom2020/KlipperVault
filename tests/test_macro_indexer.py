@@ -2,7 +2,13 @@ import json
 import textwrap
 from pathlib import Path
 
-from klipper_macro_indexer import get_cfg_load_order, load_macro_list, parse_macros_from_cfg, run_indexing
+from klipper_macro_indexer import (
+    get_cfg_load_order,
+    load_duplicate_macro_groups,
+    load_macro_list,
+    parse_macros_from_cfg,
+    run_indexing,
+)
 
 
 def _write(path: Path, content: str) -> None:
@@ -96,3 +102,37 @@ def test_run_indexing_marks_only_last_duplicate_macro_active(tmp_path: Path) -> 
     assert rows_by_path["base.cfg"]["is_active"] is False
     assert rows_by_path["override.cfg"]["is_active"] is True
     assert rows_by_path["override.cfg"]["runtime_macro_name"] == "HELLO"
+
+
+def test_renamed_runtime_alias_not_counted_as_duplicate(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [include base.cfg]
+        [include override.cfg]
+        """,
+    )
+    _write(
+        config_dir / "base.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="base"
+        """,
+    )
+    _write(
+        config_dir / "override.cfg",
+        """
+        [gcode_macro HELLO]
+        rename_existing: OLD_HELLO
+        gcode:
+          RESPOND MSG="override"
+        """,
+    )
+
+    run_indexing(config_dir, db_path)
+
+    groups = load_duplicate_macro_groups(db_path)
+    assert groups == []
