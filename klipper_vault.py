@@ -38,11 +38,12 @@ def main() -> None:
     favicon_path = REPO_ROOT / "assets" / "favicon.svg"
     build_ui(app_version=_load_app_version())
     ui.run(
-        host="127.0.0.1",
+        host="0.0.0.0", # nosec B104 - intentional: GUI must be reachable on LAN
         port=vault_cfg.port,
         title=t("Klipper Vault"),
         dark=True,
         favicon=favicon_path,
+        reload=False,
     )
 
 

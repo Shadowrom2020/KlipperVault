@@ -75,9 +75,11 @@ def _iter_included_files(file_path: Path, config_dir: Path) -> Iterable[Path]:
                 if include_glob.is_absolute():
                     pattern = str(include_glob)
                 else:
-                    pattern = str((include_base / include_expr).resolve())
+                    # Preserve lexical paths (including symlink hops) so stored
+                    # file_path values remain rooted in config_dir when possible.
+                    pattern = str(include_base / include_expr)
 
-                include_candidates = sorted(Path(p).resolve() for p in glob.glob(pattern))
+                include_candidates = sorted(Path(p) for p in glob.glob(pattern))
                 for include_path in include_candidates:
                     if include_path.is_file() and include_path.suffix.lower() == ".cfg":
                         yield include_path
@@ -87,10 +89,10 @@ def _iter_included_files(file_path: Path, config_dir: Path) -> Iterable[Path]:
 
 def get_cfg_load_order(config_dir: Path) -> List[Path]:
     """Resolve cfg load order starting from printer.cfg and following [include ...]."""
-    root_cfg = (config_dir / "printer.cfg").resolve()
+    root_cfg = config_dir / "printer.cfg"
     if not root_cfg.exists() or not root_cfg.is_file():
         # Fall back to deterministic full-tree scan if printer.cfg is missing.
-        return sorted((p.resolve() for p in _iter_cfg_files(config_dir)), key=lambda p: str(p))
+        return sorted((p for p in _iter_cfg_files(config_dir)), key=lambda p: str(p))
 
     ordered: List[Path] = []
     visited: set[Path] = set()
@@ -100,23 +102,40 @@ def get_cfg_load_order(config_dir: Path) -> List[Path]:
         if resolved in visited:
             return
         visited.add(resolved)
-        ordered.append(resolved)
+        ordered.append(path)
         for included in _iter_included_files(resolved, config_dir):
             visit(included)
 
     visit(root_cfg)
 
     # Keep any non-included cfg files discoverable for visibility, deterministically.
-    for cfg in sorted((p.resolve() for p in _iter_cfg_files(config_dir)), key=lambda p: str(p)):
-        if cfg not in visited:
+    for cfg in sorted((p for p in _iter_cfg_files(config_dir)), key=lambda p: str(p)):
+        if cfg.resolve() not in visited:
             ordered.append(cfg)
     return ordered
 
 
 def _iter_cfg_files(config_dir: Path) -> Iterable[Path]:
     """Yield all cfg files under config_dir recursively."""
-    for root, _, files in os.walk(config_dir):
-        for file_name in files:
+    visited_dirs: set[Path] = set()
+    for root, dirs, files in os.walk(config_dir, followlinks=True):
+        root_path = Path(root)
+        root_real = root_path.resolve()
+        if root_real in visited_dirs:
+            dirs[:] = []
+            continue
+        visited_dirs.add(root_real)
+
+        # Prune directory recursion loops caused by symlink cycles.
+        kept_dirs: List[str] = []
+        for dir_name in sorted(dirs):
+            dir_real = (root_path / dir_name).resolve()
+            if dir_real in visited_dirs:
+                continue
+            kept_dirs.append(dir_name)
+        dirs[:] = kept_dirs
+
+        for file_name in sorted(files):
             if file_name.lower().endswith(".cfg"):
                 yield Path(root) / file_name
 
@@ -230,7 +249,15 @@ def parse_macros_from_cfg(file_path: Path, base_dir: Path) -> List[MacroRecord]:
         while gcode_lines and _is_trailing_gcode_comment_or_blank(gcode_lines[-1]):
             gcode_lines.pop()
         gcode_text = "\n".join(gcode_lines).rstrip("\n") if gcode_lines else None
-        rel_path = str(file_path.relative_to(base_dir))
+
+        # Use lexical relpath first (non-throwing) so symlinked cfg paths that
+        # are mounted under config_dir remain stable in the UI/database.
+        rel_candidate = os.path.relpath(str(file_path), str(base_dir))
+        if rel_candidate == ".." or rel_candidate.startswith(f"..{os.sep}"):
+            # Includes may point outside config_dir; keep indexing robust.
+            rel_path = str(file_path.resolve())
+        else:
+            rel_path = rel_candidate
 
         results.append(
             MacroRecord(
@@ -829,6 +856,19 @@ def load_stats(db_path: Path) -> Dict[str, object]:
             WHERE m.is_deleted = 0
             """
         ).fetchone()[0])
+        distinct_runtime_macro_names = int(conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT COALESCE(NULLIF(TRIM(m.runtime_macro_name), ''), m.macro_name))
+            FROM macros AS m
+            INNER JOIN (
+                {_LATEST_VERSION_SUBQUERY}
+            ) AS latest
+                ON m.file_path = latest.file_path
+               AND m.macro_name = latest.macro_name
+               AND m.version = latest.max_version
+            WHERE m.is_deleted = 0
+            """
+        ).fetchone()[0])
         distinct_cfg_files = int(conn.execute(
             f"""
             SELECT COUNT(DISTINCT m.file_path)
@@ -868,6 +908,7 @@ def load_stats(db_path: Path) -> Dict[str, object]:
         "total_macros": total_macros,
         "deleted_macros": deleted_macros,
         "distinct_macro_names": distinct_macro_names,
+        "distinct_runtime_macro_names": distinct_runtime_macro_names,
         "distinct_cfg_files": distinct_cfg_files,
         "latest_update_ts": int(latest_update_ts) if latest_update_ts is not None else None,
         "macros_per_file": macros_per_file,
@@ -1021,9 +1062,18 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
             f"""
             WITH latest AS (
                 {_LATEST_VERSION_SUBQUERY}
+            ), latest_rows AS (
+                SELECT m.*
+                FROM macros AS m
+                INNER JOIN latest AS l
+                    ON m.file_path = l.file_path
+                   AND m.macro_name = l.macro_name
+                   AND m.version = l.max_version
+                WHERE m.is_deleted = 0
+                  AND COALESCE(NULLIF(TRIM(m.runtime_macro_name), ''), m.macro_name) = m.macro_name
             ), duplicated AS (
                 SELECT macro_name
-                FROM latest
+                FROM latest_rows
                 GROUP BY macro_name
                 HAVING COUNT(*) > 1
             )
@@ -1033,14 +1083,9 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
                 m.version,
                 m.indexed_at,
                 m.is_active
-            FROM macros AS m
-            INNER JOIN latest AS l
-                ON m.file_path = l.file_path
-               AND m.macro_name = l.macro_name
-               AND m.version = l.max_version
+            FROM latest_rows AS m
             INNER JOIN duplicated AS d
                 ON d.macro_name = m.macro_name
-            WHERE m.is_deleted = 0
             ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
             """
         ).fetchall()
@@ -1066,8 +1111,8 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
 
 def _safe_cfg_path(config_dir: Path, rel_path: str) -> Path:
     """Return a cfg path safely constrained inside config_dir."""
-    candidate = (config_dir / rel_path).resolve()
-    root = config_dir.resolve()
+    root = Path(os.path.abspath(str(config_dir)))
+    candidate = Path(os.path.abspath(str(config_dir / rel_path)))
     if candidate != root and root not in candidate.parents:
         raise ValueError(f"invalid cfg file path outside config directory: {rel_path}")
     return candidate

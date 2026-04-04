@@ -45,6 +45,7 @@ The application focuses on a few operational goals:
 
 ### Script explanation and macro cross-links
 
+- Experimental: The macro explainer is an early development feature and may be inaccurate.
 - Explains common g-code and Klipper commands in plain language directly in the macro viewer.
 - Recognizes macro-to-macro calls and lists referenced macros in an explanation panel.
 - Opens referenced macros from a popup so users can follow the script flow across multiple macros.

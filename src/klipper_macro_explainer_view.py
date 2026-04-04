@@ -31,6 +31,9 @@ class MacroExplainerView:
 
         with ui.dialog() as self._dialog, ui.card().classes("w-[74rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col"):
             ui.label(t("Script explanation")).classes("text-md font-semibold")
+            ui.label(
+                t("Disclaimer: Macro explanation is an early development feature and may be inaccurate.")
+            ).classes("text-xs text-yellow-4")
             self._summary_label = ui.label(t("Select a macro to explain its g-code.")).classes("text-sm text-grey-4")
             ui.label(t("Referenced macros")).classes("text-sm font-medium mt-2")
             self._references_row = ui.row().classes("w-full gap-2 items-center")

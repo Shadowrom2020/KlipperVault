@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="klipper-vault.service"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ -n "${SUDO_USER:-}" ]]; then
   APP_USER="$SUDO_USER"
@@ -19,6 +20,9 @@ fi
 VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-venv}"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 REMOVE_VENV="${REMOVE_VENV:-0}"
+KLIPPER_CONFIG_DIR="${KLIPPER_CONFIG_DIR:-$APP_HOME/printer_data/config}"
+MOONRAKER_CONF_FILE="${MOONRAKER_CONF_FILE:-$KLIPPER_CONFIG_DIR/moonraker.conf}"
+UPDATE_MANAGER_NAME="${UPDATE_MANAGER_NAME:-klippervault}"
 
 print_usage() {
   cat <<EOF
@@ -28,8 +32,12 @@ Options:
   --remove-venv   Remove the virtual environment at $VENV_DIR.
 
 Environment overrides:
+  PYTHON_BIN      Python interpreter for helper steps (default: $PYTHON_BIN)
   VENV_DIR        Path to the virtual environment (default: $VENV_DIR)
   REMOVE_VENV     Set to 1 to remove virtualenv without passing --remove-venv.
+  KLIPPER_CONFIG_DIR Path to Klipper config dir (default: $KLIPPER_CONFIG_DIR)
+  MOONRAKER_CONF_FILE Path to moonraker.conf (default: $MOONRAKER_CONF_FILE)
+  UPDATE_MANAGER_NAME Update manager section name (default: $UPDATE_MANAGER_NAME)
 EOF
 }
 
@@ -103,6 +111,43 @@ as_root() {
   fi
 }
 
+as_user() {
+  if [[ "$(id -un)" == "$APP_USER" ]]; then
+    "$@"
+  else
+    as_root runuser -u "$APP_USER" -- "$@"
+  fi
+}
+
+remove_moonraker_update_section() {
+  if [[ ! -f "$MOONRAKER_CONF_FILE" ]]; then
+    echo "Moonraker config not found; skipping update-manager cleanup."
+    return
+  fi
+
+  echo "Removing Moonraker update section [update_manager $UPDATE_MANAGER_NAME]..."
+  as_user "$PYTHON_BIN" - "$MOONRAKER_CONF_FILE" "$UPDATE_MANAGER_NAME" <<'PY'
+import pathlib
+import re
+import sys
+
+conf_path = pathlib.Path(sys.argv[1])
+update_name = sys.argv[2]
+
+content = conf_path.read_text(encoding="utf-8", errors="ignore")
+pattern = re.compile(
+    rf"(?ms)^\[update_manager\s+{re.escape(update_name)}\]\n(?:.*?)(?=^\[|\Z)"
+)
+
+updated, removed = pattern.subn("", content, count=1)
+if removed:
+    conf_path.write_text(updated.rstrip("\n") + "\n", encoding="utf-8")
+    print("Removed update-manager section.")
+else:
+    print("No matching update-manager section found.")
+PY
+}
+
 echo "Uninstalling KlipperVault from: $APP_DIR"
 echo "Service user: $APP_USER"
 echo "Service file: $SERVICE_PATH"
@@ -111,6 +156,7 @@ echo "Virtualenv: $VENV_DIR"
 need_cmd systemctl
 need_cmd getent
 need_cmd readlink
+need_cmd "$PYTHON_BIN"
 
 if as_root systemctl list-unit-files --type=service | grep -q "^${SERVICE_NAME}"; then
   echo "Stopping service..."
@@ -132,6 +178,8 @@ fi
 echo "Reloading systemd daemon..."
 as_root systemctl daemon-reload
 as_root systemctl reset-failed || true
+
+remove_moonraker_update_section
 
 if [[ "$REMOVE_VENV" == "1" ]]; then
   if [[ -d "$VENV_DIR" ]]; then
