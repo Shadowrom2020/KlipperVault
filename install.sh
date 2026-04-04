@@ -23,7 +23,7 @@ KLIPPER_CONFIG_DIR="${KLIPPER_CONFIG_DIR:-$APP_HOME/printer_data/config}"
 VAULT_CFG_PATH="${VAULT_CFG_PATH:-$KLIPPER_CONFIG_DIR/klippervault.cfg}"
 MAINSAIL_THEME_DIR="${MAINSAIL_THEME_DIR:-$KLIPPER_CONFIG_DIR/.theme}"
 MAINSAIL_NAV_FILE="${MAINSAIL_NAV_FILE:-$MAINSAIL_THEME_DIR/navi.json}"
-MAINSAIL_CONF_FILE="${MAINSAIL_CONF_FILE:-$KLIPPER_CONFIG_DIR/mainsail.conf}"
+MOONRAKER_CONF_FILE="${MOONRAKER_CONF_FILE:-$KLIPPER_CONFIG_DIR/moonraker.conf}"
 MAINSAIL_NAV_TITLE="${MAINSAIL_NAV_TITLE:-KlipperVault}"
 MAINSAIL_NAV_TARGET="${MAINSAIL_NAV_TARGET:-_blank}"
 MAINSAIL_NAV_POSITION="${MAINSAIL_NAV_POSITION:-85}"
@@ -183,10 +183,10 @@ setup_mainsail_update_section() {
   repo_origin="$(detect_repo_origin)"
   repo_branch="$(detect_repo_branch)"
 
-  echo "Configuring mainsail.conf update section..."
+  echo "Configuring moonraker.conf update section..."
   as_user mkdir -p "$KLIPPER_CONFIG_DIR"
 
-  as_user "$PYTHON_BIN" - "$MAINSAIL_CONF_FILE" "$UPDATE_MANAGER_NAME" "$APP_DIR" "$SERVICE_NAME" "$repo_origin" "$repo_branch" <<'PY'
+  as_user "$PYTHON_BIN" - "$MOONRAKER_CONF_FILE" "$UPDATE_MANAGER_NAME" "$APP_DIR" "$SERVICE_NAME" "$repo_origin" "$repo_branch" <<'PY'
 import pathlib
 import re
 import sys
@@ -234,7 +234,7 @@ else:
 conf_path.write_text(updated.rstrip("\n") + "\n", encoding="utf-8")
 PY
 
-  echo "Mainsail update section written: $MAINSAIL_CONF_FILE"
+  echo "Moonraker update section written: $MOONRAKER_CONF_FILE"
 }
 
 echo "Installing KlipperVault from: $APP_DIR"

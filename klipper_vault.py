@@ -43,6 +43,7 @@ def main() -> None:
         title=t("Klipper Vault"),
         dark=True,
         favicon=favicon_path,
+        reload=False,
     )
 
 
