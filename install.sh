@@ -54,6 +54,16 @@ as_user() {
   fi
 }
 
+install_apt_dependencies() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    return
+  fi
+
+  echo "Detected apt-based system; installing required Python packages..."
+  as_root apt-get update
+  as_root apt-get install -y python3-venv python3-pip
+}
+
 detect_vault_port() {
   local default_port="10090"
 
@@ -150,6 +160,8 @@ need_cmd "$PYTHON_BIN"
 need_cmd systemctl
 need_cmd getent
 
+install_apt_dependencies
+
 if [[ ! -f "$APP_DIR/klipper_vault.py" ]]; then
   echo "klipper_vault.py not found in $APP_DIR"
   exit 1
@@ -171,9 +183,12 @@ if [[ ! -d "$VENV_DIR" ]]; then
   as_user "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
+# Ensure pip exists in the virtualenv even on distros that omit it by default.
+as_user "$VENV_DIR/bin/python" -m ensurepip --upgrade
+
 echo "Installing Python dependencies..."
-as_user "$VENV_DIR/bin/pip" install --upgrade pip
-as_user "$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
+as_user "$VENV_DIR/bin/python" -m pip install --upgrade pip
+as_user "$VENV_DIR/bin/python" -m pip install -r "$APP_DIR/requirements.txt"
 
 echo "Writing systemd service: $SERVICE_PATH"
 TMP_SERVICE="$(mktemp)"
