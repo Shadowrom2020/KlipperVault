@@ -23,9 +23,11 @@ KLIPPER_CONFIG_DIR="${KLIPPER_CONFIG_DIR:-$APP_HOME/printer_data/config}"
 VAULT_CFG_PATH="${VAULT_CFG_PATH:-$KLIPPER_CONFIG_DIR/klippervault.cfg}"
 MAINSAIL_THEME_DIR="${MAINSAIL_THEME_DIR:-$KLIPPER_CONFIG_DIR/.theme}"
 MAINSAIL_NAV_FILE="${MAINSAIL_NAV_FILE:-$MAINSAIL_THEME_DIR/navi.json}"
+MAINSAIL_CONF_FILE="${MAINSAIL_CONF_FILE:-$KLIPPER_CONFIG_DIR/mainsail.conf}"
 MAINSAIL_NAV_TITLE="${MAINSAIL_NAV_TITLE:-KlipperVault}"
 MAINSAIL_NAV_TARGET="${MAINSAIL_NAV_TARGET:-_blank}"
 MAINSAIL_NAV_POSITION="${MAINSAIL_NAV_POSITION:-85}"
+UPDATE_MANAGER_NAME="${UPDATE_MANAGER_NAME:-klippervault}"
 
 need_cmd() {
   local cmd="$1"
@@ -161,6 +163,80 @@ PY
   echo "KlipperVault URL: $nav_href"
 }
 
+detect_repo_origin() {
+  local repo_origin
+  repo_origin="$(git -C "$APP_DIR" config --get remote.origin.url 2>/dev/null || true)"
+  echo "$repo_origin"
+}
+
+detect_repo_branch() {
+  local repo_branch
+  repo_branch="$(git -C "$APP_DIR" branch --show-current 2>/dev/null || true)"
+  if [[ -z "$repo_branch" ]]; then
+    repo_branch="main"
+  fi
+  echo "$repo_branch"
+}
+
+setup_mainsail_update_section() {
+  local repo_origin repo_branch
+  repo_origin="$(detect_repo_origin)"
+  repo_branch="$(detect_repo_branch)"
+
+  echo "Configuring mainsail.conf update section..."
+  as_user mkdir -p "$KLIPPER_CONFIG_DIR"
+
+  as_user "$PYTHON_BIN" - "$MAINSAIL_CONF_FILE" "$UPDATE_MANAGER_NAME" "$APP_DIR" "$SERVICE_NAME" "$repo_origin" "$repo_branch" <<'PY'
+import pathlib
+import re
+import sys
+
+conf_path = pathlib.Path(sys.argv[1])
+update_name = sys.argv[2]
+app_dir = sys.argv[3]
+service_name = pathlib.Path(sys.argv[4]).stem
+repo_origin = sys.argv[5].strip()
+repo_branch = sys.argv[6].strip() or "main"
+
+section_lines = [
+    f"[update_manager {update_name}]",
+    "type: git_repo",
+    f"path: {app_dir}",
+]
+
+if repo_origin:
+    section_lines.append(f"origin: {repo_origin}")
+
+section_lines.extend([
+    f"primary_branch: {repo_branch}",
+    f"managed_services: {service_name}",
+])
+
+section_text = "\n".join(section_lines) + "\n"
+
+if conf_path.exists():
+    content = conf_path.read_text(encoding="utf-8", errors="ignore")
+else:
+    content = ""
+
+pattern = re.compile(
+    rf"(?ms)^\[update_manager\s+{re.escape(update_name)}\]\n(?:.*?)(?=^\[|\Z)"
+)
+
+if pattern.search(content):
+    updated = pattern.sub(section_text + "\n", content, count=1)
+else:
+    updated = content.rstrip("\n")
+    if updated:
+        updated += "\n\n"
+    updated += section_text
+
+conf_path.write_text(updated.rstrip("\n") + "\n", encoding="utf-8")
+PY
+
+  echo "Mainsail update section written: $MAINSAIL_CONF_FILE"
+}
+
 echo "Installing KlipperVault from: $APP_DIR"
 echo "Service user: $APP_USER"
 echo "Virtualenv: $VENV_DIR"
@@ -228,6 +304,7 @@ as_root systemctl daemon-reload
 as_root systemctl enable --now "$SERVICE_NAME"
 
 setup_mainsail_navigation
+setup_mainsail_update_section
 
 # Display final service state for quick verification.
 as_root systemctl --no-pager --full status "$SERVICE_NAME" || true
