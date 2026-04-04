@@ -1237,6 +1237,14 @@ def _replace_or_append_macro_section(cfg_file: Path, macro_name: str, section_te
     removed_sections = 0
     insert_index: int | None = None
 
+    def trim_trailing_blank_lines(lines: List[str]) -> None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+    def trim_leading_blank_lines(lines: List[str]) -> None:
+        while lines and not lines[0].strip():
+            del lines[0]
+
     for line in lines:
         if _is_section_header_line(line):
             header = line.strip()[1:-1].strip()
@@ -1254,12 +1262,24 @@ def _replace_or_append_macro_section(cfg_file: Path, macro_name: str, section_te
             continue
         output.append(line)
 
-    normalized_section = section_text if section_text.endswith("\n") else f"{section_text}\n"
+    normalized_section = section_text.rstrip("\n") + "\n"
     if insert_index is not None:
-        output.insert(insert_index, normalized_section)
+        before_lines = output[:insert_index]
+        after_lines = output[insert_index:]
+        trim_trailing_blank_lines(before_lines)
+        trim_leading_blank_lines(after_lines)
+
+        output = before_lines
+        if output:
+            output.append("\n")
+        output.append(normalized_section)
+        if after_lines:
+            output.append("\n")
+            output.extend(after_lines)
         operation = "replaced"
     else:
-        if output and output[-1].strip():
+        trim_trailing_blank_lines(output)
+        if output:
             output.append("\n")
         output.append(normalized_section)
         operation = "appended"
