@@ -140,45 +140,45 @@ def test_renamed_runtime_alias_not_counted_as_duplicate(tmp_path: Path) -> None:
 
 
 def test_restore_macro_version_normalizes_blank_lines_around_macro(tmp_path: Path) -> None:
-        config_dir = tmp_path / "config"
-        db_path = tmp_path / "db" / "macros.db"
-        cfg_path = config_dir / "printer.cfg"
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    cfg_path = config_dir / "printer.cfg"
 
-        _write(
-                cfg_path,
-                """
-                [printer]
-                kinematics: cartesian
-                [gcode_macro HELLO]
-                gcode:
-                    RESPOND MSG="v1"
-                [display_status]
-                """,
-        )
-        run_indexing(config_dir, db_path)
+    _write(
+        cfg_path,
+        """
+        [printer]
+        kinematics: cartesian
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="v1"
+        [display_status]
+        """,
+    )
+    run_indexing(config_dir, db_path)
 
-        _write(
-                cfg_path,
-                """
-                [printer]
-                kinematics: cartesian
-                [gcode_macro HELLO]
-                gcode:
-                    RESPOND MSG="v2"
-                [display_status]
-                """,
-        )
-        run_indexing(config_dir, db_path)
+    _write(
+        cfg_path,
+        """
+        [printer]
+        kinematics: cartesian
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="v2"
+        [display_status]
+        """,
+    )
+    run_indexing(config_dir, db_path)
 
-        restore_macro_version(db_path, config_dir, "printer.cfg", "HELLO", 1)
+    restore_macro_version(db_path, config_dir, "printer.cfg", "HELLO", 1)
 
-        assert cfg_path.read_text(encoding="utf-8") == (
-                "[printer]\n"
-                "kinematics: cartesian\n"
-                "\n"
-                "[gcode_macro HELLO]\n"
-                "gcode:\n"
-                "  RESPOND MSG=\"v1\"\n"
-                "\n"
-                "[display_status]\n"
-        )
+    assert cfg_path.read_text(encoding="utf-8") == (
+        "[printer]\n"
+        "kinematics: cartesian\n"
+        "\n"
+        "[gcode_macro HELLO]\n"
+        "gcode:\n"
+        "  RESPOND MSG=\"v1\"\n"
+        "\n"
+        "[display_status]\n"
+    )
