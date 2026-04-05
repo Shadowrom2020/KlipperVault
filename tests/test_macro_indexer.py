@@ -6,6 +6,7 @@ from klipper_macro_indexer import (
     get_cfg_load_order,
     load_duplicate_macro_groups,
     load_macro_list,
+    macro_row_to_section_text,
     parse_macros_from_cfg,
     restore_macro_version,
     run_indexing,
@@ -48,6 +49,38 @@ def test_parse_macros_trims_trailing_comments_and_preserves_indented_brackets(tm
     assert record.description == "Startup macro"
     assert json.loads(record.variables_json) == {"speed": "120"}
     assert record.gcode == '  G28\n  [not a real header]\n  RESPOND MSG="ready"'
+
+
+def test_parse_and_render_macro_preserves_rename_existing_line(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "printer.cfg"
+    _write(
+        cfg_path,
+        """
+        [gcode_macro PAUSE]
+        rename_existing: BASE_PAUSE
+        gcode:
+          RESPOND MSG="custom pause"
+        """,
+    )
+
+    records = parse_macros_from_cfg(cfg_path, tmp_path)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.rename_existing == "BASE_PAUSE"
+
+    rendered = macro_row_to_section_text(
+        {
+            "section_type": record.section_type,
+            "macro_name": record.macro_name,
+            "description": record.description,
+            "rename_existing": record.rename_existing,
+            "gcode": record.gcode,
+            "variables_json": record.variables_json,
+        }
+    )
+
+    assert "rename_existing: BASE_PAUSE" in rendered
 
 
 def test_get_cfg_load_order_follows_include_order_and_appends_unreferenced_files(tmp_path: Path) -> None:

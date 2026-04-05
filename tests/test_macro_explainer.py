@@ -1,8 +1,12 @@
+import json
+from pathlib import Path
+
 from klipper_macro_explainer import (
     _COMMAND_EXPLAINERS,
     _COMMAND_GROUPS,
     _get_command_explainer,
     _explain_line,
+    load_command_pack,
     _parse_parameters,
     explain_macro_script,
 )
@@ -18,6 +22,52 @@ def test_parse_parameters_handles_compact_values_without_false_command_tokens() 
     assert "P" not in params
 
 
+def test_explain_line_ignores_full_line_semicolon_comments() -> None:
+    line = _explain_line("; this is only a comment", 1, set(), {})
+
+    assert line is None
+
+
+def test_explain_line_ignores_inline_semicolon_comments() -> None:
+    line = _explain_line("G1 X10 Y20 ; move to position", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "motion"
+    assert "X=10" in line.details
+    assert "Y=20" in line.details
+
+
+def test_explain_line_strips_semicolon_tail_before_template_detection() -> None:
+    line = _explain_line(
+        "{% set Z_axis_was_homed = true %} ; Set Z_axis_was_homed to true if Z is already homed",
+        1,
+        set(),
+        {},
+    )
+
+    assert line is not None
+    assert line.kind == "control"
+    assert line.confidence == "medium"
+    assert line.summary == "Template variable assignment."
+
+
+def test_explain_line_ignores_inline_hash_comments() -> None:
+    line = _explain_line("G1 X5 Y6 # planner note", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "motion"
+    assert "X=5" in line.details
+    assert "Y=6" in line.details
+
+
+def test_inline_comment_markers_inside_quotes_are_preserved() -> None:
+    line = _explain_line('RESPOND MSG="value # keep"', 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "message"
+    assert "value # keep" in line.details
+
+
 def test_explain_line_dispatches_known_command_from_registry() -> None:
     line = _explain_line("G1 X10 F6000", 1, set(), {})
 
@@ -27,6 +77,45 @@ def test_explain_line_dispatches_known_command_from_registry() -> None:
     assert "motion" in line.effects
     assert line.summary == "Linear move command."
     assert "X=10" in line.details
+
+
+def test_explain_line_force_move_has_specific_explanation() -> None:
+    line = _explain_line("FORCE_MOVE STEPPER=stepper_z DISTANCE={z_clearance} VELOCITY=10", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "motion"
+    assert line.summary == "Forces direct stepper movement."
+    assert line.confidence == "high"
+    assert "disruptive" in line.effects
+    assert "stepper_z" in line.details
+    assert "{z_clearance}" in line.details
+    assert "velocity 10" in line.details
+
+
+def test_explain_line_set_kinematic_position_has_specific_explanation() -> None:
+    line = _explain_line("SET_KINEMATIC_POSITION X=0 Y=0 Z=10 SET_HOMED=XYZ", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "state"
+    assert line.summary == "Overrides internal kinematic coordinates."
+    assert line.confidence == "high"
+    assert "X=0" in line.details
+    assert "Y=0" in line.details
+    assert "Z=10" in line.details
+    assert "without physically moving" in line.details
+    assert "SET_HOMED=XYZ" in line.details
+
+
+def test_explain_line_set_tmc_current_has_specific_explanation() -> None:
+    line = _explain_line("SET_TMC_CURRENT STEPPER=stepper_z CURRENT=0.75 HOLDCURRENT=0.50", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "state"
+    assert line.summary == "Adjusts TMC motor current."
+    assert line.confidence == "high"
+    assert "stepper_z" in line.details
+    assert "run current 0.75" in line.details
+    assert "hold current 0.50" in line.details
 
 
 def test_explain_line_unknown_command_uses_generic_fallback() -> None:
@@ -72,6 +161,79 @@ def test_explain_macro_script_links_macro_references_with_active_first() -> None
     assert result["risk_line_count"] == 0
 
 
+def test_explain_macro_script_includes_rename_existing_even_without_gcode() -> None:
+    macro = {"macro_name": "PAUSE", "rename_existing": "PAUSE_BASE", "gcode": ""}
+
+    result = explain_macro_script(macro, [])
+
+    assert result["has_content"] is True
+    assert len(result["lines"]) == 1
+    line = result["lines"][0]
+    assert line["summary"] == "Preserves replaced macro under a new name."
+    assert line["kind"] == "state"
+    assert line["confidence"] == "high"
+    assert "Klipper standard macro/behavior" in str(line["details"])
+
+
+def test_explain_macro_script_rename_existing_links_prior_definition_when_present() -> None:
+    available_macros = [
+        {
+            "macro_name": "PAUSE",
+            "display_name": "PAUSE",
+            "file_path": "base.cfg",
+            "is_active": False,
+            "is_deleted": False,
+        },
+        {
+            "macro_name": "PAUSE",
+            "display_name": "PAUSE",
+            "file_path": "override.cfg",
+            "is_active": True,
+            "is_deleted": False,
+        },
+    ]
+    macro = {
+        "macro_name": "PAUSE",
+        "file_path": "override.cfg",
+        "rename_existing": "PAUSE_BASE",
+        "gcode": "RESPOND MSG=ok",
+    }
+
+    result = explain_macro_script(macro, available_macros)
+
+    assert result["has_content"] is True
+    assert len(result["lines"]) == 2
+    rename_line = result["lines"][0]
+    assert rename_line["summary"] == "Preserves replaced macro under a new name."
+    assert rename_line["references"][0]["file_path"] == "base.cfg"
+    assert "base.cfg" in str(rename_line["details"])
+
+
+def test_explain_macro_script_recognizes_renamed_standard_macro_alias_calls() -> None:
+    macro = {
+        "macro_name": "G28",
+        "rename_existing": "G28.1",
+        "gcode": "G28.1",
+    }
+
+    result = explain_macro_script(macro, [])
+
+    assert result["has_content"] is True
+    assert len(result["lines"]) == 2
+
+    rename_line = result["lines"][0]
+    call_line = result["lines"][1]
+
+    assert rename_line["summary"] == "Preserves replaced macro under a new name."
+    assert "G28.1" in str(rename_line["details"])
+    assert "Klipper standard macro/behavior" in str(rename_line["details"])
+
+    assert call_line["kind"] == "macro_call"
+    assert call_line["summary"] == "Calls renamed macro G28.1."
+    assert "previous implementation of G28" in str(call_line["details"])
+    assert "Klipper standard macro/behavior" in str(call_line["details"])
+
+
 def test_command_registry_contains_expected_coverage() -> None:
     expected = {
         "G0",
@@ -81,6 +243,8 @@ def test_command_registry_contains_expected_coverage() -> None:
         "M112",
         "RESPOND",
         "SET_FAN_SPEED",
+        "SET_KINEMATIC_POSITION",
+        "SET_TMC_CURRENT",
         "SAVE_CONFIG",
         "PID_CALIBRATE",
     }
@@ -168,6 +332,46 @@ def test_explain_macro_script_concise_verbosity_shortens_details() -> None:
     assert "It also changes extrusion" not in str(concise["lines"][0]["details"])
 
 
+def test_command_pack_alias_maps_custom_command_to_existing_behavior() -> None:
+    macro = {"macro_name": "PACKED", "gcode": "MY_HOME X"}
+    command_pack = {
+        "MY_HOME": {
+            "alias_of": "G28",
+            "effects": ["motion", "printer_state_change"],
+            "confidence": "high",
+        }
+    }
+
+    result = explain_macro_script(macro, [], command_pack=command_pack)
+    line = result["lines"][0]
+
+    assert line["kind"] == "motion"
+    assert line["summary"] == "Homes the printer."
+    assert "printer_state_change" in line["effects"]
+
+
+def test_command_pack_allows_custom_static_command_description() -> None:
+    macro = {"macro_name": "PACKED", "gcode": "CUSTOM_BEEP"}
+    command_pack = {
+        "CUSTOM_BEEP": {
+            "kind": "message",
+            "summary": "Triggers a custom buzzer pattern.",
+            "details": "This runs a user-defined buzzer macro for completion feedback.",
+            "confidence": "high",
+            "effects": ["user_feedback"],
+        }
+    }
+
+    result = explain_macro_script(macro, [], command_pack=command_pack)
+    line = result["lines"][0]
+
+    assert line["kind"] == "message"
+    assert line["summary"] == "Triggers a custom buzzer pattern."
+    assert "completion feedback" in line["details"]
+    assert line["confidence"] == "high"
+    assert line["effects"] == ["user_feedback"]
+
+
 def test_template_set_line_reports_source_default_and_result_type() -> None:
     line = _explain_line("{% set z_hop = params.Z|default(30)|int %}", 1, set(), {})
 
@@ -178,4 +382,31 @@ def test_template_set_line_reports_source_default_and_result_type() -> None:
     assert "params.Z" in line.details
     assert "falls back to 30" in line.details
     assert "value type is int" in line.details
+
+
+def test_load_command_pack_supports_commands_wrapper_and_filters_invalid_entries(tmp_path: Path) -> None:
+    pack_path = tmp_path / "command_pack.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "commands": {
+                    "MY_HOME": {"alias_of": "g28", "confidence": "high"},
+                    "CUSTOM_BEEP": {
+                        "kind": "message",
+                        "summary": "Beeps",
+                        "details": "Play a custom tone.",
+                        "effects": ["user_feedback", 1, ""],
+                    },
+                    "BROKEN": "not a dict",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pack = load_command_pack(pack_path)
+
+    assert set(pack.keys()) == {"MY_HOME", "CUSTOM_BEEP"}
+    assert pack["MY_HOME"].get("alias_of") == "G28"
+    assert pack["CUSTOM_BEEP"].get("effects") == ["user_feedback"]
 

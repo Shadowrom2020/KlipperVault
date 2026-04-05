@@ -8,7 +8,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from collections import Counter
 from dataclasses import asdict, dataclass
+import json
+import os
+from pathlib import Path
 import re
+from typing import Any, Mapping, Sequence, TypedDict
 
 
 @dataclass(frozen=True)
@@ -39,7 +43,21 @@ class ExplanationLine:
 CommandExplainer = Callable[[str, dict[str, str], str], tuple[str, str, str]]
 
 
-def build_macro_reference_index(macros: list[dict[str, object]]) -> dict[str, list[MacroReference]]:
+class CommandPackEntry(TypedDict, total=False):
+    """One plugin command definition for explainer extension packs."""
+
+    alias_of: str
+    kind: str
+    summary: str
+    details: str
+    confidence: str
+    effects: list[str]
+
+
+_DEFAULT_COMMAND_PACK_PATH = (Path.home() / "printer_data" / "config" / "klippervault_command_pack.json").resolve()
+
+
+def build_macro_reference_index(macros: list[Mapping[str, object]]) -> dict[str, list[MacroReference]]:
     """Build lookup of macro name to openable macro targets."""
     grouped: dict[str, list[MacroReference]] = {}
     for macro in macros:
@@ -71,12 +89,14 @@ def build_macro_reference_index(macros: list[dict[str, object]]) -> dict[str, li
 
 
 def explain_macro_script(
-    macro: dict[str, object] | None,
-    available_macros: list[dict[str, object]] | None = None,
+    macro: Mapping[str, object] | None,
+    available_macros: Sequence[Mapping[str, object]] | None = None,
     verbosity: str = "detailed",
-) -> dict[str, object]:
+    command_pack: Mapping[str, Mapping[str, object]] | None = None,
+) -> dict[str, Any]:
     """Explain a macro body in plain language and discover macro references."""
     normalized_verbosity = _normalize_verbosity(verbosity)
+    custom_explainers, metadata_overrides = _build_command_pack_explainers(command_pack)
 
     if macro is None:
         return {
@@ -91,7 +111,18 @@ def explain_macro_script(
 
     gcode_text = str(macro.get("gcode") or "")
     body_lines = gcode_text.splitlines()
-    if not body_lines:
+
+    current_macro_names = {
+        str(macro.get("macro_name", "")).strip().lower(),
+        str(macro.get("display_name") or macro.get("runtime_macro_name") or "").strip().lower(),
+    }
+    current_macro_names.discard("")
+    reference_index = build_macro_reference_index(available_macros or [])
+    rename_existing = str(macro.get("rename_existing") or "").strip()
+    renamed_aliases = _build_renamed_alias_map(macro, rename_existing)
+    rename_existing_entry = _build_rename_existing_entry(macro, rename_existing, reference_index)
+    has_explainable_content = bool(body_lines) or rename_existing_entry is not None
+    if not has_explainable_content:
         return {
             "summary": "This macro does not currently contain any g-code lines.",
             "lines": [],
@@ -102,12 +133,6 @@ def explain_macro_script(
             "has_content": False,
         }
 
-    current_macro_names = {
-        str(macro.get("macro_name", "")).strip().lower(),
-        str(macro.get("display_name") or macro.get("runtime_macro_name") or "").strip().lower(),
-    }
-    current_macro_names.discard("")
-    reference_index = build_macro_reference_index(available_macros or [])
     categories: Counter[str] = Counter()
     confidence_levels: Counter[str] = Counter()
     effects: Counter[str] = Counter()
@@ -116,8 +141,28 @@ def explain_macro_script(
     explanation_lines: list[dict[str, object]] = []
     explained_line_count = 0
 
+    if rename_existing_entry is not None:
+        explained_line_count += 1
+        categories[rename_existing_entry.kind] += 1
+        confidence_levels[rename_existing_entry.confidence] += 1
+        for effect in rename_existing_entry.effects:
+            effects[effect] += 1
+        explanation_entries.append(rename_existing_entry)
+        explanation_lines.append(_serialize_line(rename_existing_entry, normalized_verbosity))
+        for reference in rename_existing_entry.references:
+            key = (str(reference["macro_name"]), str(reference["file_path"]))
+            references[key] = reference
+
     for line_number, raw_line in enumerate(body_lines, start=1):
-        entry = _explain_line(raw_line, line_number, current_macro_names, reference_index)
+        entry = _explain_line(
+            raw_line,
+            line_number,
+            current_macro_names,
+            reference_index,
+            renamed_aliases,
+            custom_explainers,
+            metadata_overrides,
+        )
         if entry is None:
             continue
         explained_line_count += 1
@@ -156,6 +201,81 @@ def explain_macro_script(
         "verbosity": normalized_verbosity,
         "has_content": True,
     }
+
+
+def load_command_pack(path: str | Path | None = None) -> dict[str, CommandPackEntry]:
+    """Load command-pack JSON from path, env override, or default config location."""
+    pack_path = _resolve_command_pack_path(path)
+    if not pack_path.exists():
+        return {}
+
+    try:
+        payload = json.loads(pack_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    source: object = payload
+    if isinstance(payload, dict) and isinstance(payload.get("commands"), dict):
+        source = payload.get("commands")
+
+    if not isinstance(source, dict):
+        return {}
+
+    command_pack: dict[str, CommandPackEntry] = {}
+    for key, value in source.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        normalized = _normalize_command_pack_entry(value)
+        if not normalized:
+            continue
+        command_pack[key.strip().upper()] = normalized
+
+    return command_pack
+
+
+def _resolve_command_pack_path(path: str | Path | None) -> Path:
+    """Resolve command-pack path from explicit argument, env, or default location."""
+    if path is not None:
+        return Path(path).expanduser().resolve()
+
+    env_path = os.environ.get("KLIPPERVAULT_COMMAND_PACK_PATH", "").strip()
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+
+    return _DEFAULT_COMMAND_PACK_PATH
+
+
+def _normalize_command_pack_entry(entry: dict[str, object]) -> CommandPackEntry:
+    """Normalize one command-pack entry, filtering unsupported fields."""
+    normalized: CommandPackEntry = {}
+
+    alias_of = entry.get("alias_of")
+    if isinstance(alias_of, str) and alias_of.strip():
+        normalized["alias_of"] = alias_of.strip().upper()
+
+    kind = entry.get("kind")
+    if isinstance(kind, str) and kind.strip():
+        normalized["kind"] = kind.strip().lower()
+
+    summary = entry.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        normalized["summary"] = summary.strip()
+
+    details = entry.get("details")
+    if isinstance(details, str) and details.strip():
+        normalized["details"] = details.strip()
+
+    confidence = entry.get("confidence")
+    if isinstance(confidence, str) and confidence.strip().lower() in {"high", "medium", "low"}:
+        normalized["confidence"] = confidence.strip().lower()
+
+    effects = entry.get("effects")
+    if isinstance(effects, list):
+        filtered_effects = [item.strip() for item in effects if isinstance(item, str) and item.strip()]
+        if filtered_effects:
+            normalized["effects"] = filtered_effects
+
+    return normalized
 
 
 def _normalize_verbosity(verbosity: str) -> str:
@@ -269,6 +389,9 @@ def _explain_line(
     line_number: int,
     current_macro_names: set[str],
     reference_index: dict[str, list[MacroReference]],
+    renamed_aliases: dict[str, str] | None = None,
+    custom_explainers: dict[str, CommandExplainer] | None = None,
+    metadata_overrides: dict[str, dict[str, object]] | None = None,
 ) -> ExplanationLine | None:
     """Explain one line of macro body text."""
     stripped = raw_line.strip()
@@ -277,6 +400,16 @@ def _explain_line(
         return None
 
     if stripped.startswith("#") or stripped.startswith(";"):
+        return None
+
+    # In g-code, ';' starts a comment segment. Strip it aggressively so
+    # trailing comments never interfere with command/template detection.
+    stripped = stripped.split(";", 1)[0].strip()
+    if not stripped:
+        return None
+
+    stripped = _strip_inline_comment(stripped).strip()
+    if not stripped:
         return None
 
     if stripped.startswith("{%") and stripped.endswith("%}"):
@@ -316,14 +449,36 @@ def _explain_line(
             references=macro_refs,
         )
 
-    explain = _get_command_explainer(upper_command)
+    alias_source = (renamed_aliases or {}).get(upper_command, "")
+    if alias_source:
+        details = (
+            f"This line calls the renamed macro alias {upper_command}, which points to the previous "
+            f"implementation of {alias_source}."
+        )
+        details += (
+            " No indexed replacement source was found, so this is assumed to call the renamed "
+            "Klipper standard macro/behavior."
+        )
+        return ExplanationLine(
+            line_number=line_number,
+            text=raw_line,
+            kind="macro_call",
+            confidence="high",
+            effects=["macro_call_transfer"],
+            summary=f"Calls renamed macro {upper_command}.",
+            details=details,
+            references=[],
+        )
+
+    explain = _get_command_explainer(upper_command, custom_explainers)
     kind, summary, details = explain(upper_command, params, stripped)
+    confidence, effects = _resolve_line_metadata(upper_command, kind, metadata_overrides)
     return ExplanationLine(
         line_number=line_number,
         text=raw_line,
         kind=kind,
-        confidence=_confidence_for_explanation(kind),
-        effects=_infer_effects(upper_command, kind),
+        confidence=confidence,
+        effects=effects,
         summary=summary,
         details=details,
         references=[],
@@ -361,6 +516,23 @@ def _parse_parameters(tokens: list[str]) -> dict[str, str]:
     return params
 
 
+def _strip_inline_comment(line: str) -> str:
+    """Strip inline '#' comments while preserving hash markers inside quotes."""
+    in_single = False
+    in_double = False
+
+    for idx, char in enumerate(line):
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == "#" and not in_single and not in_double:
+            return line[:idx]
+    return line
+
+
 def _resolve_macro_references(
     command_name: str,
     current_macro_names: set[str],
@@ -373,6 +545,68 @@ def _resolve_macro_references(
     return [asdict(ref) for ref in refs[:3]]
 
 
+def _build_rename_existing_entry(
+    macro: Mapping[str, object],
+    rename_existing: str,
+    reference_index: dict[str, list[MacroReference]],
+) -> ExplanationLine | None:
+    """Build explainer entry for section-level rename_existing directives."""
+    if not rename_existing:
+        return None
+
+    macro_name = str(macro.get("macro_name") or "").strip()
+    macro_name_lower = macro_name.lower()
+    current_file_path = str(macro.get("file_path") or "").strip()
+
+    candidate_refs = [asdict(ref) for ref in reference_index.get(macro_name_lower, [])]
+    source_refs: list[dict[str, object]] = []
+    for ref in candidate_refs:
+        ref_path = str(ref.get("file_path") or "").strip()
+        if current_file_path and ref_path == current_file_path:
+            continue
+        source_refs.append(ref)
+
+    display_macro_name = macro_name or "this macro"
+    summary = "Preserves replaced macro under a new name."
+    details = (
+        f"Section directive rename_existing maps the previously active {display_macro_name} implementation "
+        f"to callable name {rename_existing} while this section takes over {display_macro_name}."
+    )
+    if source_refs:
+        details += (
+            f" A prior definition is indexed in {source_refs[0]['file_path']}, "
+            "and you can open it from the reference link."
+        )
+    else:
+        details += (
+            " No prior macro definition with this name was found in indexed cfg files, "
+            "so this is treated as preserving a Klipper standard macro/behavior under the renamed alias."
+        )
+
+    return ExplanationLine(
+        line_number=0,
+        text=f"rename_existing: {rename_existing}",
+        kind="state",
+        confidence="high",
+        effects=["printer_state_change"],
+        summary=summary,
+        details=details,
+        references=source_refs[:3],
+    )
+
+
+def _build_renamed_alias_map(macro: Mapping[str, object], rename_existing: str) -> dict[str, str]:
+    """Build mapping of alias command -> source macro name from rename_existing."""
+    if not rename_existing:
+        return {}
+
+    macro_name = str(macro.get("macro_name") or "").strip()
+    if not macro_name:
+        return {}
+
+    return {rename_existing.upper(): macro_name}
+
+
 def _confidence_for_explanation(kind: str) -> str:
     """Return confidence level for an explanation category."""
     if kind == "unknown":
@@ -380,6 +614,78 @@ def _confidence_for_explanation(kind: str) -> str:
     if kind == "control":
         return "medium"
     return "high"
+
+
+def _resolve_line_metadata(
+    command: str,
+    kind: str,
+    metadata_overrides: dict[str, dict[str, object]] | None,
+) -> tuple[str, list[str]]:
+    """Resolve confidence/effects, allowing plugin packs to override defaults."""
+    base_confidence = _confidence_for_explanation(kind)
+    base_effects = _infer_effects(command, kind)
+
+    if not metadata_overrides:
+        return base_confidence, base_effects
+
+    override = metadata_overrides.get(command, {})
+    confidence = str(override.get("confidence", "")).strip().lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = base_confidence
+
+    raw_effects = override.get("effects")
+    if isinstance(raw_effects, list):
+        filtered = [item for item in raw_effects if isinstance(item, str) and item.strip()]
+        effects = list(dict.fromkeys(filtered)) or base_effects
+    else:
+        effects = base_effects
+
+    return confidence, effects
+
+
+def _build_command_pack_explainers(
+    command_pack: Mapping[str, Mapping[str, object]] | None,
+) -> tuple[dict[str, CommandExplainer], dict[str, dict[str, object]]]:
+    """Compile user-provided command pack into explainers and metadata overrides."""
+    if not command_pack:
+        return {}, {}
+
+    explainers: dict[str, CommandExplainer] = {}
+    metadata_overrides: dict[str, dict[str, object]] = {}
+
+    for raw_command, entry in command_pack.items():
+        command = str(raw_command or "").strip().upper()
+        if not command:
+            continue
+        if not isinstance(entry, dict):
+            continue
+
+        alias_of = str(entry.get("alias_of", "")).strip().upper()
+        if alias_of:
+            aliased_explainer = _get_command_explainer(alias_of)
+            explainers[command] = aliased_explainer
+            metadata_overrides[command] = {
+                "confidence": entry.get("confidence"),
+                "effects": entry.get("effects"),
+            }
+            continue
+
+        kind = str(entry.get("kind", "")).strip().lower()
+        summary = str(entry.get("summary", "")).strip()
+        details = str(entry.get("details", "")).strip()
+        if not (kind and summary and details):
+            continue
+
+        def _packed_explainer(_: str, __: dict[str, str], ___: str, *, _kind: str = kind, _summary: str = summary, _details: str = details) -> tuple[str, str, str]:
+            return _kind, _summary, _details
+
+        explainers[command] = _packed_explainer
+        metadata_overrides[command] = {
+            "confidence": entry.get("confidence"),
+            "effects": entry.get("effects"),
+        }
+
+    return explainers, metadata_overrides
 
 
 def _infer_effects(command: str, kind: str) -> list[str]:
@@ -406,7 +712,7 @@ def _infer_effects(command: str, kind: str) -> list[str]:
     if command in {"SAVE_CONFIG", "SAVE_VARIABLE"}:
         effects.append("persistent_write")
 
-    if command in {"M112", "RESTART", "FIRMWARE_RESTART", "SAVE_CONFIG"}:
+    if command in {"M112", "RESTART", "FIRMWARE_RESTART", "SAVE_CONFIG", "FORCE_MOVE"}:
         effects.append("disruptive")
 
     # Preserve insertion order while deduplicating.
@@ -415,7 +721,11 @@ def _infer_effects(command: str, kind: str) -> list[str]:
 
 def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
     """Explain Jinja control directives embedded in a macro."""
-    stripped = raw_line.strip()[2:-2].strip()
+    cleaned = _strip_inline_comment(raw_line.strip()).strip()
+    if cleaned.startswith("{%") and cleaned.endswith("%}"):
+        stripped = cleaned[2:-2].strip()
+    else:
+        stripped = raw_line.strip()[2:-2].strip()
     normalized = stripped.lower()
 
     if normalized.startswith("if "):
@@ -936,6 +1246,51 @@ def _explain_set_velocity_limit(_: str, params: dict[str, str], __: str) -> tupl
     return "state", "Adjusts motion limits.", f"This updates toolhead velocity/acceleration limits via {_format_params(params)}."
 
 
+def _explain_set_kinematic_position(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    axes = [f"{axis}={params[axis]}" for axis in ("X", "Y", "Z") if axis in params]
+    axis_text = ", ".join(axes) if axes else "the supplied axis values"
+    set_homed = params.get("SET_HOMED")
+    clear_homed = params.get("CLEAR_HOMED")
+
+    details = (
+        f"This overrides Klipper's internal kinematic position to {axis_text} without physically moving the toolhead. "
+        "Use it carefully, because incorrect values can desynchronize logical and physical position until re-homing."
+    )
+    if set_homed:
+        details += f" SET_HOMED={set_homed} marks listed axes as homed."
+    if clear_homed:
+        details += f" CLEAR_HOMED={clear_homed} clears homed state for listed axes."
+
+    return "state", "Overrides internal kinematic coordinates.", details
+
+
+def _explain_set_tmc_current(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured TMC stepper")
+    run_current = params.get("CURRENT", "the existing run current")
+    hold_current = params.get("HOLDCURRENT", params.get("HOLD_CURRENT", "the existing hold current"))
+
+    details = (
+        f"This changes TMC motor current for {stepper}: run current {run_current}, hold current {hold_current}. "
+        "It applies immediately and affects torque, motor heat, and skipped-step behavior."
+    )
+    return "state", "Adjusts TMC motor current.", details
+
+
+def _explain_force_move(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured stepper")
+    distance = params.get("DISTANCE", "an unspecified distance")
+    velocity = params.get("VELOCITY", "configured/default velocity")
+
+    details = (
+        f"This forces direct movement of {stepper} by {distance} at velocity {velocity}. "
+        "Use this carefully because FORCE_MOVE bypasses normal coordinated kinematics and can move hardware unexpectedly."
+    )
+    if "{" in distance or "{{" in distance:
+        details += " The movement distance is computed from a template expression at runtime."
+
+    return "motion", "Forces direct stepper movement.", details
+
+
 def _explain_set_pressure_advance(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
     extruder = params.get("EXTRUDER", "active extruder")
     advance = params.get("ADVANCE", "current")
@@ -1049,8 +1404,13 @@ def _explain_pid_calibrate(_: str, params: dict[str, str], __: str) -> tuple[str
     return "temperature", "Runs PID calibration.", f"This starts PID tuning for heater {heater} toward {target}C."
 
 
-def _get_command_explainer(command: str) -> CommandExplainer:
+def _get_command_explainer(
+    command: str,
+    custom_explainers: dict[str, CommandExplainer] | None = None,
+) -> CommandExplainer:
     """Return registered explainer for a command token."""
+    if custom_explainers and command in custom_explainers:
+        return custom_explainers[command]
     return _COMMAND_EXPLAINERS.get(command, _explain_generic_command)
 
 
@@ -1127,6 +1487,9 @@ _COMMAND_GROUPS: tuple[tuple[tuple[str, ...], CommandExplainer], ...] = (
     (("SET_SERVO",), _explain_set_servo),
     (("SET_INPUT_SHAPER",), _explain_set_input_shaper),
     (("SET_VELOCITY_LIMIT",), _explain_set_velocity_limit),
+    (("SET_KINEMATIC_POSITION",), _explain_set_kinematic_position),
+    (("SET_TMC_CURRENT",), _explain_set_tmc_current),
+    (("FORCE_MOVE",), _explain_force_move),
     (("SET_PRESSURE_ADVANCE",), _explain_set_pressure_advance),
     (("SAVE_VARIABLE",), _explain_save_variable),
     (("SAVE_CONFIG",), _explain_save_config),

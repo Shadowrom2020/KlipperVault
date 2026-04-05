@@ -47,8 +47,14 @@ The application focuses on a few operational goals:
 
 - Experimental: The macro explainer is an early development feature and may be inaccurate.
 - Explains common g-code and Klipper commands in plain language directly in the macro viewer.
+- Supports concise and detailed explanation modes.
+- Detects high-level execution flow phases (for example movement, heat/wait, state updates, user feedback).
+- Adds confidence labels and effect tags per line (for example `blocking_wait`, `disruptive`, `persistent_write`).
+- Highlights aggregate risk badges and flow summary at the top of the explainer panel.
 - Recognizes macro-to-macro calls and lists referenced macros in an explanation panel.
 - Opens referenced macros from a popup so users can follow the script flow across multiple macros.
+- Improves Jinja `{% set ... %}` explanations, including source parameter, fallback values from `default(...)`, and output type casts like `|int`.
+- Supports plugin command packs loaded from JSON for custom command aliases and custom command descriptions.
 
 ### Backup and restore
 
@@ -134,12 +140,49 @@ Default config:
 [vault]
 version_history_size: 5
 port: 10090
+ui_language: en
 ```
 
 ### Settings
 
 - `version_history_size`: Maximum stored versions per macro.
 - `port`: Port used by the KlipperVault web UI.
+- `ui_language`: UI language code (currently `en` and `de` are available).
+
+### Optional command-pack file for explainer extensions
+
+The macro explainer can load custom command packs from:
+
+- `~/printer_data/config/klippervault_command_pack.json`
+
+You can override the path with:
+
+```bash
+export KLIPPERVAULT_COMMAND_PACK_PATH=/path/to/command_pack.json
+```
+
+Supported JSON forms:
+
+```json
+{
+  "commands": {
+    "MY_HOME": {
+      "alias_of": "G28",
+      "confidence": "high",
+      "effects": ["motion", "printer_state_change"]
+    },
+    "CUSTOM_BEEP": {
+      "kind": "message",
+      "summary": "Triggers a custom buzzer pattern.",
+      "details": "This runs a user-defined buzzer macro for completion feedback.",
+      "confidence": "high",
+      "effects": ["user_feedback"]
+    }
+  }
+}
+```
+
+Or directly as a top-level command map without the `commands` wrapper.
 
 ## Installation
 
@@ -193,10 +236,11 @@ sudo MAINSAIL_NAV_HREF=http://printer.local:10090 ./install.sh
 If you want to launch the app without the installer:
 
 ```bash
-python3 klipper_vault.py
+./.venv/bin/python klipper_vault.py
 ```
 
-The app reads the configured UI port from `klippervault.cfg` and starts the NiceGUI server on `127.0.0.1`.
+The app reads the configured UI port from `klippervault.cfg` and starts the NiceGUI server on `0.0.0.0`.
+The launcher is configured with `show=False` to avoid desktop auto-open issues on some Linux environments.
 
 ## Service Management
 
@@ -331,10 +375,10 @@ pip install -r requirements.txt
 ### Run locally
 
 ```bash
-python3 klipper_vault.py
+./.venv/bin/python klipper_vault.py
 ```
 
-The app will read `~/printer_data/config/klippervault.cfg` (created on first run) and start NiceGUI on `127.0.0.1` at the configured port (default `10090`).
+The app will read `~/printer_data/config/klippervault.cfg` (created on first run) and start NiceGUI on `0.0.0.0` at the configured port (default `10090`).
 
 For a custom config location, point `KLIPPER_CONFIG_DIR` at a test directory:
 
@@ -367,7 +411,23 @@ python3 -m py_compile src/klipper_macro_indexer.py src/klipper_macro_backup.py
 python3 -m py_compile src/klipper_macro_gui_service.py src/klipper_macro_viewer.py
 ```
 
-A zero-exit compile check means no syntax errors. There is no automated test suite; the primary verification method is a compile check followed by a manual smoke test of the changed flow.
+A zero-exit compile check means no syntax errors. In addition to compile checks, run the pytest suite and a manual smoke test of changed UI flows.
+
+### Tests
+
+Pytest tests are present under `tests/` (including explainer coverage).
+
+Run all tests in the project virtual environment:
+
+```bash
+./.venv/bin/python -m pytest -q
+```
+
+Run only explainer tests:
+
+```bash
+./.venv/bin/python -m pytest -q tests/test_macro_explainer.py
+```
 
 ### Code conventions
 
@@ -391,6 +451,17 @@ A zero-exit compile check means no syntax errors. There is no automated test sui
 - Check `klippervault.cfg` for an invalid port.
 - Confirm the virtual environment was created successfully.
 - Review systemd logs with `journalctl`.
+
+### VS Code debug says `nicegui` is not found
+
+- Ensure VS Code uses the project interpreter: `${workspaceFolder}/.venv/bin/python`.
+- Ensure launch configurations are not pinned to `/usr/bin/python3`.
+- Remove stale `PYTHONPATH` overrides that point to unrelated site-packages.
+- In a terminal, verify:
+
+```bash
+./.venv/bin/python -c "import nicegui; print(nicegui.__version__)"
+```
 
 ### The Mainsail navigation item does not appear
 

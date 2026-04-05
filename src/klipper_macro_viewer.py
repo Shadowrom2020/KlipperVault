@@ -305,12 +305,15 @@ class MacroViewer:
         self._update_rename_hint(macro)
         self._update_inactive_hint(macro)
         description = str(macro.get("description") or "-")
+        rename_existing = str(macro.get("rename_existing") or "").strip()
         self._desc_label.set_text(t("Description: {description}", description=description))
         gcode_text = str(macro.get("gcode") or "")
 
         macro_lines = [f"[gcode_macro {macro.get('macro_name', '')}]"]
         if description != "-":
             macro_lines.append(f"description: {description}")
+        if rename_existing:
+            macro_lines.append(f"rename_existing: {rename_existing}")
         if gcode_text:
             macro_lines.append("gcode:")
             for line in gcode_text.splitlines():

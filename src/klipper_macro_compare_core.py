@@ -27,6 +27,7 @@ def macro_to_text(macro: dict | None) -> str:
         return ""
 
     description = str(macro.get("description") or "")
+    rename_existing = str(macro.get("rename_existing") or "").strip()
     gcode = str(macro.get("gcode") or "")
     variables_raw = str(macro.get("variables_json") or "{}")
     try:
@@ -38,6 +39,8 @@ def macro_to_text(macro: dict | None) -> str:
     lines = [f"[gcode_macro {macro.get('macro_name', '')}]"]
     if description:
         lines.append(f"description: {description}")
+    if rename_existing:
+        lines.append(f"rename_existing: {rename_existing}")
     for i, part in enumerate(variables_lines):
         if i == 0:
             lines.append("variables_json: " + part)

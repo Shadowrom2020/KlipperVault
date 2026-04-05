@@ -9,7 +9,7 @@ from typing import Callable
 
 from nicegui import ui
 
-from klipper_macro_explainer import explain_macro_script
+from klipper_macro_explainer import explain_macro_script, load_command_pack
 from klipper_vault_i18n import t
 
 
@@ -130,7 +130,12 @@ class MacroExplainerView:
     def show_macro(self, macro: dict[str, object] | None) -> None:
         """Rebuild explanation UI for the selected macro."""
         self._current_macro = macro
-        payload = explain_macro_script(macro, self._available_macros, verbosity=self._verbosity)
+        payload = explain_macro_script(
+            macro,
+            self._available_macros,
+            verbosity=self._verbosity,
+            command_pack=load_command_pack(),
+        )
         self._summary_label.set_text(str(payload.get("summary", "")))
         self._flow_label.set_text(str(payload.get("flow_summary", "")))
         self._render_overview_badges(payload)
