@@ -26,6 +26,7 @@ class MacroViewer:
         self._active_macro: dict | None = None
         self._open_macro_handler: Callable[[str, str], None] | None = None
         self._remove_deleted_handler: Callable[[str, str], None] | None = None
+        self._remove_inactive_handler: Callable[[dict], None] | None = None
         self._restore_version_handler: Callable[[dict], None] | None = None
         self._delete_macro_from_cfg_handler: Callable[[dict], None] | None = None
         self._compare_view = MacroCompareView()
@@ -58,6 +59,12 @@ class MacroViewer:
                 ).props("flat no-caps")
                 self._remove_deleted_button.classes("text-negative")
                 self._remove_deleted_button.set_visibility(False)
+                self._remove_inactive_button = ui.button(
+                    t("Remove inactive version"),
+                    on_click=self._remove_inactive_macro,
+                ).props("flat no-caps")
+                self._remove_inactive_button.classes("text-negative")
+                self._remove_inactive_button.set_visibility(False)
                 self._restore_version_button = ui.button(
                     t("Revert"),
                     on_click=self._restore_selected_version,
@@ -117,6 +124,10 @@ class MacroViewer:
         """Register callback used by the "Remove deleted" action."""
         self._remove_deleted_handler = handler
 
+    def set_remove_inactive_handler(self, handler: Callable[[dict], None] | None) -> None:
+        """Register callback used by the "Remove inactive version" action."""
+        self._remove_inactive_handler = handler
+
     def set_restore_version_handler(self, handler: Callable[[dict], None] | None) -> None:
         """Register callback used by the "Revert/Restore" action."""
         self._restore_version_handler = handler
@@ -136,10 +147,12 @@ class MacroViewer:
         self._editing_enabled = enabled
         if enabled:
             self._remove_deleted_button.enable()
+            self._remove_inactive_button.enable()
             self._restore_version_button.enable()
             self._open_active_button.enable()
         else:
             self._remove_deleted_button.disable()
+            self._remove_inactive_button.disable()
             self._restore_version_button.disable()
             self._open_active_button.disable()
         self._editor_panel.set_editing_enabled(enabled)
@@ -169,6 +182,14 @@ class MacroViewer:
             str(self._current_macro.get("file_path", "")),
             str(self._current_macro.get("macro_name", "")),
         )
+
+    def _remove_inactive_macro(self) -> None:
+        """Invoke callback to purge selected inactive macro version from DB."""
+        if self._remove_inactive_handler is None or self._current_macro is None:
+            return
+        if self._current_macro.get("is_active", False) or self._current_macro.get("is_deleted", False):
+            return
+        self._remove_inactive_handler(self._current_macro)
 
     def _restore_selected_version(self) -> None:
         """Invoke callback to restore selected version to cfg file."""
@@ -286,6 +307,7 @@ class MacroViewer:
             self._open_active_button.set_visibility(False)
             self._desc_label.set_text(t("Description: -"))
             self._remove_deleted_button.set_visibility(False)
+            self._remove_inactive_button.set_visibility(False)
             self._restore_version_button.set_visibility(False)
             self._editor_panel.show_macro(None, "", editable=False)
             self._explainer_panel.set_macro(None)
@@ -301,16 +323,23 @@ class MacroViewer:
         )
         # Only allow purge when the macro identity is currently deleted (latest version is deleted).
         self._remove_deleted_button.set_visibility(self._is_macro_currently_deleted())
+        self._remove_inactive_button.set_visibility(
+            (not bool(macro.get("is_active", False)))
+            and (not bool(macro.get("is_deleted", False)))
+        )
         self._update_restore_button(macro)
         self._update_rename_hint(macro)
         self._update_inactive_hint(macro)
         description = str(macro.get("description") or "-")
+        rename_existing = str(macro.get("rename_existing") or "").strip()
         self._desc_label.set_text(t("Description: {description}", description=description))
         gcode_text = str(macro.get("gcode") or "")
 
         macro_lines = [f"[gcode_macro {macro.get('macro_name', '')}]"]
         if description != "-":
             macro_lines.append(f"description: {description}")
+        if rename_existing:
+            macro_lines.append(f"rename_existing: {rename_existing}")
         if gcode_text:
             macro_lines.append("gcode:")
             for line in gcode_text.splitlines():
@@ -329,6 +358,7 @@ class MacroViewer:
         active_macro: dict | None = None,
         *,
         prefer_latest: bool = False,
+        prefer_active: bool = False,
     ) -> None:
         """Update viewer when a macro is selected in the list."""
         if macro is None:
@@ -342,6 +372,7 @@ class MacroViewer:
             self._version_select.update()
             self._compare_button.disable()
             self._compare_button.set_visibility(False)
+            self._remove_inactive_button.set_visibility(False)
             self._restore_version_button.set_visibility(False)
             self._compare_view.set_macro(None, [])
             self._show_content(None)
@@ -369,12 +400,21 @@ class MacroViewer:
             self._compare_button.set_visibility(False)
         self._compare_view.set_macro(macro, versions)
 
-        if new_key != self._current_key or prefer_latest:
+        if new_key != self._current_key or prefer_latest or prefer_active:
             self._editor_panel.close_editor()
             self._current_key = new_key
-            latest = int(versions[0]["version"]) if versions else None
-            self._version_select.value = latest
+            selected_version: int | None = None
+            if prefer_active:
+                active_version = next(
+                    (int(v["version"]) for v in versions if bool(v.get("is_active", False))),
+                    None,
+                )
+                selected_version = active_version
+            if selected_version is None:
+                selected_version = int(versions[0]["version"]) if versions else None
+
+            self._version_select.value = selected_version
             self._version_select.update()
-            self._show_version(latest)
+            self._show_version(selected_version)
         else:
             self._show_version(self._version_select.value)

@@ -5,9 +5,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from collections import Counter
 from dataclasses import asdict, dataclass
+import json
+import os
+from pathlib import Path
 import re
+from typing import Any, Mapping, Sequence, TypedDict
 
 
 @dataclass(frozen=True)
@@ -28,12 +33,31 @@ class ExplanationLine:
     line_number: int
     text: str
     kind: str
+    confidence: str
+    effects: list[str]
     summary: str
     details: str
     references: list[dict[str, object]]
 
 
-def build_macro_reference_index(macros: list[dict[str, object]]) -> dict[str, list[MacroReference]]:
+CommandExplainer = Callable[[str, dict[str, str], str], tuple[str, str, str]]
+
+
+class CommandPackEntry(TypedDict, total=False):
+    """One plugin command definition for explainer extension packs."""
+
+    alias_of: str
+    kind: str
+    summary: str
+    details: str
+    confidence: str
+    effects: list[str]
+
+
+_DEFAULT_COMMAND_PACK_PATH = (Path.home() / "printer_data" / "config" / "klippervault_command_pack.json").resolve()
+
+
+def build_macro_reference_index(macros: Sequence[Mapping[str, object]]) -> dict[str, list[MacroReference]]:
     """Build lookup of macro name to openable macro targets."""
     grouped: dict[str, list[MacroReference]] = {}
     for macro in macros:
@@ -65,27 +89,28 @@ def build_macro_reference_index(macros: list[dict[str, object]]) -> dict[str, li
 
 
 def explain_macro_script(
-    macro: dict[str, object] | None,
-    available_macros: list[dict[str, object]] | None = None,
-) -> dict[str, object]:
+    macro: Mapping[str, object] | None,
+    available_macros: Sequence[Mapping[str, object]] | None = None,
+    verbosity: str = "detailed",
+    command_pack: Mapping[str, Mapping[str, object]] | None = None,
+) -> dict[str, Any]:
     """Explain a macro body in plain language and discover macro references."""
+    normalized_verbosity = _normalize_verbosity(verbosity)
+    custom_explainers, metadata_overrides = _build_command_pack_explainers(command_pack)
+
     if macro is None:
         return {
             "summary": "Select a macro to see an explanation.",
             "lines": [],
             "references": [],
+            "flow": [],
+            "flow_summary": "",
+            "verbosity": normalized_verbosity,
             "has_content": False,
         }
 
     gcode_text = str(macro.get("gcode") or "")
     body_lines = gcode_text.splitlines()
-    if not body_lines:
-        return {
-            "summary": "This macro does not currently contain any g-code lines.",
-            "lines": [],
-            "references": [],
-            "has_content": False,
-        }
 
     current_macro_names = {
         str(macro.get("macro_name", "")).strip().lower(),
@@ -93,18 +118,60 @@ def explain_macro_script(
     }
     current_macro_names.discard("")
     reference_index = build_macro_reference_index(available_macros or [])
+    rename_existing = str(macro.get("rename_existing") or "").strip()
+    renamed_aliases = _build_renamed_alias_map(macro, rename_existing)
+    rename_existing_entry = _build_rename_existing_entry(macro, rename_existing, reference_index)
+    has_explainable_content = bool(body_lines) or rename_existing_entry is not None
+    if not has_explainable_content:
+        return {
+            "summary": "This macro does not currently contain any g-code lines.",
+            "lines": [],
+            "references": [],
+            "flow": [],
+            "flow_summary": "",
+            "verbosity": normalized_verbosity,
+            "has_content": False,
+        }
+
     categories: Counter[str] = Counter()
+    confidence_levels: Counter[str] = Counter()
+    effects: Counter[str] = Counter()
     references: dict[tuple[str, str], dict[str, object]] = {}
+    explanation_entries: list[ExplanationLine] = []
     explanation_lines: list[dict[str, object]] = []
     explained_line_count = 0
 
+    if rename_existing_entry is not None:
+        explained_line_count += 1
+        categories[rename_existing_entry.kind] += 1
+        confidence_levels[rename_existing_entry.confidence] += 1
+        for effect in rename_existing_entry.effects:
+            effects[effect] += 1
+        explanation_entries.append(rename_existing_entry)
+        explanation_lines.append(_serialize_line(rename_existing_entry, normalized_verbosity))
+        for reference in rename_existing_entry.references:
+            key = (str(reference["macro_name"]), str(reference["file_path"]))
+            references[key] = reference
+
     for line_number, raw_line in enumerate(body_lines, start=1):
-        entry = _explain_line(raw_line, line_number, current_macro_names, reference_index)
+        entry = _explain_line(
+            raw_line,
+            line_number,
+            current_macro_names,
+            reference_index,
+            renamed_aliases,
+            custom_explainers,
+            metadata_overrides,
+        )
         if entry is None:
             continue
         explained_line_count += 1
         categories[entry.kind] += 1
-        explanation_lines.append(asdict(entry))
+        confidence_levels[entry.confidence] += 1
+        for effect in entry.effects:
+            effects[effect] += 1
+        explanation_entries.append(entry)
+        explanation_lines.append(_serialize_line(entry, normalized_verbosity))
         for reference in entry.references:
             key = (str(reference["macro_name"]), str(reference["file_path"]))
             references[key] = reference
@@ -114,20 +181,166 @@ def explain_macro_script(
             "summary": "This macro does not contain any executable lines that need explanation.",
             "lines": [],
             "references": [],
+            "flow": [],
+            "flow_summary": "",
+            "verbosity": normalized_verbosity,
             "has_content": False,
         }
 
+    flow = _build_flow_phases(explanation_entries)
+
     return {
-        "summary": _build_summary(categories, references, explained_line_count),
+        "summary": _build_summary(categories, references, confidence_levels, effects, explained_line_count),
         "lines": explanation_lines,
         "references": list(references.values()),
+        "confidence": dict(confidence_levels),
+        "effects": dict(effects),
+        "risk_line_count": int(effects.get("disruptive", 0)),
+        "flow": flow,
+        "flow_summary": _build_flow_summary(flow),
+        "verbosity": normalized_verbosity,
         "has_content": True,
     }
+
+
+def load_command_pack(path: str | Path | None = None) -> dict[str, CommandPackEntry]:
+    """Load command-pack JSON from path, env override, or default config location."""
+    pack_path = _resolve_command_pack_path(path)
+    if not pack_path.exists():
+        return {}
+
+    try:
+        payload = json.loads(pack_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    source: object = payload
+    if isinstance(payload, dict) and isinstance(payload.get("commands"), dict):
+        source = payload.get("commands")
+
+    if not isinstance(source, dict):
+        return {}
+
+    command_pack: dict[str, CommandPackEntry] = {}
+    for key, value in source.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        normalized = _normalize_command_pack_entry(value)
+        if not normalized:
+            continue
+        command_pack[key.strip().upper()] = normalized
+
+    return command_pack
+
+
+def _resolve_command_pack_path(path: str | Path | None) -> Path:
+    """Resolve command-pack path from explicit argument, env, or default location."""
+    if path is not None:
+        return Path(path).expanduser().resolve()
+
+    env_path = os.environ.get("KLIPPERVAULT_COMMAND_PACK_PATH", "").strip()
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+
+    return _DEFAULT_COMMAND_PACK_PATH
+
+
+def _normalize_command_pack_entry(entry: dict[str, object]) -> CommandPackEntry:
+    """Normalize one command-pack entry, filtering unsupported fields."""
+    normalized: CommandPackEntry = {}
+
+    alias_of = entry.get("alias_of")
+    if isinstance(alias_of, str) and alias_of.strip():
+        normalized["alias_of"] = alias_of.strip().upper()
+
+    kind = entry.get("kind")
+    if isinstance(kind, str) and kind.strip():
+        normalized["kind"] = kind.strip().lower()
+
+    summary = entry.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        normalized["summary"] = summary.strip()
+
+    details = entry.get("details")
+    if isinstance(details, str) and details.strip():
+        normalized["details"] = details.strip()
+
+    confidence = entry.get("confidence")
+    if isinstance(confidence, str) and confidence.strip().lower() in {"high", "medium", "low"}:
+        normalized["confidence"] = confidence.strip().lower()
+
+    effects = entry.get("effects")
+    if isinstance(effects, list):
+        filtered_effects = [item.strip() for item in effects if isinstance(item, str) and item.strip()]
+        if filtered_effects:
+            normalized["effects"] = filtered_effects
+
+    return normalized
+
+
+def _normalize_verbosity(verbosity: str) -> str:
+    """Normalize verbosity selector with safe fallback."""
+    return "concise" if str(verbosity or "").strip().lower() == "concise" else "detailed"
+
+
+def _serialize_line(entry: ExplanationLine, verbosity: str) -> dict[str, object]:
+    """Serialize explanation line with optional concise detail reduction."""
+    payload = asdict(entry)
+    if verbosity == "concise":
+        payload["details"] = _first_sentence(str(payload.get("details", "")))
+    return payload
+
+
+def _first_sentence(text: str) -> str:
+    """Return first sentence-like chunk from detail text."""
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+
+    parts = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)
+    return parts[0]
+
+
+def _build_flow_phases(entries: list[ExplanationLine]) -> list[str]:
+    """Build ordered, de-duplicated high-level flow phases for a macro."""
+    phases: list[str] = []
+    for entry in entries:
+        phase = _phase_for_entry(entry)
+        if phase and phase not in phases:
+            phases.append(phase)
+    return phases
+
+
+def _phase_for_entry(entry: ExplanationLine) -> str:
+    """Map one explained line to a high-level flow phase."""
+    effects = set(entry.effects)
+    if entry.kind == "macro_call":
+        return "macro call chain"
+    if "temperature_control" in effects or "blocking_wait" in effects:
+        return "heat and wait"
+    if entry.kind == "motion":
+        return "movement"
+    if entry.kind == "state":
+        return "state updates"
+    if entry.kind == "control":
+        return "template control"
+    if entry.kind == "message":
+        return "user feedback"
+    return "custom or unknown commands"
+
+
+def _build_flow_summary(flow: list[str]) -> str:
+    """Render compact sentence that describes macro phase sequence."""
+    if not flow:
+        return ""
+    return "Execution flow: " + " -> ".join(flow) + "."
 
 
 def _build_summary(
     categories: Counter[str],
     references: dict[tuple[str, str], dict[str, object]],
+    confidence_levels: Counter[str],
+    effects: Counter[str],
     line_count: int,
 ) -> str:
     """Build compact top-level description for one macro body."""
@@ -156,6 +369,18 @@ def _build_summary(
     if categories.get("unknown"):
         parts.append("Some lines use commands that are not yet described in detail, so they are shown with a generic explanation.")
 
+    disruptive_count = int(effects.get("disruptive", 0))
+    if disruptive_count:
+        parts.append(f"Caution: {disruptive_count} line(s) may interrupt or restart printer operation.")
+
+    blocking_count = int(effects.get("blocking_wait", 0))
+    if blocking_count:
+        parts.append(f"It contains {blocking_count} blocking wait line(s) that can pause macro progress.")
+
+    low_confidence_count = int(confidence_levels.get("low", 0))
+    if low_confidence_count:
+        parts.append(f"{low_confidence_count} line(s) have low explanation confidence and may need manual verification.")
+
     return " ".join(parts)
 
 
@@ -164,6 +389,9 @@ def _explain_line(
     line_number: int,
     current_macro_names: set[str],
     reference_index: dict[str, list[MacroReference]],
+    renamed_aliases: dict[str, str] | None = None,
+    custom_explainers: dict[str, CommandExplainer] | None = None,
+    metadata_overrides: dict[str, dict[str, object]] | None = None,
 ) -> ExplanationLine | None:
     """Explain one line of macro body text."""
     stripped = raw_line.strip()
@@ -174,6 +402,16 @@ def _explain_line(
     if stripped.startswith("#") or stripped.startswith(";"):
         return None
 
+    # In g-code, ';' starts a comment segment. Strip it aggressively so
+    # trailing comments never interfere with command/template detection.
+    stripped = stripped.split(";", 1)[0].strip()
+    if not stripped:
+        return None
+
+    stripped = _strip_inline_comment(stripped).strip()
+    if not stripped:
+        return None
+
     if stripped.startswith("{%") and stripped.endswith("%}"):
         return _explain_template_block(raw_line, line_number)
 
@@ -182,6 +420,8 @@ def _explain_line(
             line_number=line_number,
             text=raw_line,
             kind="control",
+            confidence="medium",
+            effects=["template_control"],
             summary="Template expression inside g-code.",
             details="This line injects values computed from macro parameters or live printer state before the command runs.",
             references=[],
@@ -199,6 +439,8 @@ def _explain_line(
             line_number=line_number,
             text=raw_line,
             kind="macro_call",
+            confidence="high",
+            effects=["macro_call_transfer"],
             summary=f"Calls macro {upper_command}.",
             details=(
                 f"This line transfers control to macro {upper_command}. {reference_note} is available in "
@@ -207,108 +449,36 @@ def _explain_line(
             references=macro_refs,
         )
 
-    command_map = {
-        "G0": _explain_motion_command,
-        "G1": _explain_motion_command,
-        "G2": _explain_arc_move,
-        "G3": _explain_arc_move,
-        "G4": _explain_dwell,
-        "G10": _explain_firmware_retraction,
-        "G11": _explain_firmware_unretraction,
-        "G17": _explain_arc_plane_select,
-        "G18": _explain_arc_plane_select,
-        "G19": _explain_arc_plane_select,
-        "G28": _explain_home_command,
-        "G90": _explain_absolute_positioning,
-        "G91": _explain_relative_positioning,
-        "G92": _explain_set_position,
-        "M18": _explain_disable_steppers,
-        "M20": _explain_sd_list,
-        "M21": _explain_sd_init,
-        "M23": _explain_sd_select,
-        "M24": _explain_sd_start_or_resume,
-        "M25": _explain_sd_pause,
-        "M26": _explain_sd_set_position,
-        "M27": _explain_sd_status,
-        "M73": _explain_set_build_percentage,
-        "M82": _explain_absolute_extrusion,
-        "M83": _explain_relative_extrusion,
-        "M84": _explain_disable_steppers,
-        "M105": _explain_query_nozzle_temperature,
-        "M104": _explain_nozzle_temperature,
-        "M109": _explain_nozzle_temperature_wait,
-        "M112": _explain_emergency_stop,
-        "M114": _explain_get_current_position,
-        "M115": _explain_firmware_version,
-        "M118": _explain_host_echo,
-        "M119": _explain_query_endstops_legacy,
-        "M140": _explain_bed_temperature,
-        "M190": _explain_bed_temperature_wait,
-        "M204": _explain_acceleration,
-        "M220": _explain_speed_factor,
-        "M221": _explain_extrude_factor,
-        "M400": _explain_wait_moves,
-        "M106": _explain_fan_command,
-        "M107": _explain_fan_off,
-        "M117": _explain_display_message,
-        "RESPOND": _explain_respond,
-        "SET_DISPLAY_TEXT": _explain_set_display_text,
-        "SET_GCODE_VARIABLE": _explain_set_gcode_variable,
-        "SAVE_GCODE_STATE": _explain_save_gcode_state,
-        "RESTORE_GCODE_STATE": _explain_restore_gcode_state,
-        "SET_GCODE_OFFSET": _explain_set_gcode_offset,
-        "GET_POSITION": _explain_get_position,
-        "TEMPERATURE_WAIT": _explain_temperature_wait,
-        "TURN_OFF_HEATERS": _explain_turn_off_heaters,
-        "SET_HEATER_TEMPERATURE": _explain_set_heater_temperature,
-        "UPDATE_DELAYED_GCODE": _explain_update_delayed_gcode,
-        "BED_MESH_CALIBRATE": _explain_bed_mesh_calibrate,
-        "BED_MESH_CLEAR": _explain_bed_mesh_clear,
-        "BED_MESH_OUTPUT": _explain_bed_mesh_output,
-        "BED_MESH_MAP": _explain_bed_mesh_map,
-        "BED_MESH_PROFILE": _explain_bed_mesh_profile,
-        "BED_MESH_OFFSET": _explain_bed_mesh_offset,
-        "BED_TILT_CALIBRATE": _explain_bed_tilt_calibrate,
-        "BED_SCREWS_ADJUST": _explain_bed_screws_adjust,
-        "QUAD_GANTRY_LEVEL": _explain_quad_gantry_level,
-        "Z_TILT_ADJUST": _explain_z_tilt_adjust,
-        "SCREWS_TILT_CALCULATE": _explain_screws_tilt_calculate,
-        "PROBE": _explain_probe,
-        "PROBE_ACCURACY": _explain_probe_accuracy,
-        "PROBE_CALIBRATE": _explain_probe_calibrate,
-        "QUERY_PROBE": _explain_query_probe,
-        "QUERY_ENDSTOPS": _explain_query_endstops,
-        "SET_FAN_SPEED": _explain_set_fan_speed,
-        "SET_PIN": _explain_set_pin,
-        "SET_LED": _explain_set_led,
-        "SET_LED_TEMPLATE": _explain_set_led_template,
-        "SET_SERVO": _explain_set_servo,
-        "SET_INPUT_SHAPER": _explain_set_input_shaper,
-        "SET_VELOCITY_LIMIT": _explain_set_velocity_limit,
-        "SET_PRESSURE_ADVANCE": _explain_set_pressure_advance,
-        "SAVE_VARIABLE": _explain_save_variable,
-        "SAVE_CONFIG": _explain_save_config,
-        "SET_IDLE_TIMEOUT": _explain_set_idle_timeout,
-        "SET_TEMPERATURE_FAN_TARGET": _explain_set_temperature_fan_target,
-        "SET_PRINT_STATS_INFO": _explain_set_print_stats_info,
-        "SDCARD_PRINT_FILE": _explain_sdcard_print_file,
-        "SDCARD_RESET_FILE": _explain_sdcard_reset_file,
-        "RESTART": _explain_restart,
-        "FIRMWARE_RESTART": _explain_firmware_restart,
-        "STATUS": _explain_status,
-        "HELP": _explain_help,
-        "PAUSE": _explain_pause,
-        "RESUME": _explain_resume,
-        "CLEAR_PAUSE": _explain_clear_pause,
-        "CANCEL_PRINT": _explain_cancel_print,
-        "PID_CALIBRATE": _explain_pid_calibrate,
-    }
-    explain = command_map.get(upper_command, _explain_generic_command)
+    alias_source = (renamed_aliases or {}).get(upper_command, "")
+    if alias_source:
+        details = (
+            f"This line calls the renamed macro alias {upper_command}, which points to the previous "
+            f"implementation of {alias_source}."
+        )
+        details += (
+            " No indexed replacement source was found, so this is assumed to call the renamed "
+            "Klipper standard macro/behavior."
+        )
+        return ExplanationLine(
+            line_number=line_number,
+            text=raw_line,
+            kind="macro_call",
+            confidence="high",
+            effects=["macro_call_transfer"],
+            summary=f"Calls renamed macro {upper_command}.",
+            details=details,
+            references=[],
+        )
+
+    explain = _get_command_explainer(upper_command, custom_explainers)
     kind, summary, details = explain(upper_command, params, stripped)
+    confidence, effects = _resolve_line_metadata(upper_command, kind, metadata_overrides)
     return ExplanationLine(
         line_number=line_number,
         text=raw_line,
         kind=kind,
+        confidence=confidence,
+        effects=effects,
         summary=summary,
         details=details,
         references=[],
@@ -333,16 +503,42 @@ def _parse_parameters(tokens: list[str]) -> dict[str, str]:
             # as key/value pairs. Plain words like PROBE_CALIBRATE should remain
             # command text, not synthetic parameters.
             if re.match(r"^[+\-0-9.{]", candidate_value):
-                current_key = axis_match.group(1).upper()
-                params[current_key] = candidate_value
+                candidate_key = axis_match.group(1).upper()
+                params[candidate_key] = candidate_value
+                current_key = candidate_key
                 continue
 
-            current_key = None
+            # Command-like all-caps tokens should stop value continuation,
+            # but mixed/lowercase text is often part of a quoted value split
+            # by whitespace (e.g. MSG="value # keep").
+            if re.fullmatch(r"[A-Z0-9_.]+", token):
+                current_key = None
+                continue
+
+            if current_key is not None:
+                params[current_key] = f"{params[current_key]} {token}".strip()
             continue
 
         if current_key is not None:
             params[current_key] = f"{params[current_key]} {token}".strip()
     return params
+
+
+def _strip_inline_comment(line: str) -> str:
+    """Strip inline '#' comments while preserving hash markers inside quotes."""
+    in_single = False
+    in_double = False
+
+    for idx, char in enumerate(line):
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == "#" and not in_single and not in_double:
+            return line[:idx]
+    return line
 
 
 def _resolve_macro_references(
@@ -357,9 +553,187 @@ def _resolve_macro_references(
     return [asdict(ref) for ref in refs[:3]]
 
 
+def _build_rename_existing_entry(
+    macro: Mapping[str, object],
+    rename_existing: str,
+    reference_index: dict[str, list[MacroReference]],
+) -> ExplanationLine | None:
+    """Build explainer entry for section-level rename_existing directives."""
+    if not rename_existing:
+        return None
+
+    macro_name = str(macro.get("macro_name") or "").strip()
+    macro_name_lower = macro_name.lower()
+    current_file_path = str(macro.get("file_path") or "").strip()
+
+    candidate_refs = [asdict(ref) for ref in reference_index.get(macro_name_lower, [])]
+    source_refs: list[dict[str, object]] = []
+    for ref in candidate_refs:
+        ref_path = str(ref.get("file_path") or "").strip()
+        if current_file_path and ref_path == current_file_path:
+            continue
+        source_refs.append(ref)
+
+    display_macro_name = macro_name or "this macro"
+    summary = "Preserves replaced macro under a new name."
+    details = (
+        f"Section directive rename_existing maps the previously active {display_macro_name} implementation "
+        f"to callable name {rename_existing} while this section takes over {display_macro_name}."
+    )
+    if source_refs:
+        details += (
+            f" A prior definition is indexed in {source_refs[0]['file_path']}, "
+            "and you can open it from the reference link."
+        )
+    else:
+        details += (
+            " No prior macro definition with this name was found in indexed cfg files, "
+            "so this is treated as preserving a Klipper standard macro/behavior under the renamed alias."
+        )
+
+    return ExplanationLine(
+        line_number=0,
+        text=f"rename_existing: {rename_existing}",
+        kind="state",
+        confidence="high",
+        effects=["printer_state_change"],
+        summary=summary,
+        details=details,
+        references=source_refs[:3],
+    )
+
+
+def _build_renamed_alias_map(macro: Mapping[str, object], rename_existing: str) -> dict[str, str]:
+    """Build mapping of alias command -> source macro name from rename_existing."""
+    if not rename_existing:
+        return {}
+
+    macro_name = str(macro.get("macro_name") or "").strip()
+    if not macro_name:
+        return {}
+
+    return {rename_existing.upper(): macro_name}
+
+
+def _confidence_for_explanation(kind: str) -> str:
+    """Return confidence level for an explanation category."""
+    if kind == "unknown":
+        return "low"
+    if kind == "control":
+        return "medium"
+    return "high"
+
+
+def _resolve_line_metadata(
+    command: str,
+    kind: str,
+    metadata_overrides: dict[str, dict[str, object]] | None,
+) -> tuple[str, list[str]]:
+    """Resolve confidence/effects, allowing plugin packs to override defaults."""
+    base_confidence = _confidence_for_explanation(kind)
+    base_effects = _infer_effects(command, kind)
+
+    if not metadata_overrides:
+        return base_confidence, base_effects
+
+    override = metadata_overrides.get(command, {})
+    confidence = str(override.get("confidence", "")).strip().lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = base_confidence
+
+    raw_effects = override.get("effects")
+    if isinstance(raw_effects, list):
+        filtered = [item for item in raw_effects if isinstance(item, str) and item.strip()]
+        effects = list(dict.fromkeys(filtered)) or base_effects
+    else:
+        effects = base_effects
+
+    return confidence, effects
+
+
+def _build_command_pack_explainers(
+    command_pack: Mapping[str, Mapping[str, object]] | None,
+) -> tuple[dict[str, CommandExplainer], dict[str, dict[str, object]]]:
+    """Compile user-provided command pack into explainers and metadata overrides."""
+    if not command_pack:
+        return {}, {}
+
+    explainers: dict[str, CommandExplainer] = {}
+    metadata_overrides: dict[str, dict[str, object]] = {}
+
+    for raw_command, entry in command_pack.items():
+        command = str(raw_command or "").strip().upper()
+        if not command:
+            continue
+        if not isinstance(entry, dict):
+            continue
+
+        alias_of = str(entry.get("alias_of", "")).strip().upper()
+        if alias_of:
+            aliased_explainer = _get_command_explainer(alias_of)
+            explainers[command] = aliased_explainer
+            metadata_overrides[command] = {
+                "confidence": entry.get("confidence"),
+                "effects": entry.get("effects"),
+            }
+            continue
+
+        kind = str(entry.get("kind", "")).strip().lower()
+        summary = str(entry.get("summary", "")).strip()
+        details = str(entry.get("details", "")).strip()
+        if not (kind and summary and details):
+            continue
+
+        def _packed_explainer(_: str, __: dict[str, str], ___: str, *, _kind: str = kind, _summary: str = summary, _details: str = details) -> tuple[str, str, str]:
+            return _kind, _summary, _details
+
+        explainers[command] = _packed_explainer
+        metadata_overrides[command] = {
+            "confidence": entry.get("confidence"),
+            "effects": entry.get("effects"),
+        }
+
+    return explainers, metadata_overrides
+
+
+def _infer_effects(command: str, kind: str) -> list[str]:
+    """Infer coarse side effects for a line so UI can highlight impact."""
+    effects: list[str] = []
+
+    if kind == "motion":
+        effects.append("motion")
+    if kind == "temperature":
+        effects.append("temperature_control")
+    if kind == "state":
+        effects.append("printer_state_change")
+    if kind == "message":
+        effects.append("user_feedback")
+    if kind == "control":
+        effects.append("template_control")
+
+    if command in {"G4", "M109", "M190", "M400", "TEMPERATURE_WAIT"}:
+        effects.append("blocking_wait")
+
+    if command in {"M104", "M109", "M140", "M190", "SET_HEATER_TEMPERATURE", "TURN_OFF_HEATERS"}:
+        effects.append("heater_target_change")
+
+    if command in {"SAVE_CONFIG", "SAVE_VARIABLE"}:
+        effects.append("persistent_write")
+
+    if command in {"M112", "RESTART", "FIRMWARE_RESTART", "SAVE_CONFIG", "FORCE_MOVE"}:
+        effects.append("disruptive")
+
+    # Preserve insertion order while deduplicating.
+    return list(dict.fromkeys(effects))
+
+
 def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
     """Explain Jinja control directives embedded in a macro."""
-    stripped = raw_line.strip()[2:-2].strip()
+    cleaned = _strip_inline_comment(raw_line.strip()).strip()
+    if cleaned.startswith("{%") and cleaned.endswith("%}"):
+        stripped = cleaned[2:-2].strip()
+    else:
+        stripped = raw_line.strip()[2:-2].strip()
     normalized = stripped.lower()
 
     if normalized.startswith("if "):
@@ -399,7 +773,8 @@ def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
         summary = "Template variable assignment."
         details = "This line computes and stores a template value that later lines can reuse."
         if variable_name and expression:
-            details += f" It assigns {variable_name} from {expression}. " + _describe_template_expression(expression)
+            details = _describe_template_set_assignment(variable_name, expression)
+            details += " " + _describe_template_expression(expression)
     else:
         summary = "Template control directive."
         details = (
@@ -411,6 +786,8 @@ def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
         line_number=line_number,
         text=raw_line,
         kind="control",
+        confidence="medium",
+        effects=["template_control"],
         summary=summary,
         details=details,
         references=[],
@@ -438,6 +815,74 @@ def _parse_template_for_clause(clause: str) -> tuple[str, str]:
     if not match:
         return "", ""
     return match.group(1).strip(), match.group(2).strip()
+
+
+def _split_template_filters(expression: str) -> list[str]:
+    """Split Jinja expression into base expression and top-level filters."""
+    parts: list[str] = []
+    current: list[str] = []
+    paren_depth = 0
+
+    for char in expression:
+        if char == "|" and paren_depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        if char == "(":
+            paren_depth += 1
+        elif char == ")" and paren_depth > 0:
+            paren_depth -= 1
+        current.append(char)
+
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _describe_template_set_assignment(variable_name: str, expression: str) -> str:
+    """Describe a Jinja set assignment with source, fallback, and type hints."""
+    parts = _split_template_filters(expression)
+    if not parts:
+        return f"This sets template variable {variable_name}."
+
+    source_expr = parts[0]
+    source_description = source_expr
+    if source_expr.startswith("params."):
+        source_description = f"macro parameter {source_expr}"
+    elif source_expr.startswith("printer."):
+        source_description = f"live printer value {source_expr}"
+
+    default_value = ""
+    output_type = ""
+
+    for filter_expr in parts[1:]:
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$", filter_expr)
+        if not match:
+            continue
+        filter_name = match.group(1).strip().lower()
+        filter_arg = (match.group(2) or "").strip()
+
+        if filter_name == "default" and filter_arg and not default_value:
+            default_value = filter_arg
+
+        if filter_name in {"int", "float", "bool", "str", "string"} and not output_type:
+            output_type = {
+                "int": "int",
+                "float": "float",
+                "bool": "bool",
+                "str": "string",
+                "string": "string",
+            }[filter_name]
+
+    details = f"This sets template variable {variable_name} from {source_description}."
+    if default_value:
+        details += f" If the source is missing, it falls back to {default_value}."
+    if output_type:
+        details += f" The resulting value type is {output_type}."
+    return details
 
 
 def _describe_template_expression(expression: str) -> str:
@@ -809,6 +1254,165 @@ def _explain_set_velocity_limit(_: str, params: dict[str, str], __: str) -> tupl
     return "state", "Adjusts motion limits.", f"This updates toolhead velocity/acceleration limits via {_format_params(params)}."
 
 
+def _explain_set_kinematic_position(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    axes = [f"{axis}={params[axis]}" for axis in ("X", "Y", "Z") if axis in params]
+    axis_text = ", ".join(axes) if axes else "the supplied axis values"
+    set_homed = params.get("SET_HOMED")
+    clear_homed = params.get("CLEAR_HOMED")
+
+    details = (
+        f"This overrides Klipper's internal kinematic position to {axis_text} without physically moving the toolhead. "
+        "Use it carefully, because incorrect values can desynchronize logical and physical position until re-homing."
+    )
+    if set_homed:
+        details += f" SET_HOMED={set_homed} marks listed axes as homed."
+    if clear_homed:
+        details += f" CLEAR_HOMED={clear_homed} clears homed state for listed axes."
+
+    return "state", "Overrides internal kinematic coordinates.", details
+
+
+def _explain_set_tmc_current(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured TMC stepper")
+    run_current = params.get("CURRENT", "the existing run current")
+    hold_current = params.get("HOLDCURRENT", params.get("HOLD_CURRENT", "the existing hold current"))
+
+    details = (
+        f"This changes TMC motor current for {stepper}: run current {run_current}, hold current {hold_current}. "
+        "It applies immediately and affects torque, motor heat, and skipped-step behavior."
+    )
+    return "state", "Adjusts TMC motor current.", details
+
+
+def _explain_set_stepper_enable(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured stepper")
+    enable_value = str(params.get("ENABLE", params.get("enable", ""))).strip()
+
+    if enable_value == "1":
+        state_text = "enables"
+        summary = "Enables a stepper driver."
+        effect_text = "so the motor can hold position and accept commanded moves"
+    elif enable_value == "0":
+        state_text = "disables"
+        summary = "Disables a stepper driver."
+        effect_text = "so the motor stops holding torque until it is re-enabled"
+    else:
+        state_text = "changes the enable state of"
+        summary = "Changes stepper driver enable state."
+        effect_text = f"using ENABLE={enable_value or 'unspecified'}"
+
+    details = f"This {state_text} {stepper}, {effect_text}."
+    return "state", summary, details
+
+
+def _explain_manual_stepper(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured manual stepper")
+    move = params.get("MOVE")
+    speed = params.get("SPEED")
+    accel = params.get("ACCEL")
+    stop_on_endstop = params.get("STOP_ON_ENDSTOP")
+    enable_value = params.get("ENABLE") or params.get("enable")
+
+    if move is not None:
+        details = f"This commands manual stepper {stepper} to move to {move}."
+        if speed is not None:
+            details += f" Requested speed is {speed}."
+        if accel is not None:
+            details += f" Requested acceleration is {accel}."
+        if stop_on_endstop is not None:
+            details += f" STOP_ON_ENDSTOP={stop_on_endstop} changes whether the move aborts on endstop trigger."
+        return "motion", "Moves a manual stepper.", details
+
+    if enable_value is not None:
+        if str(enable_value).strip() == "0":
+            return "state", "Disables a manual stepper.", f"This turns off manual stepper {stepper} so it no longer holds torque."
+        if str(enable_value).strip() == "1":
+            return "state", "Enables a manual stepper.", f"This enables manual stepper {stepper} so it can be driven and hold position."
+
+    return "state", "Controls a manual stepper.", f"This updates manual stepper {stepper} using {_format_params(params)}."
+
+
+def _explain_sync_extruder_motion(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    extruder = params.get("EXTRUDER", "the active extruder")
+    motion_queue = params.get("MOTION_QUEUE", "the selected motion queue")
+
+    if str(motion_queue).strip() in {"", "None", "none"}:
+        details = (
+            f"This detaches extruder motion for {extruder} from any shared motion queue. "
+            "That usually stops it from mirroring another extruder's planned extrusion moves."
+        )
+    else:
+        details = (
+            f"This synchronizes extruder motion for {extruder} with motion queue {motion_queue}. "
+            "It is commonly used when switching toolheads or remapping which extruder follows planned extrusion."
+        )
+    return "state", "Reassigns extruder motion synchronization.", details
+
+
+def _explain_set_stepper_phase(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured stepper")
+    phase = params.get("PHASE", "the requested phase")
+
+    details = (
+        f"This sets the tracked electrical phase for {stepper} to {phase}. "
+        "It is a low-level calibration/state command that affects how Klipper interprets the stepper's phase reference."
+    )
+    return "state", "Sets stepper phase reference.", details
+
+
+def _explain_stepper_buzz(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured stepper")
+    return (
+        "motion",
+        "Runs stepper buzz test.",
+        f"This jogs {stepper} back and forth in a short test pattern so you can identify the motor or verify wiring/direction.",
+    )
+
+
+def _explain_dump_tmc(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured TMC stepper")
+    return (
+        "message",
+        "Prints TMC driver diagnostics.",
+        f"This queries TMC register and status information for {stepper} and prints it to the console for troubleshooting.",
+    )
+
+
+def _explain_init_tmc(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured TMC stepper")
+    return (
+        "state",
+        "Reinitializes a TMC driver.",
+        f"This asks Klipper to re-send configuration to the TMC driver for {stepper}, which can help recover expected driver settings after low-level changes or diagnostics.",
+    )
+
+
+def _explain_set_tmc_field(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured TMC stepper")
+    field = params.get("FIELD", "a driver field")
+    value = params.get("VALUE", "an unspecified value")
+    return (
+        "state",
+        "Sets a low-level TMC register field.",
+        f"This updates TMC field {field} on {stepper} to {value}. It is a low-level driver tuning/debug command and can change motor behavior immediately.",
+    )
+
+
+def _explain_force_move(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured stepper")
+    distance = params.get("DISTANCE", "an unspecified distance")
+    velocity = params.get("VELOCITY", "configured/default velocity")
+
+    details = (
+        f"This forces direct movement of {stepper} by {distance} at velocity {velocity}. "
+        "Use this carefully because FORCE_MOVE bypasses normal coordinated kinematics and can move hardware unexpectedly."
+    )
+    if "{" in distance or "{{" in distance:
+        details += " The movement distance is computed from a template expression at runtime."
+
+    return "motion", "Forces direct stepper movement.", details
+
+
 def _explain_set_pressure_advance(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
     extruder = params.get("EXTRUDER", "active extruder")
     advance = params.get("ADVANCE", "current")
@@ -920,6 +1524,134 @@ def _explain_pid_calibrate(_: str, params: dict[str, str], __: str) -> tuple[str
     heater = params.get("HEATER", "a heater")
     target = params.get("TARGET", "unspecified")
     return "temperature", "Runs PID calibration.", f"This starts PID tuning for heater {heater} toward {target}C."
+
+
+def _get_command_explainer(
+    command: str,
+    custom_explainers: dict[str, CommandExplainer] | None = None,
+) -> CommandExplainer:
+    """Return registered explainer for a command token."""
+    if custom_explainers and command in custom_explainers:
+        return custom_explainers[command]
+    return _COMMAND_EXPLAINERS.get(command, _explain_generic_command)
+
+
+_COMMAND_GROUPS: tuple[tuple[tuple[str, ...], CommandExplainer], ...] = (
+    (("G0", "G1"), _explain_motion_command),
+    (("G2", "G3"), _explain_arc_move),
+    (("G4",), _explain_dwell),
+    (("G10",), _explain_firmware_retraction),
+    (("G11",), _explain_firmware_unretraction),
+    (("G17", "G18", "G19"), _explain_arc_plane_select),
+    (("G28",), _explain_home_command),
+    (("G90",), _explain_absolute_positioning),
+    (("G91",), _explain_relative_positioning),
+    (("G92",), _explain_set_position),
+    (("M18", "M84"), _explain_disable_steppers),
+    (("M20",), _explain_sd_list),
+    (("M21",), _explain_sd_init),
+    (("M23",), _explain_sd_select),
+    (("M24",), _explain_sd_start_or_resume),
+    (("M25",), _explain_sd_pause),
+    (("M26",), _explain_sd_set_position),
+    (("M27",), _explain_sd_status),
+    (("M73",), _explain_set_build_percentage),
+    (("M82",), _explain_absolute_extrusion),
+    (("M83",), _explain_relative_extrusion),
+    (("M104",), _explain_nozzle_temperature),
+    (("M105",), _explain_query_nozzle_temperature),
+    (("M109",), _explain_nozzle_temperature_wait),
+    (("M112",), _explain_emergency_stop),
+    (("M114",), _explain_get_current_position),
+    (("M115",), _explain_firmware_version),
+    (("M117",), _explain_display_message),
+    (("M118",), _explain_host_echo),
+    (("M119",), _explain_query_endstops_legacy),
+    (("M140",), _explain_bed_temperature),
+    (("M190",), _explain_bed_temperature_wait),
+    (("M204",), _explain_acceleration),
+    (("M220",), _explain_speed_factor),
+    (("M221",), _explain_extrude_factor),
+    (("M400",), _explain_wait_moves),
+    (("M106",), _explain_fan_command),
+    (("M107",), _explain_fan_off),
+    (("RESPOND",), _explain_respond),
+    (("SET_DISPLAY_TEXT",), _explain_set_display_text),
+    (("SET_GCODE_VARIABLE",), _explain_set_gcode_variable),
+    (("SAVE_GCODE_STATE",), _explain_save_gcode_state),
+    (("RESTORE_GCODE_STATE",), _explain_restore_gcode_state),
+    (("SET_GCODE_OFFSET",), _explain_set_gcode_offset),
+    (("GET_POSITION",), _explain_get_position),
+    (("TEMPERATURE_WAIT",), _explain_temperature_wait),
+    (("TURN_OFF_HEATERS",), _explain_turn_off_heaters),
+    (("SET_HEATER_TEMPERATURE",), _explain_set_heater_temperature),
+    (("UPDATE_DELAYED_GCODE",), _explain_update_delayed_gcode),
+    (("BED_MESH_CALIBRATE",), _explain_bed_mesh_calibrate),
+    (("BED_MESH_CLEAR",), _explain_bed_mesh_clear),
+    (("BED_MESH_OUTPUT",), _explain_bed_mesh_output),
+    (("BED_MESH_MAP",), _explain_bed_mesh_map),
+    (("BED_MESH_PROFILE",), _explain_bed_mesh_profile),
+    (("BED_MESH_OFFSET",), _explain_bed_mesh_offset),
+    (("BED_TILT_CALIBRATE",), _explain_bed_tilt_calibrate),
+    (("BED_SCREWS_ADJUST",), _explain_bed_screws_adjust),
+    (("QUAD_GANTRY_LEVEL",), _explain_quad_gantry_level),
+    (("Z_TILT_ADJUST",), _explain_z_tilt_adjust),
+    (("SCREWS_TILT_CALCULATE",), _explain_screws_tilt_calculate),
+    (("PROBE",), _explain_probe),
+    (("PROBE_ACCURACY",), _explain_probe_accuracy),
+    (("PROBE_CALIBRATE",), _explain_probe_calibrate),
+    (("QUERY_PROBE",), _explain_query_probe),
+    (("QUERY_ENDSTOPS",), _explain_query_endstops),
+    (("SET_FAN_SPEED",), _explain_set_fan_speed),
+    (("SET_PIN",), _explain_set_pin),
+    (("SET_LED",), _explain_set_led),
+    (("SET_LED_TEMPLATE",), _explain_set_led_template),
+    (("SET_SERVO",), _explain_set_servo),
+    (("SET_INPUT_SHAPER",), _explain_set_input_shaper),
+    (("SET_VELOCITY_LIMIT",), _explain_set_velocity_limit),
+    (("SET_KINEMATIC_POSITION",), _explain_set_kinematic_position),
+    (("SET_TMC_CURRENT",), _explain_set_tmc_current),
+    (("SET_STEPPER_ENABLE",), _explain_set_stepper_enable),
+    (("MANUAL_STEPPER",), _explain_manual_stepper),
+    (("SYNC_EXTRUDER_MOTION",), _explain_sync_extruder_motion),
+    (("SET_STEPPER_PHASE",), _explain_set_stepper_phase),
+    (("STEPPER_BUZZ",), _explain_stepper_buzz),
+    (("DUMP_TMC",), _explain_dump_tmc),
+    (("INIT_TMC",), _explain_init_tmc),
+    (("SET_TMC_FIELD",), _explain_set_tmc_field),
+    (("FORCE_MOVE",), _explain_force_move),
+    (("SET_PRESSURE_ADVANCE",), _explain_set_pressure_advance),
+    (("SAVE_VARIABLE",), _explain_save_variable),
+    (("SAVE_CONFIG",), _explain_save_config),
+    (("SET_IDLE_TIMEOUT",), _explain_set_idle_timeout),
+    (("SET_TEMPERATURE_FAN_TARGET",), _explain_set_temperature_fan_target),
+    (("SET_PRINT_STATS_INFO",), _explain_set_print_stats_info),
+    (("SDCARD_PRINT_FILE",), _explain_sdcard_print_file),
+    (("SDCARD_RESET_FILE",), _explain_sdcard_reset_file),
+    (("RESTART",), _explain_restart),
+    (("FIRMWARE_RESTART",), _explain_firmware_restart),
+    (("STATUS",), _explain_status),
+    (("HELP",), _explain_help),
+    (("PAUSE",), _explain_pause),
+    (("RESUME",), _explain_resume),
+    (("CLEAR_PAUSE",), _explain_clear_pause),
+    (("CANCEL_PRINT",), _explain_cancel_print),
+    (("PID_CALIBRATE",), _explain_pid_calibrate),
+)
+
+
+def _build_command_explainers() -> dict[str, CommandExplainer]:
+    """Expand grouped command aliases into a direct command lookup map."""
+    command_explainers: dict[str, CommandExplainer] = {}
+    for commands, explainer in _COMMAND_GROUPS:
+        for command in commands:
+            if command in command_explainers:
+                raise ValueError(f"Duplicate command registration detected: {command}")
+            command_explainers[command] = explainer
+    return command_explainers
+
+
+_COMMAND_EXPLAINERS = _build_command_explainers()
 
 
 def _explain_generic_command(command: str, params: dict[str, str], __: str) -> tuple[str, str, str]:

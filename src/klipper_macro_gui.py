@@ -25,6 +25,7 @@ from klipper_macro_gui_service import MacroGuiService
 from klipper_macro_viewer import MacroViewer, format_ts as _format_ts
 from klipper_macro_watcher import ConfigWatcher
 from klipper_vault_config import load_or_create as _load_vault_config
+from klipper_vault_config import save as _save_vault_config
 from klipper_vault_i18n import set_language, t
 
 
@@ -89,6 +90,9 @@ def build_ui(app_version: str = "unknown") -> None:
     with ui.header().classes("items-center gap-4 px-6 py-2 bg-grey-9"):
         ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
         ui.space()
+        restart_klipper_button = ui.button(t("Restart Klipper"), icon="restart_alt").props("flat color=white")
+        restart_klipper_button.classes("text-orange-4")
+        restart_klipper_button.set_visibility(False)
         duplicate_warning_button = ui.button(t("Duplicates found"), icon="warning").props("flat no-caps")
         duplicate_warning_button.classes("text-yellow-5")
         duplicate_warning_button.set_visibility(False)
@@ -97,6 +101,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     selected_key: str | None = None
     force_latest_for_key: str | None = None
+    force_active_for_key: str | None = None
     cached_macros: list[dict[str, object]] = []
     duplicate_wizard_groups: list[dict[str, object]] = []
     duplicate_keep_choices: dict[str, str] = {}
@@ -109,13 +114,34 @@ def build_ui(app_version: str = "unknown") -> None:
     is_indexing: bool = False
     deleted_macro_count: int = 0
     printer_is_printing: bool = False
+    printer_is_busy: bool = True
+    printer_state: str = "unknown"
     print_lock_popup_open: bool = False
+    restart_required: bool = False
     watcher = ConfigWatcher(config_dir)
     duplicate_compare_view = MacroCompareView()
 
     def flat_dialog_button(label_key: str, on_click) -> None:
         """Render a standard flat no-caps dialog action button."""
         ui.button(t(label_key), on_click=on_click).props("flat no-caps")
+
+    def _refresh_restart_button() -> None:
+        """Show restart button only when macro changes require reload and printer is idle."""
+        is_allowed = restart_required and (not printer_is_printing) and (not printer_is_busy)
+        restart_klipper_button.set_visibility(is_allowed)
+        restart_klipper_button.set_enabled(is_allowed)
+
+    def _mark_restart_required() -> None:
+        """Mark that a macro-affecting change requires Klipper restart."""
+        nonlocal restart_required
+        restart_required = True
+        _refresh_restart_button()
+
+    def _clear_restart_required() -> None:
+        """Clear pending restart requirement after successful restart."""
+        nonlocal restart_required
+        restart_required = False
+        _refresh_restart_button()
 
     with ui.dialog().props("persistent") as print_lock_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
         ui.label(t("Printer is currently printing")).classes("text-lg font-semibold text-warning")
@@ -124,6 +150,45 @@ def build_ui(app_version: str = "unknown") -> None:
         ).classes("text-sm text-grey-5")
         with ui.row().classes("w-full justify-end mt-2"):
             ui.button(t("OK"), on_click=print_lock_dialog.close).props("flat no-caps")
+
+    with ui.dialog().props("persistent") as printer_profile_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
+        ui.label(t("Printer profile setup")).classes("text-lg font-semibold")
+        ui.label(t("Please provide your printer vendor and model for first-time setup.")).classes("text-sm text-grey-5")
+        printer_vendor_input = ui.input(label=t("Printer vendor")).props("outlined autofocus").classes("w-full mt-2")
+        printer_model_input = ui.input(label=t("Printer model")).props("outlined").classes("w-full mt-2")
+        printer_profile_error = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            save_printer_profile_button = ui.button(t("Save")).props("color=primary no-caps")
+
+    def _printer_profile_missing() -> bool:
+        """Return True when first-start printer profile values are not yet set."""
+        return bool(vault_cfg.printer_profile_prompt_required)
+
+    def _format_printer_profile_label() -> str:
+        """Format printer identity for status sidebar display."""
+        vendor = str(vault_cfg.printer_vendor or "").strip()
+        model = str(vault_cfg.printer_model or "").strip()
+        if vendor and model:
+            return t("Printer profile: {vendor} {model}", vendor=vendor, model=model)
+        return t("Printer profile: not set")
+
+    def _save_printer_profile() -> None:
+        """Validate and persist printer profile values into klippervault.cfg."""
+        vendor = str(printer_vendor_input.value or "").strip()
+        model = str(printer_model_input.value or "").strip()
+        if not vendor or not model:
+            printer_profile_error.set_text(t("Vendor and model are required."))
+            return
+
+        vault_cfg.printer_vendor = vendor
+        vault_cfg.printer_model = model
+        vault_cfg.printer_profile_prompt_required = False
+        _save_vault_config(config_dir, vault_cfg)
+        printer_profile_label.set_text(_format_printer_profile_label())
+        printer_profile_error.set_text("")
+        printer_profile_dialog.close()
+
+    save_printer_profile_button.on_click(_save_printer_profile)
 
     with ui.grid().classes("w-full grid-cols-4 gap-4 p-4 h-[calc(100vh-110px)]"):
         with ui.card().classes("col-span-1 h-full flex flex-col overflow-hidden"):
@@ -163,6 +228,7 @@ def build_ui(app_version: str = "unknown") -> None:
             ui.separator().classes("my-2")
             ui.label(t("Status")).classes("text-md font-semibold mb-1")
             status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
+            printer_profile_label = ui.label(_format_printer_profile_label()).classes("text-sm text-grey-5")
 
             ui.separator().classes("my-2")
             ui.label(t("Backups")).classes("text-md font-semibold mb-1")
@@ -320,6 +386,48 @@ def build_ui(app_version: str = "unknown") -> None:
 
     viewer.set_remove_deleted_handler(remove_deleted_macro_from_db)
 
+    def remove_inactive_macro_from_db(version_row: dict) -> None:
+        """Permanently remove selected inactive macro version from SQLite history."""
+        nonlocal force_active_for_key
+        if blocked_by_print_state(status_message="Blocked: printer is currently printing. Editing is disabled."):
+            return
+        file_path = str(version_row.get("file_path", ""))
+        macro_name = str(version_row.get("macro_name", ""))
+        version = _to_int(version_row.get("version", 0) or 0)
+        if not file_path or not macro_name:
+            status_label.set_text(t("Cannot remove inactive macro version: missing identity."))
+            return
+
+        try:
+            result = service.remove_inactive_version(file_path, macro_name, version)
+        except Exception as exc:
+            status_label.set_text(t("Failed to remove inactive macro version: {error}", error=exc))
+            return
+
+        reason = str(result.get("reason", ""))
+        removed = _to_int(result.get("removed", 0))
+        if removed > 0:
+            status_label.set_text(t(
+                "Removed inactive macro version v{version} of '{macro_name}' from {file_path} ({removed} row(s)).",
+                version=version,
+                macro_name=macro_name,
+                file_path=file_path,
+                removed=removed,
+            ))
+            force_active_for_key = f"{file_path}::{macro_name}"
+        elif reason == "not_inactive":
+            status_label.set_text(t("Selected macro version is not inactive; nothing removed."))
+        elif reason == "deleted":
+            status_label.set_text(t("Selected macro version is deleted; use the deleted-macro removal action instead."))
+        elif reason == "not_found":
+            status_label.set_text(t("Macro not found in database."))
+        else:
+            status_label.set_text(t("No rows removed."))
+
+        refresh_data()
+
+    viewer.set_remove_inactive_handler(remove_inactive_macro_from_db)
+
     def restore_macro_version_from_viewer(version_row: dict) -> None:
         """Restore selected macro version into cfg file, then rescan."""
         nonlocal force_latest_for_key
@@ -348,6 +456,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             version=result["version"],
         ))
+        _mark_restart_required()
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro restore")
 
@@ -382,6 +491,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             operation=result["operation"],
         ))
+        _mark_restart_required()
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro edit")
 
@@ -426,6 +536,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             removed=removed,
         ))
+        _mark_restart_required()
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro delete")
 
@@ -707,12 +818,14 @@ def build_ui(app_version: str = "unknown") -> None:
             removed_sections=result["removed_sections"],
             file_count=touched_files_count,
         ))
+        _mark_restart_required()
         perform_index("duplicate wizard")
 
     def render_macro_list() -> None:
         """Render the left macro list with filters, badges, and selection state."""
         nonlocal selected_key
         nonlocal force_latest_for_key
+        nonlocal force_active_for_key
         macro_list.clear()
         viewer.set_available_macros(cached_macros)
 
@@ -768,7 +881,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     file_name = Path(str(macro["file_path"])).name
                     is_deleted = bool(macro.get("is_deleted", False))
                     vc = _to_int(macro.get("version_count", 1), default=1)
-                    with ui.button(on_click=lambda m=macro: choose_macro(m)).props(
+                    with ui.button(on_click=lambda _event, m=macro: choose_macro(m)).props(
                         "flat no-caps align=left"
                     ).classes(button_classes):
                         with ui.row().classes("items-center gap-1.5 no-wrap"):
@@ -787,14 +900,18 @@ def build_ui(app_version: str = "unknown") -> None:
 
         selected_macro_key = macro_key(selected_macro)
         prefer_latest = force_latest_for_key == selected_macro_key
+        prefer_active = force_active_for_key == selected_macro_key
         if prefer_latest:
             force_latest_for_key = None
+        if prefer_active:
+            force_active_for_key = None
 
         viewer.set_macro(
             selected_macro,
             versions,
             active_macro=active_macro,
             prefer_latest=prefer_latest,
+            prefer_active=prefer_active,
         )
 
     def render_backup_list() -> None:
@@ -872,13 +989,13 @@ def build_ui(app_version: str = "unknown") -> None:
                     ui.label(_format_ts(_to_int(backup.get("created_at", 0)))).classes(
                         "text-[11px] text-grey-5"
                     )
-                    ui.button(icon="search", on_click=lambda b=backup: open_backup_contents(b)).props(
+                    ui.button(icon="search", on_click=lambda _event, b=backup: open_backup_contents(b)).props(
                         "flat dense round"
                     ).classes("text-blue-5")
-                    ui.button(icon="restore", on_click=lambda b=backup: open_restore_dialog(b)).props(
+                    ui.button(icon="restore", on_click=lambda _event, b=backup: open_restore_dialog(b)).props(
                         "flat dense round"
                     ).classes("text-orange-6")
-                    ui.button(icon="delete", on_click=lambda b=backup: open_delete_dialog(b)).props(
+                    ui.button(icon="delete", on_click=lambda _event, b=backup: open_delete_dialog(b)).props(
                         "flat dense round"
                     ).classes("text-red-6")
 
@@ -923,6 +1040,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     macro_count=result["macro_count"],
                 )
             )
+        _mark_restart_required()
         perform_index("backup restore")
 
     def perform_delete_backup() -> None:
@@ -983,6 +1101,8 @@ def build_ui(app_version: str = "unknown") -> None:
                     scanned=result["cfg_files_scanned"],
                 )
             )
+            if trigger != "startup" and _to_int(result.get("macros_inserted", 0)) > 0:
+                _mark_restart_required()
             refresh_data()
             watcher.reset()
         except FileNotFoundError as exc:
@@ -1053,12 +1173,34 @@ def build_ui(app_version: str = "unknown") -> None:
             return
         perform_index("manual")
 
+    def restart_klipper() -> None:
+        """Request Klipper restart when macro changes are pending and printer is idle."""
+        if not restart_required:
+            status_label.set_text(t("No pending macro changes require a Klipper restart."))
+            return
+        if printer_is_printing or printer_is_busy:
+            status_label.set_text(t("Blocked: printer is busy or printing. Klipper restart is disabled."))
+            return
+
+        try:
+            service.restart_klipper(timeout=3.0)
+        except Exception as exc:
+            status_label.set_text(t("Failed to restart Klipper: {error}", error=exc))
+            return
+
+        _clear_restart_required()
+        status_label.set_text(t("Klipper restart requested. The restart button will reappear after another macro change."))
+
     def set_print_lock(locked: bool, moonraker_state: str, moonraker_message: str) -> None:
         """Toggle UI mutation lock while printer is actively printing."""
         nonlocal printer_is_printing
+        nonlocal printer_is_busy
+        nonlocal printer_state
         nonlocal print_lock_popup_open
 
         printer_is_printing = locked
+        printer_state = moonraker_state
+        printer_is_busy = moonraker_state not in {"standby", "ready", "complete", "cancelled"}
         editing_enabled = not locked
 
         index_button.set_enabled(editing_enabled)
@@ -1073,6 +1215,7 @@ def build_ui(app_version: str = "unknown") -> None:
         duplicate_next_button.set_enabled(editing_enabled and duplicate_wizard_index < len(duplicate_wizard_groups) - 1)
         duplicate_apply_button.set_enabled(editing_enabled)
         viewer.set_editing_enabled(editing_enabled)
+        _refresh_restart_button()
 
         if locked:
             if moonraker_message:
@@ -1163,6 +1306,7 @@ def build_ui(app_version: str = "unknown") -> None:
     search_input.on_value_change(on_search_change)
     duplicate_warning_button.on_click(open_duplicate_wizard)
     backup_button.on_click(open_backup_dialog)
+    restart_klipper_button.on_click(restart_klipper)
     create_backup_button.on_click(perform_backup)
     purge_deleted_button.on_click(purge_deleted_macros)
     confirm_restore_button.on_click(perform_restore)
@@ -1170,6 +1314,11 @@ def build_ui(app_version: str = "unknown") -> None:
     confirm_macro_delete_button.on_click(confirm_macro_delete)
 
     index_button.on_click(run_index)
+
+    if _printer_profile_missing():
+        printer_vendor_input.set_value(str(vault_cfg.printer_vendor or "").strip())
+        printer_model_input.set_value(str(vault_cfg.printer_model or "").strip())
+        printer_profile_dialog.open()
 
     refresh_print_state()
     if not printer_is_printing:

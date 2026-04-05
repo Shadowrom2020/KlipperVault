@@ -6,7 +6,9 @@ from klipper_macro_indexer import (
     get_cfg_load_order,
     load_duplicate_macro_groups,
     load_macro_list,
+    macro_row_to_section_text,
     parse_macros_from_cfg,
+    remove_inactive_macro_version,
     restore_macro_version,
     run_indexing,
 )
@@ -48,6 +50,38 @@ def test_parse_macros_trims_trailing_comments_and_preserves_indented_brackets(tm
     assert record.description == "Startup macro"
     assert json.loads(record.variables_json) == {"speed": "120"}
     assert record.gcode == '  G28\n  [not a real header]\n  RESPOND MSG="ready"'
+
+
+def test_parse_and_render_macro_preserves_rename_existing_line(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "printer.cfg"
+    _write(
+        cfg_path,
+        """
+        [gcode_macro PAUSE]
+        rename_existing: BASE_PAUSE
+        gcode:
+          RESPOND MSG="custom pause"
+        """,
+    )
+
+    records = parse_macros_from_cfg(cfg_path, tmp_path)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.rename_existing == "BASE_PAUSE"
+
+    rendered = macro_row_to_section_text(
+        {
+            "section_type": record.section_type,
+            "macro_name": record.macro_name,
+            "description": record.description,
+            "rename_existing": record.rename_existing,
+            "gcode": record.gcode,
+            "variables_json": record.variables_json,
+        }
+    )
+
+    assert "rename_existing: BASE_PAUSE" in rendered
 
 
 def test_get_cfg_load_order_follows_include_order_and_appends_unreferenced_files(tmp_path: Path) -> None:
@@ -182,3 +216,63 @@ def test_restore_macro_version_normalizes_blank_lines_around_macro(tmp_path: Pat
         "\n"
         "[display_status]\n"
     )
+
+
+def test_remove_inactive_macro_version_removes_selected_inactive_row(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [include base.cfg]
+        [include override.cfg]
+        """,
+    )
+    _write(
+        config_dir / "base.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="base"
+        """,
+    )
+    _write(
+        config_dir / "override.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="override"
+        """,
+    )
+
+    run_indexing(config_dir, db_path)
+
+    base_row = next(row for row in load_macro_list(db_path) if row["file_path"] == "base.cfg")
+
+    result = remove_inactive_macro_version(db_path, "base.cfg", "HELLO", int(base_row["version"]))
+    macros = load_macro_list(db_path)
+
+    assert result == {"removed": 1, "reason": "removed"}
+    assert len(macros) == 1
+    assert macros[0]["file_path"] == "override.cfg"
+
+
+def test_remove_inactive_macro_version_rejects_active_row(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="only"
+        """,
+    )
+
+    run_indexing(config_dir, db_path)
+
+    active_row = load_macro_list(db_path)[0]
+
+    result = remove_inactive_macro_version(db_path, "printer.cfg", "HELLO", int(active_row["version"]))
+
+    assert result == {"removed": 0, "reason": "not_inactive"}

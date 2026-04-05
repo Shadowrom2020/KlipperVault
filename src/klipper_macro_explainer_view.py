@@ -9,7 +9,7 @@ from typing import Callable
 
 from nicegui import ui
 
-from klipper_macro_explainer import explain_macro_script
+from klipper_macro_explainer import explain_macro_script, load_command_pack
 from klipper_vault_i18n import t
 
 
@@ -20,6 +20,65 @@ def _as_dict_list(value: object) -> list[dict[str, object]]:
     return [item for item in value if isinstance(item, dict)]
 
 
+def _as_count_dict(value: object) -> dict[str, int]:
+    """Normalize dynamic explain payload entries into dict[str, int]."""
+    if not isinstance(value, dict):
+        return {}
+
+    counts: dict[str, int] = {}
+    for key, raw_value in value.items():
+        if not isinstance(key, str):
+            continue
+        try:
+            count = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            counts[key] = count
+    return counts
+
+
+def _as_str_list(value: object) -> list[str]:
+    """Normalize dynamic explain payload entries into list[str]."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    """Convert dynamic payload values to int with fallback."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _confidence_classes(confidence: str) -> str:
+    """Map confidence labels to compact badge styling."""
+    if confidence == "high":
+        return "text-xs px-2 py-0.5 rounded bg-green-9 text-green-2"
+    if confidence == "medium":
+        return "text-xs px-2 py-0.5 rounded bg-yellow-9 text-yellow-2"
+    return "text-xs px-2 py-0.5 rounded bg-red-9 text-red-2"
+
+
+def _effect_classes(effect: str) -> str:
+    """Map side-effect tags to compact badge styling."""
+    if effect in {"disruptive", "persistent_write"}:
+        return "text-xs px-2 py-0.5 rounded bg-red-9 text-red-2"
+    if effect in {"blocking_wait", "heater_target_change"}:
+        return "text-xs px-2 py-0.5 rounded bg-yellow-9 text-yellow-2"
+    return "text-xs px-2 py-0.5 rounded bg-grey-8 text-grey-2"
+
+
 class MacroExplainerView:
     """Render user-facing explanations for the selected macro."""
 
@@ -28,13 +87,24 @@ class MacroExplainerView:
         self._available_macros: list[dict[str, object]] = []
         self._open_macro_handler: Callable[[str, str], None] | None = None
         self._selected_reference: dict[str, object] | None = None
+        self._verbosity = "detailed"
 
         with ui.dialog() as self._dialog, ui.card().classes("w-[74rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col"):
             ui.label(t("Script explanation")).classes("text-md font-semibold")
             ui.label(
                 t("Disclaimer: Macro explanation is an early development feature and may be inaccurate.")
             ).classes("text-xs text-yellow-4")
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.label(t("Detail level")).classes("text-xs text-grey-5")
+                self._verbosity_concise_button = ui.button(
+                    t("Concise"), on_click=lambda: self._set_verbosity("concise")
+                ).props("dense no-caps flat")
+                self._verbosity_detailed_button = ui.button(
+                    t("Detailed"), on_click=lambda: self._set_verbosity("detailed")
+                ).props("dense no-caps flat")
             self._summary_label = ui.label(t("Select a macro to explain its g-code.")).classes("text-sm text-grey-4")
+            self._flow_label = ui.label("").classes("text-xs text-grey-5")
+            self._overview_row = ui.row().classes("w-full gap-2 items-center")
             ui.label(t("Referenced macros")).classes("text-sm font-medium mt-2")
             self._references_row = ui.row().classes("w-full gap-2 items-center")
             self._references_empty = ui.label(t("No referenced macros detected.")).classes("text-xs text-grey-5")
@@ -53,6 +123,8 @@ class MacroExplainerView:
                 self._reference_open_button = ui.button(t("Open macro"), on_click=self._open_selected_reference).props(
                     "color=primary no-caps"
                 )
+
+        self._refresh_verbosity_buttons()
 
     def set_open_macro_handler(self, handler: Callable[[str, str], None] | None) -> None:
         """Register callback used to navigate to another macro."""
@@ -74,10 +146,68 @@ class MacroExplainerView:
     def show_macro(self, macro: dict[str, object] | None) -> None:
         """Rebuild explanation UI for the selected macro."""
         self._current_macro = macro
-        payload = explain_macro_script(macro, self._available_macros)
+        payload = explain_macro_script(
+            macro,
+            self._available_macros,
+            verbosity=self._verbosity,
+            command_pack=load_command_pack(),
+        )
         self._summary_label.set_text(str(payload.get("summary", "")))
+        self._flow_label.set_text(str(payload.get("flow_summary", "")))
+        self._render_overview_badges(payload)
         self._render_references(_as_dict_list(payload.get("references", [])))
         self._render_lines(_as_dict_list(payload.get("lines", [])))
+
+    def _set_verbosity(self, verbosity: str) -> None:
+        """Update verbosity mode and refresh the currently shown macro."""
+        self._verbosity = "concise" if verbosity == "concise" else "detailed"
+        self._refresh_verbosity_buttons()
+        self.show_macro(self._current_macro)
+
+    def _refresh_verbosity_buttons(self) -> None:
+        """Reflect selected verbosity mode in button styles."""
+        if self._verbosity == "concise":
+            self._verbosity_concise_button.props("dense no-caps color=primary")
+            self._verbosity_detailed_button.props("dense no-caps flat")
+        else:
+            self._verbosity_concise_button.props("dense no-caps flat")
+            self._verbosity_detailed_button.props("dense no-caps color=primary")
+
+    def _render_overview_badges(self, payload: dict[str, object]) -> None:
+        """Render top-level confidence and risk badges for quick triage."""
+        self._overview_row.clear()
+
+        effects = _as_count_dict(payload.get("effects", {}))
+        confidence = _as_count_dict(payload.get("confidence", {}))
+        risk_line_count = _as_int(payload.get("risk_line_count", 0), default=0)
+
+        with self._overview_row:
+            if risk_line_count > 0:
+                ui.label(f"{risk_line_count} disruptive line(s)").classes(
+                    "text-xs px-2 py-0.5 rounded bg-red-9 text-red-2"
+                )
+            if effects.get("blocking_wait", 0) > 0:
+                ui.label(f"{effects['blocking_wait']} blocking wait(s)").classes(
+                    "text-xs px-2 py-0.5 rounded bg-yellow-9 text-yellow-2"
+                )
+            if effects.get("persistent_write", 0) > 0:
+                ui.label(f"{effects['persistent_write']} persistent write(s)").classes(
+                    "text-xs px-2 py-0.5 rounded bg-red-9 text-red-2"
+                )
+            if confidence.get("low", 0) > 0:
+                ui.label(f"{confidence['low']} low-confidence line(s)").classes(
+                    "text-xs px-2 py-0.5 rounded bg-orange-9 text-orange-2"
+                )
+
+            if not any(
+                (
+                    risk_line_count > 0,
+                    effects.get("blocking_wait", 0) > 0,
+                    effects.get("persistent_write", 0) > 0,
+                    confidence.get("low", 0) > 0,
+                )
+            ):
+                ui.label(t("No elevated effects detected.")).classes("text-xs text-grey-5")
 
     def _render_references(self, references: list[dict[str, object]]) -> None:
         """Render top-level referenced macro links."""
@@ -115,6 +245,11 @@ class MacroExplainerView:
                         with ui.column().classes("gap-1 flex-1"):
                             ui.label(str(line.get("summary", ""))).classes("text-sm font-medium")
                             ui.label(str(line.get("details", ""))).classes("text-sm text-grey-4")
+                            with ui.row().classes("gap-2 items-center mt-0.5"):
+                                confidence = str(line.get("confidence", "")).strip().lower() or "unknown"
+                                ui.label(f"confidence: {confidence}").classes(_confidence_classes(confidence))
+                                for effect in _as_str_list(line.get("effects", [])):
+                                    ui.label(effect.replace("_", " ")).classes(_effect_classes(effect))
                             ui.label(str(line.get("text", ""))).classes(
                                 "text-xs font-mono text-blue-2 whitespace-pre-wrap"
                             )

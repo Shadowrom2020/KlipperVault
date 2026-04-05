@@ -100,6 +100,7 @@ class MacroEditor:
         if macro is None:
             return ""
         description = str(macro.get("description") or "-")
+        rename_existing = str(macro.get("rename_existing") or "").strip()
         gcode_text = str(macro.get("gcode") or "")
         try:
             variables = json.loads(str(macro.get("variables_json") or "{}"))
@@ -109,6 +110,8 @@ class MacroEditor:
         macro_lines = [f"[gcode_macro {macro.get('macro_name', '')}]"]
         if description != "-":
             macro_lines.append(f"description: {description}")
+        if rename_existing:
+            macro_lines.append(f"rename_existing: {rename_existing}")
         if isinstance(variables, dict):
             for key in sorted(variables.keys()):
                 macro_lines.append(f"variable_{key}: {variables[key]}")
