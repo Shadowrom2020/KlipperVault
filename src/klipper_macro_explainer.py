@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from collections import Counter
 from dataclasses import asdict, dataclass
 import re
@@ -28,9 +29,14 @@ class ExplanationLine:
     line_number: int
     text: str
     kind: str
+    confidence: str
+    effects: list[str]
     summary: str
     details: str
     references: list[dict[str, object]]
+
+
+CommandExplainer = Callable[[str, dict[str, str], str], tuple[str, str, str]]
 
 
 def build_macro_reference_index(macros: list[dict[str, object]]) -> dict[str, list[MacroReference]]:
@@ -67,13 +73,19 @@ def build_macro_reference_index(macros: list[dict[str, object]]) -> dict[str, li
 def explain_macro_script(
     macro: dict[str, object] | None,
     available_macros: list[dict[str, object]] | None = None,
+    verbosity: str = "detailed",
 ) -> dict[str, object]:
     """Explain a macro body in plain language and discover macro references."""
+    normalized_verbosity = _normalize_verbosity(verbosity)
+
     if macro is None:
         return {
             "summary": "Select a macro to see an explanation.",
             "lines": [],
             "references": [],
+            "flow": [],
+            "flow_summary": "",
+            "verbosity": normalized_verbosity,
             "has_content": False,
         }
 
@@ -84,6 +96,9 @@ def explain_macro_script(
             "summary": "This macro does not currently contain any g-code lines.",
             "lines": [],
             "references": [],
+            "flow": [],
+            "flow_summary": "",
+            "verbosity": normalized_verbosity,
             "has_content": False,
         }
 
@@ -94,7 +109,10 @@ def explain_macro_script(
     current_macro_names.discard("")
     reference_index = build_macro_reference_index(available_macros or [])
     categories: Counter[str] = Counter()
+    confidence_levels: Counter[str] = Counter()
+    effects: Counter[str] = Counter()
     references: dict[tuple[str, str], dict[str, object]] = {}
+    explanation_entries: list[ExplanationLine] = []
     explanation_lines: list[dict[str, object]] = []
     explained_line_count = 0
 
@@ -104,7 +122,11 @@ def explain_macro_script(
             continue
         explained_line_count += 1
         categories[entry.kind] += 1
-        explanation_lines.append(asdict(entry))
+        confidence_levels[entry.confidence] += 1
+        for effect in entry.effects:
+            effects[effect] += 1
+        explanation_entries.append(entry)
+        explanation_lines.append(_serialize_line(entry, normalized_verbosity))
         for reference in entry.references:
             key = (str(reference["macro_name"]), str(reference["file_path"]))
             references[key] = reference
@@ -114,20 +136,91 @@ def explain_macro_script(
             "summary": "This macro does not contain any executable lines that need explanation.",
             "lines": [],
             "references": [],
+            "flow": [],
+            "flow_summary": "",
+            "verbosity": normalized_verbosity,
             "has_content": False,
         }
 
+    flow = _build_flow_phases(explanation_entries)
+
     return {
-        "summary": _build_summary(categories, references, explained_line_count),
+        "summary": _build_summary(categories, references, confidence_levels, effects, explained_line_count),
         "lines": explanation_lines,
         "references": list(references.values()),
+        "confidence": dict(confidence_levels),
+        "effects": dict(effects),
+        "risk_line_count": int(effects.get("disruptive", 0)),
+        "flow": flow,
+        "flow_summary": _build_flow_summary(flow),
+        "verbosity": normalized_verbosity,
         "has_content": True,
     }
+
+
+def _normalize_verbosity(verbosity: str) -> str:
+    """Normalize verbosity selector with safe fallback."""
+    return "concise" if str(verbosity or "").strip().lower() == "concise" else "detailed"
+
+
+def _serialize_line(entry: ExplanationLine, verbosity: str) -> dict[str, object]:
+    """Serialize explanation line with optional concise detail reduction."""
+    payload = asdict(entry)
+    if verbosity == "concise":
+        payload["details"] = _first_sentence(str(payload.get("details", "")))
+    return payload
+
+
+def _first_sentence(text: str) -> str:
+    """Return first sentence-like chunk from detail text."""
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+
+    parts = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)
+    return parts[0]
+
+
+def _build_flow_phases(entries: list[ExplanationLine]) -> list[str]:
+    """Build ordered, de-duplicated high-level flow phases for a macro."""
+    phases: list[str] = []
+    for entry in entries:
+        phase = _phase_for_entry(entry)
+        if phase and phase not in phases:
+            phases.append(phase)
+    return phases
+
+
+def _phase_for_entry(entry: ExplanationLine) -> str:
+    """Map one explained line to a high-level flow phase."""
+    effects = set(entry.effects)
+    if entry.kind == "macro_call":
+        return "macro call chain"
+    if "temperature_control" in effects or "blocking_wait" in effects:
+        return "heat and wait"
+    if entry.kind == "motion":
+        return "movement"
+    if entry.kind == "state":
+        return "state updates"
+    if entry.kind == "control":
+        return "template control"
+    if entry.kind == "message":
+        return "user feedback"
+    return "custom or unknown commands"
+
+
+def _build_flow_summary(flow: list[str]) -> str:
+    """Render compact sentence that describes macro phase sequence."""
+    if not flow:
+        return ""
+    return "Execution flow: " + " -> ".join(flow) + "."
 
 
 def _build_summary(
     categories: Counter[str],
     references: dict[tuple[str, str], dict[str, object]],
+    confidence_levels: Counter[str],
+    effects: Counter[str],
     line_count: int,
 ) -> str:
     """Build compact top-level description for one macro body."""
@@ -156,6 +249,18 @@ def _build_summary(
     if categories.get("unknown"):
         parts.append("Some lines use commands that are not yet described in detail, so they are shown with a generic explanation.")
 
+    disruptive_count = int(effects.get("disruptive", 0))
+    if disruptive_count:
+        parts.append(f"Caution: {disruptive_count} line(s) may interrupt or restart printer operation.")
+
+    blocking_count = int(effects.get("blocking_wait", 0))
+    if blocking_count:
+        parts.append(f"It contains {blocking_count} blocking wait line(s) that can pause macro progress.")
+
+    low_confidence_count = int(confidence_levels.get("low", 0))
+    if low_confidence_count:
+        parts.append(f"{low_confidence_count} line(s) have low explanation confidence and may need manual verification.")
+
     return " ".join(parts)
 
 
@@ -182,6 +287,8 @@ def _explain_line(
             line_number=line_number,
             text=raw_line,
             kind="control",
+            confidence="medium",
+            effects=["template_control"],
             summary="Template expression inside g-code.",
             details="This line injects values computed from macro parameters or live printer state before the command runs.",
             references=[],
@@ -199,6 +306,8 @@ def _explain_line(
             line_number=line_number,
             text=raw_line,
             kind="macro_call",
+            confidence="high",
+            effects=["macro_call_transfer"],
             summary=f"Calls macro {upper_command}.",
             details=(
                 f"This line transfers control to macro {upper_command}. {reference_note} is available in "
@@ -207,108 +316,14 @@ def _explain_line(
             references=macro_refs,
         )
 
-    command_map = {
-        "G0": _explain_motion_command,
-        "G1": _explain_motion_command,
-        "G2": _explain_arc_move,
-        "G3": _explain_arc_move,
-        "G4": _explain_dwell,
-        "G10": _explain_firmware_retraction,
-        "G11": _explain_firmware_unretraction,
-        "G17": _explain_arc_plane_select,
-        "G18": _explain_arc_plane_select,
-        "G19": _explain_arc_plane_select,
-        "G28": _explain_home_command,
-        "G90": _explain_absolute_positioning,
-        "G91": _explain_relative_positioning,
-        "G92": _explain_set_position,
-        "M18": _explain_disable_steppers,
-        "M20": _explain_sd_list,
-        "M21": _explain_sd_init,
-        "M23": _explain_sd_select,
-        "M24": _explain_sd_start_or_resume,
-        "M25": _explain_sd_pause,
-        "M26": _explain_sd_set_position,
-        "M27": _explain_sd_status,
-        "M73": _explain_set_build_percentage,
-        "M82": _explain_absolute_extrusion,
-        "M83": _explain_relative_extrusion,
-        "M84": _explain_disable_steppers,
-        "M105": _explain_query_nozzle_temperature,
-        "M104": _explain_nozzle_temperature,
-        "M109": _explain_nozzle_temperature_wait,
-        "M112": _explain_emergency_stop,
-        "M114": _explain_get_current_position,
-        "M115": _explain_firmware_version,
-        "M118": _explain_host_echo,
-        "M119": _explain_query_endstops_legacy,
-        "M140": _explain_bed_temperature,
-        "M190": _explain_bed_temperature_wait,
-        "M204": _explain_acceleration,
-        "M220": _explain_speed_factor,
-        "M221": _explain_extrude_factor,
-        "M400": _explain_wait_moves,
-        "M106": _explain_fan_command,
-        "M107": _explain_fan_off,
-        "M117": _explain_display_message,
-        "RESPOND": _explain_respond,
-        "SET_DISPLAY_TEXT": _explain_set_display_text,
-        "SET_GCODE_VARIABLE": _explain_set_gcode_variable,
-        "SAVE_GCODE_STATE": _explain_save_gcode_state,
-        "RESTORE_GCODE_STATE": _explain_restore_gcode_state,
-        "SET_GCODE_OFFSET": _explain_set_gcode_offset,
-        "GET_POSITION": _explain_get_position,
-        "TEMPERATURE_WAIT": _explain_temperature_wait,
-        "TURN_OFF_HEATERS": _explain_turn_off_heaters,
-        "SET_HEATER_TEMPERATURE": _explain_set_heater_temperature,
-        "UPDATE_DELAYED_GCODE": _explain_update_delayed_gcode,
-        "BED_MESH_CALIBRATE": _explain_bed_mesh_calibrate,
-        "BED_MESH_CLEAR": _explain_bed_mesh_clear,
-        "BED_MESH_OUTPUT": _explain_bed_mesh_output,
-        "BED_MESH_MAP": _explain_bed_mesh_map,
-        "BED_MESH_PROFILE": _explain_bed_mesh_profile,
-        "BED_MESH_OFFSET": _explain_bed_mesh_offset,
-        "BED_TILT_CALIBRATE": _explain_bed_tilt_calibrate,
-        "BED_SCREWS_ADJUST": _explain_bed_screws_adjust,
-        "QUAD_GANTRY_LEVEL": _explain_quad_gantry_level,
-        "Z_TILT_ADJUST": _explain_z_tilt_adjust,
-        "SCREWS_TILT_CALCULATE": _explain_screws_tilt_calculate,
-        "PROBE": _explain_probe,
-        "PROBE_ACCURACY": _explain_probe_accuracy,
-        "PROBE_CALIBRATE": _explain_probe_calibrate,
-        "QUERY_PROBE": _explain_query_probe,
-        "QUERY_ENDSTOPS": _explain_query_endstops,
-        "SET_FAN_SPEED": _explain_set_fan_speed,
-        "SET_PIN": _explain_set_pin,
-        "SET_LED": _explain_set_led,
-        "SET_LED_TEMPLATE": _explain_set_led_template,
-        "SET_SERVO": _explain_set_servo,
-        "SET_INPUT_SHAPER": _explain_set_input_shaper,
-        "SET_VELOCITY_LIMIT": _explain_set_velocity_limit,
-        "SET_PRESSURE_ADVANCE": _explain_set_pressure_advance,
-        "SAVE_VARIABLE": _explain_save_variable,
-        "SAVE_CONFIG": _explain_save_config,
-        "SET_IDLE_TIMEOUT": _explain_set_idle_timeout,
-        "SET_TEMPERATURE_FAN_TARGET": _explain_set_temperature_fan_target,
-        "SET_PRINT_STATS_INFO": _explain_set_print_stats_info,
-        "SDCARD_PRINT_FILE": _explain_sdcard_print_file,
-        "SDCARD_RESET_FILE": _explain_sdcard_reset_file,
-        "RESTART": _explain_restart,
-        "FIRMWARE_RESTART": _explain_firmware_restart,
-        "STATUS": _explain_status,
-        "HELP": _explain_help,
-        "PAUSE": _explain_pause,
-        "RESUME": _explain_resume,
-        "CLEAR_PAUSE": _explain_clear_pause,
-        "CANCEL_PRINT": _explain_cancel_print,
-        "PID_CALIBRATE": _explain_pid_calibrate,
-    }
-    explain = command_map.get(upper_command, _explain_generic_command)
+    explain = _get_command_explainer(upper_command)
     kind, summary, details = explain(upper_command, params, stripped)
     return ExplanationLine(
         line_number=line_number,
         text=raw_line,
         kind=kind,
+        confidence=_confidence_for_explanation(kind),
+        effects=_infer_effects(upper_command, kind),
         summary=summary,
         details=details,
         references=[],
@@ -358,6 +373,46 @@ def _resolve_macro_references(
     return [asdict(ref) for ref in refs[:3]]
 
 
+def _confidence_for_explanation(kind: str) -> str:
+    """Return confidence level for an explanation category."""
+    if kind == "unknown":
+        return "low"
+    if kind == "control":
+        return "medium"
+    return "high"
+
+
+def _infer_effects(command: str, kind: str) -> list[str]:
+    """Infer coarse side effects for a line so UI can highlight impact."""
+    effects: list[str] = []
+
+    if kind == "motion":
+        effects.append("motion")
+    if kind == "temperature":
+        effects.append("temperature_control")
+    if kind == "state":
+        effects.append("printer_state_change")
+    if kind == "message":
+        effects.append("user_feedback")
+    if kind == "control":
+        effects.append("template_control")
+
+    if command in {"G4", "M109", "M190", "M400", "TEMPERATURE_WAIT"}:
+        effects.append("blocking_wait")
+
+    if command in {"M104", "M109", "M140", "M190", "SET_HEATER_TEMPERATURE", "TURN_OFF_HEATERS"}:
+        effects.append("heater_target_change")
+
+    if command in {"SAVE_CONFIG", "SAVE_VARIABLE"}:
+        effects.append("persistent_write")
+
+    if command in {"M112", "RESTART", "FIRMWARE_RESTART", "SAVE_CONFIG"}:
+        effects.append("disruptive")
+
+    # Preserve insertion order while deduplicating.
+    return list(dict.fromkeys(effects))
+
+
 def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
     """Explain Jinja control directives embedded in a macro."""
     stripped = raw_line.strip()[2:-2].strip()
@@ -400,7 +455,8 @@ def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
         summary = "Template variable assignment."
         details = "This line computes and stores a template value that later lines can reuse."
         if variable_name and expression:
-            details += f" It assigns {variable_name} from {expression}. " + _describe_template_expression(expression)
+            details = _describe_template_set_assignment(variable_name, expression)
+            details += " " + _describe_template_expression(expression)
     else:
         summary = "Template control directive."
         details = (
@@ -412,6 +468,8 @@ def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
         line_number=line_number,
         text=raw_line,
         kind="control",
+        confidence="medium",
+        effects=["template_control"],
         summary=summary,
         details=details,
         references=[],
@@ -439,6 +497,74 @@ def _parse_template_for_clause(clause: str) -> tuple[str, str]:
     if not match:
         return "", ""
     return match.group(1).strip(), match.group(2).strip()
+
+
+def _split_template_filters(expression: str) -> list[str]:
+    """Split Jinja expression into base expression and top-level filters."""
+    parts: list[str] = []
+    current: list[str] = []
+    paren_depth = 0
+
+    for char in expression:
+        if char == "|" and paren_depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        if char == "(":
+            paren_depth += 1
+        elif char == ")" and paren_depth > 0:
+            paren_depth -= 1
+        current.append(char)
+
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _describe_template_set_assignment(variable_name: str, expression: str) -> str:
+    """Describe a Jinja set assignment with source, fallback, and type hints."""
+    parts = _split_template_filters(expression)
+    if not parts:
+        return f"This sets template variable {variable_name}."
+
+    source_expr = parts[0]
+    source_description = source_expr
+    if source_expr.startswith("params."):
+        source_description = f"macro parameter {source_expr}"
+    elif source_expr.startswith("printer."):
+        source_description = f"live printer value {source_expr}"
+
+    default_value = ""
+    output_type = ""
+
+    for filter_expr in parts[1:]:
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$", filter_expr)
+        if not match:
+            continue
+        filter_name = match.group(1).strip().lower()
+        filter_arg = (match.group(2) or "").strip()
+
+        if filter_name == "default" and filter_arg and not default_value:
+            default_value = filter_arg
+
+        if filter_name in {"int", "float", "bool", "str", "string"} and not output_type:
+            output_type = {
+                "int": "int",
+                "float": "float",
+                "bool": "bool",
+                "str": "string",
+                "string": "string",
+            }[filter_name]
+
+    details = f"This sets template variable {variable_name} from {source_description}."
+    if default_value:
+        details += f" If the source is missing, it falls back to {default_value}."
+    if output_type:
+        details += f" The resulting value type is {output_type}."
+    return details
 
 
 def _describe_template_expression(expression: str) -> str:
@@ -921,6 +1047,118 @@ def _explain_pid_calibrate(_: str, params: dict[str, str], __: str) -> tuple[str
     heater = params.get("HEATER", "a heater")
     target = params.get("TARGET", "unspecified")
     return "temperature", "Runs PID calibration.", f"This starts PID tuning for heater {heater} toward {target}C."
+
+
+def _get_command_explainer(command: str) -> CommandExplainer:
+    """Return registered explainer for a command token."""
+    return _COMMAND_EXPLAINERS.get(command, _explain_generic_command)
+
+
+_COMMAND_GROUPS: tuple[tuple[tuple[str, ...], CommandExplainer], ...] = (
+    (("G0", "G1"), _explain_motion_command),
+    (("G2", "G3"), _explain_arc_move),
+    (("G4",), _explain_dwell),
+    (("G10",), _explain_firmware_retraction),
+    (("G11",), _explain_firmware_unretraction),
+    (("G17", "G18", "G19"), _explain_arc_plane_select),
+    (("G28",), _explain_home_command),
+    (("G90",), _explain_absolute_positioning),
+    (("G91",), _explain_relative_positioning),
+    (("G92",), _explain_set_position),
+    (("M18", "M84"), _explain_disable_steppers),
+    (("M20",), _explain_sd_list),
+    (("M21",), _explain_sd_init),
+    (("M23",), _explain_sd_select),
+    (("M24",), _explain_sd_start_or_resume),
+    (("M25",), _explain_sd_pause),
+    (("M26",), _explain_sd_set_position),
+    (("M27",), _explain_sd_status),
+    (("M73",), _explain_set_build_percentage),
+    (("M82",), _explain_absolute_extrusion),
+    (("M83",), _explain_relative_extrusion),
+    (("M104",), _explain_nozzle_temperature),
+    (("M105",), _explain_query_nozzle_temperature),
+    (("M109",), _explain_nozzle_temperature_wait),
+    (("M112",), _explain_emergency_stop),
+    (("M114",), _explain_get_current_position),
+    (("M115",), _explain_firmware_version),
+    (("M117",), _explain_display_message),
+    (("M118",), _explain_host_echo),
+    (("M119",), _explain_query_endstops_legacy),
+    (("M140",), _explain_bed_temperature),
+    (("M190",), _explain_bed_temperature_wait),
+    (("M204",), _explain_acceleration),
+    (("M220",), _explain_speed_factor),
+    (("M221",), _explain_extrude_factor),
+    (("M400",), _explain_wait_moves),
+    (("M106",), _explain_fan_command),
+    (("M107",), _explain_fan_off),
+    (("RESPOND",), _explain_respond),
+    (("SET_DISPLAY_TEXT",), _explain_set_display_text),
+    (("SET_GCODE_VARIABLE",), _explain_set_gcode_variable),
+    (("SAVE_GCODE_STATE",), _explain_save_gcode_state),
+    (("RESTORE_GCODE_STATE",), _explain_restore_gcode_state),
+    (("SET_GCODE_OFFSET",), _explain_set_gcode_offset),
+    (("GET_POSITION",), _explain_get_position),
+    (("TEMPERATURE_WAIT",), _explain_temperature_wait),
+    (("TURN_OFF_HEATERS",), _explain_turn_off_heaters),
+    (("SET_HEATER_TEMPERATURE",), _explain_set_heater_temperature),
+    (("UPDATE_DELAYED_GCODE",), _explain_update_delayed_gcode),
+    (("BED_MESH_CALIBRATE",), _explain_bed_mesh_calibrate),
+    (("BED_MESH_CLEAR",), _explain_bed_mesh_clear),
+    (("BED_MESH_OUTPUT",), _explain_bed_mesh_output),
+    (("BED_MESH_MAP",), _explain_bed_mesh_map),
+    (("BED_MESH_PROFILE",), _explain_bed_mesh_profile),
+    (("BED_MESH_OFFSET",), _explain_bed_mesh_offset),
+    (("BED_TILT_CALIBRATE",), _explain_bed_tilt_calibrate),
+    (("BED_SCREWS_ADJUST",), _explain_bed_screws_adjust),
+    (("QUAD_GANTRY_LEVEL",), _explain_quad_gantry_level),
+    (("Z_TILT_ADJUST",), _explain_z_tilt_adjust),
+    (("SCREWS_TILT_CALCULATE",), _explain_screws_tilt_calculate),
+    (("PROBE",), _explain_probe),
+    (("PROBE_ACCURACY",), _explain_probe_accuracy),
+    (("PROBE_CALIBRATE",), _explain_probe_calibrate),
+    (("QUERY_PROBE",), _explain_query_probe),
+    (("QUERY_ENDSTOPS",), _explain_query_endstops),
+    (("SET_FAN_SPEED",), _explain_set_fan_speed),
+    (("SET_PIN",), _explain_set_pin),
+    (("SET_LED",), _explain_set_led),
+    (("SET_LED_TEMPLATE",), _explain_set_led_template),
+    (("SET_SERVO",), _explain_set_servo),
+    (("SET_INPUT_SHAPER",), _explain_set_input_shaper),
+    (("SET_VELOCITY_LIMIT",), _explain_set_velocity_limit),
+    (("SET_PRESSURE_ADVANCE",), _explain_set_pressure_advance),
+    (("SAVE_VARIABLE",), _explain_save_variable),
+    (("SAVE_CONFIG",), _explain_save_config),
+    (("SET_IDLE_TIMEOUT",), _explain_set_idle_timeout),
+    (("SET_TEMPERATURE_FAN_TARGET",), _explain_set_temperature_fan_target),
+    (("SET_PRINT_STATS_INFO",), _explain_set_print_stats_info),
+    (("SDCARD_PRINT_FILE",), _explain_sdcard_print_file),
+    (("SDCARD_RESET_FILE",), _explain_sdcard_reset_file),
+    (("RESTART",), _explain_restart),
+    (("FIRMWARE_RESTART",), _explain_firmware_restart),
+    (("STATUS",), _explain_status),
+    (("HELP",), _explain_help),
+    (("PAUSE",), _explain_pause),
+    (("RESUME",), _explain_resume),
+    (("CLEAR_PAUSE",), _explain_clear_pause),
+    (("CANCEL_PRINT",), _explain_cancel_print),
+    (("PID_CALIBRATE",), _explain_pid_calibrate),
+)
+
+
+def _build_command_explainers() -> dict[str, CommandExplainer]:
+    """Expand grouped command aliases into a direct command lookup map."""
+    command_explainers: dict[str, CommandExplainer] = {}
+    for commands, explainer in _COMMAND_GROUPS:
+        for command in commands:
+            if command in command_explainers:
+                raise ValueError(f"Duplicate command registration detected: {command}")
+            command_explainers[command] = explainer
+    return command_explainers
+
+
+_COMMAND_EXPLAINERS = _build_command_explainers()
 
 
 def _explain_generic_command(command: str, params: dict[str, str], __: str) -> tuple[str, str, str]:

@@ -8,7 +8,7 @@ It is designed for Klipper systems that keep their printer configuration under `
 
 ## Overview
 
-KlipperVault scans your Klipper config tree, indexes every `[gcode_macro ...]` section a database, and presents the results in a web interface.
+KlipperVault scans your Klipper config tree, indexes every `[gcode_macro ...]` section to a database, and presents the results in a web interface.
 
 The application focuses on a few operational goals:
 
