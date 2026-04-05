@@ -25,6 +25,7 @@ from klipper_macro_gui_service import MacroGuiService
 from klipper_macro_viewer import MacroViewer, format_ts as _format_ts
 from klipper_macro_watcher import ConfigWatcher
 from klipper_vault_config import load_or_create as _load_vault_config
+from klipper_vault_config import save as _save_vault_config
 from klipper_vault_i18n import set_language, t
 
 
@@ -125,6 +126,44 @@ def build_ui(app_version: str = "unknown") -> None:
         with ui.row().classes("w-full justify-end mt-2"):
             ui.button(t("OK"), on_click=print_lock_dialog.close).props("flat no-caps")
 
+    with ui.dialog().props("persistent") as printer_profile_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
+        ui.label(t("Printer profile setup")).classes("text-lg font-semibold")
+        ui.label(t("Please provide your printer vendor and model for first-time setup.")).classes("text-sm text-grey-5")
+        printer_vendor_input = ui.input(label=t("Printer vendor")).props("outlined autofocus").classes("w-full mt-2")
+        printer_model_input = ui.input(label=t("Printer model")).props("outlined").classes("w-full mt-2")
+        printer_profile_error = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            save_printer_profile_button = ui.button(t("Save")).props("color=primary no-caps")
+
+    def _printer_profile_missing() -> bool:
+        """Return True when first-start printer profile values are not yet set."""
+        return not str(vault_cfg.printer_vendor or "").strip() or not str(vault_cfg.printer_model or "").strip()
+
+    def _format_printer_profile_label() -> str:
+        """Format printer identity for status sidebar display."""
+        vendor = str(vault_cfg.printer_vendor or "").strip()
+        model = str(vault_cfg.printer_model or "").strip()
+        if vendor and model:
+            return t("Printer profile: {vendor} {model}", vendor=vendor, model=model)
+        return t("Printer profile: not set")
+
+    def _save_printer_profile() -> None:
+        """Validate and persist printer profile values into klippervault.cfg."""
+        vendor = str(printer_vendor_input.value or "").strip()
+        model = str(printer_model_input.value or "").strip()
+        if not vendor or not model:
+            printer_profile_error.set_text(t("Vendor and model are required."))
+            return
+
+        vault_cfg.printer_vendor = vendor
+        vault_cfg.printer_model = model
+        _save_vault_config(config_dir, vault_cfg)
+        printer_profile_label.set_text(_format_printer_profile_label())
+        printer_profile_error.set_text("")
+        printer_profile_dialog.close()
+
+    save_printer_profile_button.on_click(_save_printer_profile)
+
     with ui.grid().classes("w-full grid-cols-4 gap-4 p-4 h-[calc(100vh-110px)]"):
         with ui.card().classes("col-span-1 h-full flex flex-col overflow-hidden"):
             ui.label(t("Indexed macros")).classes("text-lg font-semibold mb-2 shrink-0")
@@ -163,6 +202,7 @@ def build_ui(app_version: str = "unknown") -> None:
             ui.separator().classes("my-2")
             ui.label(t("Status")).classes("text-md font-semibold mb-1")
             status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
+            printer_profile_label = ui.label(_format_printer_profile_label()).classes("text-sm text-grey-5")
 
             ui.separator().classes("my-2")
             ui.label(t("Backups")).classes("text-md font-semibold mb-1")
@@ -1170,6 +1210,9 @@ def build_ui(app_version: str = "unknown") -> None:
     confirm_macro_delete_button.on_click(confirm_macro_delete)
 
     index_button.on_click(run_index)
+
+    if _printer_profile_missing():
+        printer_profile_dialog.open()
 
     refresh_print_state()
     if not printer_is_printing:

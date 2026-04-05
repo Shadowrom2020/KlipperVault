@@ -27,6 +27,11 @@ port: 10090
 
 # UI language used by the web interface (for example: en, de).
 ui_language: en
+
+# Optional printer identity fields used by KlipperVault features.
+# If left empty, KlipperVault asks once on first start.
+printer_vendor:
+printer_model:
 """
 
 
@@ -35,6 +40,39 @@ class VaultConfig:
     version_history_size: int = 5
     port: int = 10090
     ui_language: str = "en"
+    printer_vendor: str = ""
+    printer_model: str = ""
+
+
+def save(config_dir: Path, config: VaultConfig) -> None:
+    """Persist VaultConfig to klippervault.cfg in a stable Klipper format."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    cfg_path = config_dir / _CFG_FILENAME
+
+    lines = [
+        "# KlipperVault configuration",
+        "# This file is automatically created by KlipperVault on first start.",
+        "# Edit the values below to customise behaviour.",
+        "",
+        "[vault]",
+        "# Maximum number of versions to keep per macro.",
+        "# Older versions are deleted automatically when this limit is exceeded.",
+        "# Minimum value is 1.",
+        f"version_history_size: {max(1, int(config.version_history_size))}",
+        "",
+        "# HTTP port for the KlipperVault web UI.",
+        f"port: {int(config.port)}",
+        "",
+        "# UI language used by the web interface (for example: en, de).",
+        f"ui_language: {str(config.ui_language or 'en').strip().lower() or 'en'}",
+        "",
+        "# Optional printer identity fields used by KlipperVault features.",
+        "# If left empty, KlipperVault asks once on first start.",
+        f"printer_vendor: {str(config.printer_vendor or '').strip()}",
+        f"printer_model: {str(config.printer_model or '').strip()}",
+        "",
+    ]
+    cfg_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def load_or_create(config_dir: Path) -> VaultConfig:
@@ -74,4 +112,18 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         if raw_language:
             ui_language = raw_language
 
-    return VaultConfig(version_history_size=version_history_size, port=port, ui_language=ui_language)
+    printer_vendor = ""
+    if parser.has_option("vault", "printer_vendor"):
+        printer_vendor = parser.get("vault", "printer_vendor").strip()
+
+    printer_model = ""
+    if parser.has_option("vault", "printer_model"):
+        printer_model = parser.get("vault", "printer_model").strip()
+
+    return VaultConfig(
+        version_history_size=version_history_size,
+        port=port,
+        ui_language=ui_language,
+        printer_vendor=printer_vendor,
+        printer_model=printer_model,
+    )

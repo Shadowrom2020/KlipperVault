@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from klipper_vault_config import load_or_create
+from klipper_vault_config import VaultConfig, load_or_create, save
 
 
 def test_load_or_create_writes_defaults_when_missing(tmp_path: Path) -> None:
@@ -11,6 +11,8 @@ def test_load_or_create_writes_defaults_when_missing(tmp_path: Path) -> None:
     assert config.version_history_size == 5
     assert config.port == 10090
     assert config.ui_language == "en"
+    assert config.printer_vendor == ""
+    assert config.printer_model == ""
 
 
 def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
@@ -25,3 +27,39 @@ def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
     assert config.version_history_size == 1
     assert config.port == 10090
     assert config.ui_language == "de"
+    assert config.printer_vendor == ""
+    assert config.printer_model == ""
+
+
+def test_load_or_create_reads_printer_identity_fields(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "klippervault.cfg"
+    cfg_path.write_text(
+        "[vault]\nprinter_vendor: Voron\nprinter_model: Trident\n",
+        encoding="utf-8",
+    )
+
+    config = load_or_create(tmp_path)
+
+    assert config.printer_vendor == "Voron"
+    assert config.printer_model == "Trident"
+
+
+def test_save_persists_printer_identity_fields(tmp_path: Path) -> None:
+    save(
+        tmp_path,
+        VaultConfig(
+            version_history_size=7,
+            port=10100,
+            ui_language="de",
+            printer_vendor="RatRig",
+            printer_model="V-Core 3",
+        ),
+    )
+
+    config = load_or_create(tmp_path)
+
+    assert config.version_history_size == 7
+    assert config.port == 10100
+    assert config.ui_language == "de"
+    assert config.printer_vendor == "RatRig"
+    assert config.printer_model == "V-Core 3"
