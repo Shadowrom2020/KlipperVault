@@ -75,6 +75,7 @@ The application focuses on a few operational goals:
 - Disables macro editing and other mutating actions while printing.
 - Pauses the config file watcher during active prints.
 - Shows a warning dialog in the UI when edits are blocked by printer state.
+- Exposes a `Restart Klipper` toolbar action only when macro-affecting changes are pending and the printer is idle.
 
 ### Mainsail integration
 
@@ -141,6 +142,8 @@ Default config:
 version_history_size: 5
 port: 10090
 ui_language: en
+printer_vendor:
+printer_model:
 ```
 
 ### Settings
@@ -148,6 +151,10 @@ ui_language: en
 - `version_history_size`: Maximum stored versions per macro.
 - `port`: Port used by the KlipperVault web UI.
 - `ui_language`: UI language code (currently `en` and `de` are available).
+- `printer_vendor`: Optional printer vendor/manufacturer name shown in the UI status panel.
+- `printer_model`: Optional printer model name shown in the UI status panel.
+
+On first start, and also after updating from older `klippervault.cfg` files that do not yet contain these keys, KlipperVault prompts for printer vendor and model and stores them back into `klippervault.cfg`.
 
 ### Optional command-pack file for explainer extensions
 
@@ -308,6 +315,16 @@ KlipperVault allows editing only when:
 2. The selected macro is not deleted.
 3. The selected row is the latest stored version for that macro identity.
 
+### Klipper restart after macro changes
+
+When KlipperVault detects macro-affecting changes, the top toolbar can show a `Restart Klipper` button.
+
+- The button is only visible when a restart is pending.
+- The button is hidden while the printer is printing or otherwise busy.
+- After a successful restart request, the button is hidden again until another macro change is detected.
+
+This allows KlipperVault to track when cfg-backed macro edits likely require a Klipper host reload without encouraging unsafe restarts during active printer operation.
+
 ### Duplicate handling
 
 When duplicate macro names are detected, the top toolbar exposes a duplicate warning action. The duplicate workflow lets you inspect entries, compare keep targets, and apply a chosen resolution.
@@ -412,6 +429,19 @@ python3 -m py_compile src/klipper_macro_gui_service.py src/klipper_macro_viewer.
 ```
 
 A zero-exit compile check means no syntax errors. In addition to compile checks, run the pytest suite and a manual smoke test of changed UI flows.
+
+### CI-equivalent local checks
+
+The GitHub Actions workflows currently validate these Python checks for pull requests:
+
+```bash
+./.venv/bin/ruff check .
+PYTHONPATH=src ./.venv/bin/mypy src klipper_vault.py --ignore-missing-imports
+./.venv/bin/python -m py_compile klipper_vault.py src/*.py
+PYTHONPATH=src ./.venv/bin/pytest -q
+./.venv/bin/pip-audit
+./.venv/bin/bandit -q -r src klipper_vault.py -s B608
+```
 
 ### Tests
 
