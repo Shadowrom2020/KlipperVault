@@ -90,6 +90,9 @@ def build_ui(app_version: str = "unknown") -> None:
     with ui.header().classes("items-center gap-4 px-6 py-2 bg-grey-9"):
         ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
         ui.space()
+        restart_klipper_button = ui.button(t("Restart Klipper"), icon="restart_alt").props("flat color=white")
+        restart_klipper_button.classes("text-orange-4")
+        restart_klipper_button.set_visibility(False)
         duplicate_warning_button = ui.button(t("Duplicates found"), icon="warning").props("flat no-caps")
         duplicate_warning_button.classes("text-yellow-5")
         duplicate_warning_button.set_visibility(False)
@@ -110,13 +113,34 @@ def build_ui(app_version: str = "unknown") -> None:
     is_indexing: bool = False
     deleted_macro_count: int = 0
     printer_is_printing: bool = False
+    printer_is_busy: bool = True
+    printer_state: str = "unknown"
     print_lock_popup_open: bool = False
+    restart_required: bool = False
     watcher = ConfigWatcher(config_dir)
     duplicate_compare_view = MacroCompareView()
 
     def flat_dialog_button(label_key: str, on_click) -> None:
         """Render a standard flat no-caps dialog action button."""
         ui.button(t(label_key), on_click=on_click).props("flat no-caps")
+
+    def _refresh_restart_button() -> None:
+        """Show restart button only when macro changes require reload and printer is idle."""
+        is_allowed = restart_required and (not printer_is_printing) and (not printer_is_busy)
+        restart_klipper_button.set_visibility(is_allowed)
+        restart_klipper_button.set_enabled(is_allowed)
+
+    def _mark_restart_required() -> None:
+        """Mark that a macro-affecting change requires Klipper restart."""
+        nonlocal restart_required
+        restart_required = True
+        _refresh_restart_button()
+
+    def _clear_restart_required() -> None:
+        """Clear pending restart requirement after successful restart."""
+        nonlocal restart_required
+        restart_required = False
+        _refresh_restart_button()
 
     with ui.dialog().props("persistent") as print_lock_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
         ui.label(t("Printer is currently printing")).classes("text-lg font-semibold text-warning")
@@ -389,6 +413,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             version=result["version"],
         ))
+        _mark_restart_required()
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro restore")
 
@@ -423,6 +448,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             operation=result["operation"],
         ))
+        _mark_restart_required()
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro edit")
 
@@ -467,6 +493,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             removed=removed,
         ))
+        _mark_restart_required()
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro delete")
 
@@ -748,6 +775,7 @@ def build_ui(app_version: str = "unknown") -> None:
             removed_sections=result["removed_sections"],
             file_count=touched_files_count,
         ))
+        _mark_restart_required()
         perform_index("duplicate wizard")
 
     def render_macro_list() -> None:
@@ -964,6 +992,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     macro_count=result["macro_count"],
                 )
             )
+        _mark_restart_required()
         perform_index("backup restore")
 
     def perform_delete_backup() -> None:
@@ -1024,6 +1053,8 @@ def build_ui(app_version: str = "unknown") -> None:
                     scanned=result["cfg_files_scanned"],
                 )
             )
+            if trigger != "startup" and _to_int(result.get("macros_inserted", 0)) > 0:
+                _mark_restart_required()
             refresh_data()
             watcher.reset()
         except FileNotFoundError as exc:
@@ -1094,12 +1125,34 @@ def build_ui(app_version: str = "unknown") -> None:
             return
         perform_index("manual")
 
+    def restart_klipper() -> None:
+        """Request Klipper restart when macro changes are pending and printer is idle."""
+        if not restart_required:
+            status_label.set_text(t("No pending macro changes require a Klipper restart."))
+            return
+        if printer_is_printing or printer_is_busy:
+            status_label.set_text(t("Blocked: printer is busy or printing. Klipper restart is disabled."))
+            return
+
+        try:
+            service.restart_klipper(timeout=3.0)
+        except Exception as exc:
+            status_label.set_text(t("Failed to restart Klipper: {error}", error=exc))
+            return
+
+        _clear_restart_required()
+        status_label.set_text(t("Klipper restart requested. The restart button will reappear after another macro change."))
+
     def set_print_lock(locked: bool, moonraker_state: str, moonraker_message: str) -> None:
         """Toggle UI mutation lock while printer is actively printing."""
         nonlocal printer_is_printing
+        nonlocal printer_is_busy
+        nonlocal printer_state
         nonlocal print_lock_popup_open
 
         printer_is_printing = locked
+        printer_state = moonraker_state
+        printer_is_busy = moonraker_state not in {"standby", "ready", "complete", "cancelled"}
         editing_enabled = not locked
 
         index_button.set_enabled(editing_enabled)
@@ -1114,6 +1167,7 @@ def build_ui(app_version: str = "unknown") -> None:
         duplicate_next_button.set_enabled(editing_enabled and duplicate_wizard_index < len(duplicate_wizard_groups) - 1)
         duplicate_apply_button.set_enabled(editing_enabled)
         viewer.set_editing_enabled(editing_enabled)
+        _refresh_restart_button()
 
         if locked:
             if moonraker_message:
@@ -1204,6 +1258,7 @@ def build_ui(app_version: str = "unknown") -> None:
     search_input.on_value_change(on_search_change)
     duplicate_warning_button.on_click(open_duplicate_wizard)
     backup_button.on_click(open_backup_dialog)
+    restart_klipper_button.on_click(restart_klipper)
     create_backup_button.on_click(perform_backup)
     purge_deleted_button.on_click(purge_deleted_macros)
     confirm_restore_button.on_click(perform_restore)

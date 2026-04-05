@@ -93,17 +93,58 @@ class MacroGuiService:
         state = str(print_stats.get("state", "unknown")).strip().lower()
         message = str(print_stats.get("message", "")).strip()
         is_printing = state == "printing"
+        is_busy = state not in {"standby", "ready", "complete", "cancelled"}
         return {
             "connected": True,
             "state": state,
             "message": message,
             "is_printing": is_printing,
+            "is_busy": is_busy,
         }
 
     def is_printer_printing(self, timeout: float = 2.0) -> bool:
         """Return True when Moonraker reports active printing."""
         status = self.query_printer_status(timeout=timeout)
         return bool(status.get("is_printing", False))
+
+    def restart_klipper(self, timeout: float = 3.0) -> dict[str, object]:
+        """Request a Klipper host restart through Moonraker."""
+        url = f"{self._moonraker_base_url}/printer/restart"
+        parsed = urlparse(url)
+
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Moonraker URL must use http/https.")
+
+        connection: http.client.HTTPConnection | http.client.HTTPSConnection
+        if parsed.scheme == "https":
+            connection = http.client.HTTPSConnection(parsed.netloc, timeout=timeout)
+        else:
+            connection = http.client.HTTPConnection(parsed.netloc, timeout=timeout)
+
+        try:
+            path = parsed.path or "/"
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            connection.request("POST", path, body="", headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            raw_payload = response.read().decode("utf-8")
+        finally:
+            connection.close()
+
+        try:
+            payload = json.loads(raw_payload) if raw_payload else {}
+        except ValueError:
+            payload = {}
+
+        if response.status >= 400:
+            error_message = str(payload.get("error", {}).get("message") or raw_payload or response.reason).strip()
+            raise RuntimeError(error_message or f"Moonraker restart request failed with status {response.status}")
+
+        return {
+            "ok": True,
+            "status": response.status,
+            "payload": payload,
+        }
 
     def index(self) -> dict[str, object]:
         """Run config indexing with configured retention settings."""
