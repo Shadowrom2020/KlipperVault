@@ -137,7 +137,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def _printer_profile_missing() -> bool:
         """Return True when first-start printer profile values are not yet set."""
-        return not str(vault_cfg.printer_vendor or "").strip() or not str(vault_cfg.printer_model or "").strip()
+        return bool(vault_cfg.printer_profile_prompt_required)
 
     def _format_printer_profile_label() -> str:
         """Format printer identity for status sidebar display."""
@@ -157,6 +157,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
         vault_cfg.printer_vendor = vendor
         vault_cfg.printer_model = model
+        vault_cfg.printer_profile_prompt_required = False
         _save_vault_config(config_dir, vault_cfg)
         printer_profile_label.set_text(_format_printer_profile_label())
         printer_profile_error.set_text("")
@@ -808,7 +809,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     file_name = Path(str(macro["file_path"])).name
                     is_deleted = bool(macro.get("is_deleted", False))
                     vc = _to_int(macro.get("version_count", 1), default=1)
-                    with ui.button(on_click=lambda m=macro: choose_macro(m)).props(
+                    with ui.button(on_click=lambda _event, m=macro: choose_macro(m)).props(
                         "flat no-caps align=left"
                     ).classes(button_classes):
                         with ui.row().classes("items-center gap-1.5 no-wrap"):
@@ -912,13 +913,13 @@ def build_ui(app_version: str = "unknown") -> None:
                     ui.label(_format_ts(_to_int(backup.get("created_at", 0)))).classes(
                         "text-[11px] text-grey-5"
                     )
-                    ui.button(icon="search", on_click=lambda b=backup: open_backup_contents(b)).props(
+                    ui.button(icon="search", on_click=lambda _event, b=backup: open_backup_contents(b)).props(
                         "flat dense round"
                     ).classes("text-blue-5")
-                    ui.button(icon="restore", on_click=lambda b=backup: open_restore_dialog(b)).props(
+                    ui.button(icon="restore", on_click=lambda _event, b=backup: open_restore_dialog(b)).props(
                         "flat dense round"
                     ).classes("text-orange-6")
-                    ui.button(icon="delete", on_click=lambda b=backup: open_delete_dialog(b)).props(
+                    ui.button(icon="delete", on_click=lambda _event, b=backup: open_delete_dialog(b)).props(
                         "flat dense round"
                     ).classes("text-red-6")
 
@@ -1212,6 +1213,8 @@ def build_ui(app_version: str = "unknown") -> None:
     index_button.on_click(run_index)
 
     if _printer_profile_missing():
+        printer_vendor_input.set_value(str(vault_cfg.printer_vendor or "").strip())
+        printer_model_input.set_value(str(vault_cfg.printer_model or "").strip())
         printer_profile_dialog.open()
 
     refresh_print_state()

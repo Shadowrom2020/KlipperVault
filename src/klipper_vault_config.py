@@ -42,6 +42,7 @@ class VaultConfig:
     ui_language: str = "en"
     printer_vendor: str = ""
     printer_model: str = ""
+    printer_profile_prompt_required: bool = True
 
 
 def save(config_dir: Path, config: VaultConfig) -> None:
@@ -113,12 +114,25 @@ def load_or_create(config_dir: Path) -> VaultConfig:
             ui_language = raw_language
 
     printer_vendor = ""
+    vendor_is_stored = False
     if parser.has_option("vault", "printer_vendor"):
+        vendor_is_stored = True
         printer_vendor = parser.get("vault", "printer_vendor").strip()
 
     printer_model = ""
+    model_is_stored = False
     if parser.has_option("vault", "printer_model"):
+        model_is_stored = True
         printer_model = parser.get("vault", "printer_model").strip()
+
+    # Prompt on first start and on upgrades where old cfg files do not yet
+    # contain these keys, or when stored values are still empty.
+    printer_profile_prompt_required = (
+        not vendor_is_stored
+        or not model_is_stored
+        or not printer_vendor
+        or not printer_model
+    )
 
     return VaultConfig(
         version_history_size=version_history_size,
@@ -126,4 +140,5 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         ui_language=ui_language,
         printer_vendor=printer_vendor,
         printer_model=printer_model,
+        printer_profile_prompt_required=printer_profile_prompt_required,
     )

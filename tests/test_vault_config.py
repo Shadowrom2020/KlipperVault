@@ -13,6 +13,7 @@ def test_load_or_create_writes_defaults_when_missing(tmp_path: Path) -> None:
     assert config.ui_language == "en"
     assert config.printer_vendor == ""
     assert config.printer_model == ""
+    assert config.printer_profile_prompt_required is True
 
 
 def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
@@ -29,6 +30,7 @@ def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
     assert config.ui_language == "de"
     assert config.printer_vendor == ""
     assert config.printer_model == ""
+    assert config.printer_profile_prompt_required is True
 
 
 def test_load_or_create_reads_printer_identity_fields(tmp_path: Path) -> None:
@@ -42,6 +44,7 @@ def test_load_or_create_reads_printer_identity_fields(tmp_path: Path) -> None:
 
     assert config.printer_vendor == "Voron"
     assert config.printer_model == "Trident"
+    assert config.printer_profile_prompt_required is False
 
 
 def test_save_persists_printer_identity_fields(tmp_path: Path) -> None:
@@ -63,3 +66,18 @@ def test_save_persists_printer_identity_fields(tmp_path: Path) -> None:
     assert config.ui_language == "de"
     assert config.printer_vendor == "RatRig"
     assert config.printer_model == "V-Core 3"
+    assert config.printer_profile_prompt_required is False
+
+
+def test_load_or_create_marks_upgrade_configs_without_identity_as_prompt_required(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "klippervault.cfg"
+    cfg_path.write_text(
+        "[vault]\nversion_history_size: 5\nport: 10090\nui_language: en\n",
+        encoding="utf-8",
+    )
+
+    config = load_or_create(tmp_path)
+
+    assert config.printer_vendor == ""
+    assert config.printer_model == ""
+    assert config.printer_profile_prompt_required is True
