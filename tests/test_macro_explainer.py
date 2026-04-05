@@ -118,6 +118,98 @@ def test_explain_line_set_tmc_current_has_specific_explanation() -> None:
     assert "hold current 0.50" in line.details
 
 
+def test_explain_line_set_stepper_enable_has_specific_explanation() -> None:
+    line = _explain_line("SET_STEPPER_ENABLE STEPPER=extruder enable=0", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "state"
+    assert line.summary == "Disables a stepper driver."
+    assert line.confidence == "high"
+    assert "extruder" in line.details
+    assert "stops holding torque" in line.details
+
+
+def test_explain_line_manual_stepper_has_specific_explanation() -> None:
+    line = _explain_line("MANUAL_STEPPER STEPPER=stepper_z MOVE=10 SPEED=5", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "motion"
+    assert line.summary == "Moves a manual stepper."
+    assert line.confidence == "high"
+    assert "stepper_z" in line.details
+    assert "move to 10" in line.details
+    assert "speed is 5" in line.details
+
+
+def test_explain_line_sync_extruder_motion_has_specific_explanation() -> None:
+    line = _explain_line("SYNC_EXTRUDER_MOTION EXTRUDER=extruder MOTION_QUEUE=extruder1", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "state"
+    assert line.summary == "Reassigns extruder motion synchronization."
+    assert line.confidence == "high"
+    assert "extruder" in line.details
+    assert "extruder1" in line.details
+    assert "switching toolheads" in line.details
+
+
+def test_explain_line_set_stepper_phase_has_specific_explanation() -> None:
+    line = _explain_line("SET_STEPPER_PHASE STEPPER=stepper_x PHASE=12", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "state"
+    assert line.summary == "Sets stepper phase reference."
+    assert line.confidence == "high"
+    assert "stepper_x" in line.details
+    assert "12" in line.details
+    assert "electrical phase" in line.details
+
+
+def test_explain_line_stepper_buzz_has_specific_explanation() -> None:
+    line = _explain_line("STEPPER_BUZZ STEPPER=stepper_y", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "motion"
+    assert line.summary == "Runs stepper buzz test."
+    assert line.confidence == "high"
+    assert "stepper_y" in line.details
+    assert "back and forth" in line.details
+
+
+def test_explain_line_dump_tmc_has_specific_explanation() -> None:
+    line = _explain_line("DUMP_TMC STEPPER=stepper_x", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "message"
+    assert line.summary == "Prints TMC driver diagnostics."
+    assert line.confidence == "high"
+    assert "stepper_x" in line.details
+    assert "console" in line.details
+
+
+def test_explain_line_init_tmc_has_specific_explanation() -> None:
+    line = _explain_line("INIT_TMC STEPPER=stepper_z", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "state"
+    assert line.summary == "Reinitializes a TMC driver."
+    assert line.confidence == "high"
+    assert "stepper_z" in line.details
+    assert "re-send configuration" in line.details
+
+
+def test_explain_line_set_tmc_field_has_specific_explanation() -> None:
+    line = _explain_line("SET_TMC_FIELD STEPPER=stepper_x FIELD=SGTHRS VALUE=120", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "state"
+    assert line.summary == "Sets a low-level TMC register field."
+    assert line.confidence == "high"
+    assert "SGTHRS" in line.details
+    assert "120" in line.details
+    assert "stepper_x" in line.details
+
+
 def test_explain_line_unknown_command_uses_generic_fallback() -> None:
     line = _explain_line("MY_CUSTOM_CMD SPEED=FAST", 1, set(), {})
 
@@ -241,10 +333,18 @@ def test_command_registry_contains_expected_coverage() -> None:
         "M104",
         "M109",
         "M112",
+        "DUMP_TMC",
+        "INIT_TMC",
+        "MANUAL_STEPPER",
         "RESPOND",
         "SET_FAN_SPEED",
         "SET_KINEMATIC_POSITION",
+        "SET_STEPPER_PHASE",
+        "SET_STEPPER_ENABLE",
         "SET_TMC_CURRENT",
+        "SET_TMC_FIELD",
+        "STEPPER_BUZZ",
+        "SYNC_EXTRUDER_MOTION",
         "SAVE_CONFIG",
         "PID_CALIBRATE",
     }

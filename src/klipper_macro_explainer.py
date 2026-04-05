@@ -1284,6 +1284,120 @@ def _explain_set_tmc_current(_: str, params: dict[str, str], __: str) -> tuple[s
     return "state", "Adjusts TMC motor current.", details
 
 
+def _explain_set_stepper_enable(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured stepper")
+    enable_value = str(params.get("ENABLE", params.get("enable", ""))).strip()
+
+    if enable_value == "1":
+        state_text = "enables"
+        summary = "Enables a stepper driver."
+        effect_text = "so the motor can hold position and accept commanded moves"
+    elif enable_value == "0":
+        state_text = "disables"
+        summary = "Disables a stepper driver."
+        effect_text = "so the motor stops holding torque until it is re-enabled"
+    else:
+        state_text = "changes the enable state of"
+        summary = "Changes stepper driver enable state."
+        effect_text = f"using ENABLE={enable_value or 'unspecified'}"
+
+    details = f"This {state_text} {stepper}, {effect_text}."
+    return "state", summary, details
+
+
+def _explain_manual_stepper(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured manual stepper")
+    move = params.get("MOVE")
+    speed = params.get("SPEED")
+    accel = params.get("ACCEL")
+    stop_on_endstop = params.get("STOP_ON_ENDSTOP")
+    enable_value = params.get("ENABLE") or params.get("enable")
+
+    if move is not None:
+        details = f"This commands manual stepper {stepper} to move to {move}."
+        if speed is not None:
+            details += f" Requested speed is {speed}."
+        if accel is not None:
+            details += f" Requested acceleration is {accel}."
+        if stop_on_endstop is not None:
+            details += f" STOP_ON_ENDSTOP={stop_on_endstop} changes whether the move aborts on endstop trigger."
+        return "motion", "Moves a manual stepper.", details
+
+    if enable_value is not None:
+        if str(enable_value).strip() == "0":
+            return "state", "Disables a manual stepper.", f"This turns off manual stepper {stepper} so it no longer holds torque."
+        if str(enable_value).strip() == "1":
+            return "state", "Enables a manual stepper.", f"This enables manual stepper {stepper} so it can be driven and hold position."
+
+    return "state", "Controls a manual stepper.", f"This updates manual stepper {stepper} using {_format_params(params)}."
+
+
+def _explain_sync_extruder_motion(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    extruder = params.get("EXTRUDER", "the active extruder")
+    motion_queue = params.get("MOTION_QUEUE", "the selected motion queue")
+
+    if str(motion_queue).strip() in {"", "None", "none"}:
+        details = (
+            f"This detaches extruder motion for {extruder} from any shared motion queue. "
+            "That usually stops it from mirroring another extruder's planned extrusion moves."
+        )
+    else:
+        details = (
+            f"This synchronizes extruder motion for {extruder} with motion queue {motion_queue}. "
+            "It is commonly used when switching toolheads or remapping which extruder follows planned extrusion."
+        )
+    return "state", "Reassigns extruder motion synchronization.", details
+
+
+def _explain_set_stepper_phase(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured stepper")
+    phase = params.get("PHASE", "the requested phase")
+
+    details = (
+        f"This sets the tracked electrical phase for {stepper} to {phase}. "
+        "It is a low-level calibration/state command that affects how Klipper interprets the stepper's phase reference."
+    )
+    return "state", "Sets stepper phase reference.", details
+
+
+def _explain_stepper_buzz(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured stepper")
+    return (
+        "motion",
+        "Runs stepper buzz test.",
+        f"This jogs {stepper} back and forth in a short test pattern so you can identify the motor or verify wiring/direction.",
+    )
+
+
+def _explain_dump_tmc(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured TMC stepper")
+    return (
+        "message",
+        "Prints TMC driver diagnostics.",
+        f"This queries TMC register and status information for {stepper} and prints it to the console for troubleshooting.",
+    )
+
+
+def _explain_init_tmc(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured TMC stepper")
+    return (
+        "state",
+        "Reinitializes a TMC driver.",
+        f"This asks Klipper to re-send configuration to the TMC driver for {stepper}, which can help recover expected driver settings after low-level changes or diagnostics.",
+    )
+
+
+def _explain_set_tmc_field(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
+    stepper = params.get("STEPPER", "a configured TMC stepper")
+    field = params.get("FIELD", "a driver field")
+    value = params.get("VALUE", "an unspecified value")
+    return (
+        "state",
+        "Sets a low-level TMC register field.",
+        f"This updates TMC field {field} on {stepper} to {value}. It is a low-level driver tuning/debug command and can change motor behavior immediately.",
+    )
+
+
 def _explain_force_move(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
     stepper = params.get("STEPPER", "a configured stepper")
     distance = params.get("DISTANCE", "an unspecified distance")
@@ -1497,6 +1611,14 @@ _COMMAND_GROUPS: tuple[tuple[tuple[str, ...], CommandExplainer], ...] = (
     (("SET_VELOCITY_LIMIT",), _explain_set_velocity_limit),
     (("SET_KINEMATIC_POSITION",), _explain_set_kinematic_position),
     (("SET_TMC_CURRENT",), _explain_set_tmc_current),
+    (("SET_STEPPER_ENABLE",), _explain_set_stepper_enable),
+    (("MANUAL_STEPPER",), _explain_manual_stepper),
+    (("SYNC_EXTRUDER_MOTION",), _explain_sync_extruder_motion),
+    (("SET_STEPPER_PHASE",), _explain_set_stepper_phase),
+    (("STEPPER_BUZZ",), _explain_stepper_buzz),
+    (("DUMP_TMC",), _explain_dump_tmc),
+    (("INIT_TMC",), _explain_init_tmc),
+    (("SET_TMC_FIELD",), _explain_set_tmc_field),
     (("FORCE_MOVE",), _explain_force_move),
     (("SET_PRESSURE_ADVANCE",), _explain_set_pressure_advance),
     (("SAVE_VARIABLE",), _explain_save_variable),
