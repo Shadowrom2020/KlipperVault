@@ -1410,6 +1410,53 @@ def remove_deleted_macro(db_path: Path, file_path: str, macro_name: str) -> Dict
     }
 
 
+def remove_inactive_macro_version(
+    db_path: Path,
+    file_path: str,
+    macro_name: str,
+    version: int,
+) -> Dict[str, object]:
+    """Permanently delete one selected inactive macro version from DB."""
+    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
+        row = conn.execute(
+            """
+            SELECT version, is_active, is_deleted
+            FROM macros
+            WHERE file_path = ? AND macro_name = ? AND version = ?
+            """,
+            (file_path, macro_name, version),
+        ).fetchone()
+
+        if row is None:
+            return {
+                "removed": 0,
+                "reason": "not_found",
+            }
+
+        if int(row[2]) != 0:
+            return {
+                "removed": 0,
+                "reason": "deleted",
+            }
+
+        if int(row[1]) != 0:
+            return {
+                "removed": 0,
+                "reason": "not_inactive",
+            }
+
+        removed = conn.execute(
+            "DELETE FROM macros WHERE file_path = ? AND macro_name = ? AND version = ?",
+            (file_path, macro_name, version),
+        ).rowcount
+        conn.commit()
+
+    return {
+        "removed": int(removed or 0),
+        "reason": "removed",
+    }
+
+
 def remove_all_deleted_macros(db_path: Path) -> Dict[str, object]:
     """Permanently remove all macro identities whose latest version is deleted."""
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:

@@ -101,6 +101,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     selected_key: str | None = None
     force_latest_for_key: str | None = None
+    force_active_for_key: str | None = None
     cached_macros: list[dict[str, object]] = []
     duplicate_wizard_groups: list[dict[str, object]] = []
     duplicate_keep_choices: dict[str, str] = {}
@@ -384,6 +385,48 @@ def build_ui(app_version: str = "unknown") -> None:
         refresh_data()
 
     viewer.set_remove_deleted_handler(remove_deleted_macro_from_db)
+
+    def remove_inactive_macro_from_db(version_row: dict) -> None:
+        """Permanently remove selected inactive macro version from SQLite history."""
+        nonlocal force_active_for_key
+        if blocked_by_print_state(status_message="Blocked: printer is currently printing. Editing is disabled."):
+            return
+        file_path = str(version_row.get("file_path", ""))
+        macro_name = str(version_row.get("macro_name", ""))
+        version = _to_int(version_row.get("version", 0) or 0)
+        if not file_path or not macro_name:
+            status_label.set_text(t("Cannot remove inactive macro version: missing identity."))
+            return
+
+        try:
+            result = service.remove_inactive_version(file_path, macro_name, version)
+        except Exception as exc:
+            status_label.set_text(t("Failed to remove inactive macro version: {error}", error=exc))
+            return
+
+        reason = str(result.get("reason", ""))
+        removed = _to_int(result.get("removed", 0))
+        if removed > 0:
+            status_label.set_text(t(
+                "Removed inactive macro version v{version} of '{macro_name}' from {file_path} ({removed} row(s)).",
+                version=version,
+                macro_name=macro_name,
+                file_path=file_path,
+                removed=removed,
+            ))
+            force_active_for_key = f"{file_path}::{macro_name}"
+        elif reason == "not_inactive":
+            status_label.set_text(t("Selected macro version is not inactive; nothing removed."))
+        elif reason == "deleted":
+            status_label.set_text(t("Selected macro version is deleted; use the deleted-macro removal action instead."))
+        elif reason == "not_found":
+            status_label.set_text(t("Macro not found in database."))
+        else:
+            status_label.set_text(t("No rows removed."))
+
+        refresh_data()
+
+    viewer.set_remove_inactive_handler(remove_inactive_macro_from_db)
 
     def restore_macro_version_from_viewer(version_row: dict) -> None:
         """Restore selected macro version into cfg file, then rescan."""
@@ -782,6 +825,7 @@ def build_ui(app_version: str = "unknown") -> None:
         """Render the left macro list with filters, badges, and selection state."""
         nonlocal selected_key
         nonlocal force_latest_for_key
+        nonlocal force_active_for_key
         macro_list.clear()
         viewer.set_available_macros(cached_macros)
 
@@ -856,14 +900,18 @@ def build_ui(app_version: str = "unknown") -> None:
 
         selected_macro_key = macro_key(selected_macro)
         prefer_latest = force_latest_for_key == selected_macro_key
+        prefer_active = force_active_for_key == selected_macro_key
         if prefer_latest:
             force_latest_for_key = None
+        if prefer_active:
+            force_active_for_key = None
 
         viewer.set_macro(
             selected_macro,
             versions,
             active_macro=active_macro,
             prefer_latest=prefer_latest,
+            prefer_active=prefer_active,
         )
 
     def render_backup_list() -> None:

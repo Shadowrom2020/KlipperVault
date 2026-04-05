@@ -30,6 +30,7 @@ from klipper_macro_indexer import (
     macro_row_to_section_text,
     remove_all_deleted_macros,
     remove_deleted_macro,
+    remove_inactive_macro_version,
     restore_macro_version,
     resolve_duplicate_macros,
     run_indexing,
@@ -174,6 +175,10 @@ class MacroGuiService:
     def remove_deleted(self, file_path: str, macro_name: str) -> dict[str, object]:
         """Permanently remove a deleted macro history from database."""
         return remove_deleted_macro(self._db_path, file_path, macro_name)
+
+    def remove_inactive_version(self, file_path: str, macro_name: str, version: int) -> dict[str, object]:
+        """Permanently remove one inactive macro version from database."""
+        return remove_inactive_macro_version(self._db_path, file_path, macro_name, version)
 
     def purge_all_deleted(self) -> dict[str, object]:
         """Remove all deleted macro histories from database."""
