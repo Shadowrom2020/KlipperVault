@@ -57,7 +57,7 @@ class CommandPackEntry(TypedDict, total=False):
 _DEFAULT_COMMAND_PACK_PATH = (Path.home() / "printer_data" / "config" / "klippervault_command_pack.json").resolve()
 
 
-def build_macro_reference_index(macros: list[Mapping[str, object]]) -> dict[str, list[MacroReference]]:
+def build_macro_reference_index(macros: Sequence[Mapping[str, object]]) -> dict[str, list[MacroReference]]:
     """Build lookup of macro name to openable macro targets."""
     grouped: dict[str, list[MacroReference]] = {}
     for macro in macros:
@@ -508,7 +508,15 @@ def _parse_parameters(tokens: list[str]) -> dict[str, str]:
                 current_key = candidate_key
                 continue
 
-            current_key = None
+            # Command-like all-caps tokens should stop value continuation,
+            # but mixed/lowercase text is often part of a quoted value split
+            # by whitespace (e.g. MSG="value # keep").
+            if re.fullmatch(r"[A-Z0-9_.]+", token):
+                current_key = None
+                continue
+
+            if current_key is not None:
+                params[current_key] = f"{params[current_key]} {token}".strip()
             continue
 
         if current_key is not None:

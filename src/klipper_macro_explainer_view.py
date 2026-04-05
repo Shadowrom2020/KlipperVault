@@ -45,6 +45,22 @@ def _as_str_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _as_int(value: object, default: int = 0) -> int:
+    """Convert dynamic payload values to int with fallback."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
 def _confidence_classes(confidence: str) -> str:
     """Map confidence labels to compact badge styling."""
     if confidence == "high":
@@ -163,7 +179,7 @@ class MacroExplainerView:
 
         effects = _as_count_dict(payload.get("effects", {}))
         confidence = _as_count_dict(payload.get("confidence", {}))
-        risk_line_count = int(payload.get("risk_line_count", 0) or 0)
+        risk_line_count = _as_int(payload.get("risk_line_count", 0), default=0)
 
         with self._overview_row:
             if risk_line_count > 0:
