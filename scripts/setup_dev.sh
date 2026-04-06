@@ -65,7 +65,7 @@ setup_vscode_workspace_files() {
 
         cat > "$settings_file" <<'JSON'
 {
-    "python.defaultInterpreterPath": "${workspaceFolder}/.venv",
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
     "python.terminal.activateEnvironment": true,
     "python.analysis.extraPaths": [
         "${workspaceFolder}"
