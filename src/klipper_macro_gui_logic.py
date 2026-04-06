@@ -40,6 +40,7 @@ def duplicate_names_for_macros(macros: list[dict[str, object]]) -> set[str]:
         _display_macro_name(m).lower()
         for m in macros
         if not bool(m.get("is_deleted", False))
+        and bool(m.get("is_loaded", True))
     )
     return {name for name, count in name_counts.items() if count > 1}
 
@@ -50,6 +51,7 @@ def filter_macros(
     show_duplicates_only: bool,
     active_filter: str,
     duplicate_names: set[str],
+    show_new_only: bool = False,
 ) -> list[dict[str, object]]:
     """Apply search/duplicate/active filters to macro list."""
     query = search_query.strip().lower()
@@ -71,6 +73,7 @@ def filter_macros(
             or (active_filter == "active" and bool(macro.get("is_active", False)))
             or (active_filter == "inactive" and not bool(macro.get("is_active", False)))
         )
+        and ((not show_new_only) or bool(macro.get("is_new", False)))
     ]
 
 

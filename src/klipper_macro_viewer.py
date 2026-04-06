@@ -214,23 +214,30 @@ class MacroViewer:
         latest_version = max(self._all_versions.keys()) if self._all_versions else int(macro.get("version", 0))
         selected_version = int(macro.get("version", 0))
         is_deleted = bool(macro.get("is_deleted", False))
+        is_new = bool(macro.get("is_new", False))
         is_older_version = selected_version < latest_version
         is_currently_deleted = self._is_macro_currently_deleted()
         can_restore_deleted = is_currently_deleted and is_deleted
+        can_restore_new = is_new and (not is_deleted)
 
-        if not (can_restore_deleted or is_older_version):
+        if not (can_restore_deleted or is_older_version or can_restore_new):
             self._restore_version_button.set_visibility(False)
             return
 
-        self._restore_version_button.set_text(
-            t("Restore deleted macro") if can_restore_deleted else t("Revert to this version")
-        )
+        if can_restore_deleted:
+            self._restore_version_button.set_text(t("Restore deleted macro"))
+        elif can_restore_new:
+            self._restore_version_button.set_text(t("Enable imported macro"))
+        else:
+            self._restore_version_button.set_text(t("Revert to this version"))
         self._restore_version_button.set_visibility(True)
 
     def _version_status_label(self, version_row: dict) -> str:
         """Return compact status label for one version option."""
         if version_row.get("is_deleted", False):
             return t("DELETED")
+        if version_row.get("is_new", False):
+            return t("NEW")
         if version_row.get("is_active", False):
             return "★"
         return t("inactive")
@@ -245,6 +252,14 @@ class MacroViewer:
         if bool(macro.get("is_deleted", False)):
             self._inactive_hint.set_text(
                 t("Deleted: this macro no longer exists in the cfg files. It is stored in the vault until removed.")
+            )
+            self._inactive_hint.set_visibility(True)
+            self._open_active_button.set_visibility(False)
+            return
+
+        if not bool(macro.get("is_loaded", True)):
+            self._inactive_hint.set_text(
+                t("Inactive: this macro is defined in a cfg file that is not currently loaded.")
             )
             self._inactive_hint.set_visibility(True)
             self._open_active_button.set_visibility(False)
@@ -319,7 +334,7 @@ class MacroViewer:
         self._meta_label.set_text(
             f"{macro.get('file_path', '-')}, line {macro.get('line_number', '-')}, "
             f"indexed {format_ts(int(macro.get('indexed_at', 0)))}, "
-            f"{'DELETED' if bool(macro.get('is_deleted', False)) else ('★' if is_active else 'inactive')}"
+            f"{'DELETED' if bool(macro.get('is_deleted', False)) else (t('not_loaded') if not bool(macro.get('is_loaded', True)) else ('★' if is_active else 'inactive'))}"
         )
         # Only allow purge when the macro identity is currently deleted (latest version is deleted).
         self._remove_deleted_button.set_visibility(self._is_macro_currently_deleted())

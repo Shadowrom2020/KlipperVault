@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import time
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
@@ -23,6 +24,8 @@ from klipper_macro_backup import (
 )
 from klipper_macro_indexer import (
     delete_macro_from_cfg,
+    export_macro_share_payload,
+    import_macro_share_payload,
     load_duplicate_macro_groups,
     load_macro_list,
     load_macro_versions,
@@ -254,3 +257,74 @@ class MacroGuiService:
     def delete_backup(self, backup_id: int) -> dict[str, object]:
         """Delete one backup snapshot."""
         return delete_macro_backup(db_path=self._db_path, backup_id=backup_id)
+
+    @staticmethod
+    def _normalize_printer_identity(vendor: str, model: str) -> tuple[str, str]:
+        """Normalize printer identity values for compatibility checks."""
+        return str(vendor or "").strip().lower(), str(model or "").strip().lower()
+
+    def export_macro_share_file(
+        self,
+        identities: list[tuple[str, str]],
+        source_vendor: str,
+        source_model: str,
+        out_file: Path,
+    ) -> dict[str, object]:
+        """Export selected latest macros to a shareable JSON file."""
+        payload = export_macro_share_payload(
+            db_path=self._db_path,
+            identities=identities,
+            source_vendor=source_vendor,
+            source_model=source_model,
+            now_ts=int(time.time()),
+        )
+        exported_macros = payload.get("macros", [])
+        macro_count = len(exported_macros) if isinstance(exported_macros, list) else 0
+        out_file = out_file.expanduser().resolve()
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return {
+            "file_path": str(out_file),
+            "macro_count": macro_count,
+        }
+
+    def import_macro_share_file(
+        self,
+        import_file: Path,
+        target_vendor: str,
+        target_model: str,
+    ) -> dict[str, object]:
+        """Import macros from a share file as new inactive rows."""
+        import_file = import_file.expanduser().resolve()
+        payload = json.loads(import_file.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid macro share file")
+
+        result = import_macro_share_payload(
+            db_path=self._db_path,
+            payload=payload,
+            now_ts=int(time.time()),
+        )
+
+        source_vendor = str(result.get("source_vendor", "")).strip()
+        source_model = str(result.get("source_model", "")).strip()
+        src_vendor_norm, src_model_norm = self._normalize_printer_identity(source_vendor, source_model)
+        tgt_vendor_norm, tgt_model_norm = self._normalize_printer_identity(target_vendor, target_model)
+        printer_matches = bool(
+            src_vendor_norm
+            and src_model_norm
+            and tgt_vendor_norm
+            and tgt_model_norm
+            and src_vendor_norm == tgt_vendor_norm
+            and src_model_norm == tgt_model_norm
+        )
+        imported_raw = result.get("imported", 0)
+        imported_count = imported_raw if isinstance(imported_raw, int) else 0
+
+        return {
+            "imported": imported_count,
+            "source_vendor": source_vendor,
+            "source_model": source_model,
+            "printer_matches": printer_matches,
+            "file_path": str(import_file),
+        }

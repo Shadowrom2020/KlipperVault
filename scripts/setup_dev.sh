@@ -63,8 +63,7 @@ setup_vscode_workspace_files() {
         echo "==> Configuring VS Code workspace files..."
         mkdir -p "$vscode_dir"
 
-        if [[ ! -f "$settings_file" ]]; then
-                cat > "$settings_file" <<'JSON'
+        cat > "$settings_file" <<'JSON'
 {
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
     "python.terminal.activateEnvironment": true,
@@ -73,13 +72,9 @@ setup_vscode_workspace_files() {
     ]
 }
 JSON
-                echo "    Created .vscode/settings.json"
-        else
-                echo "    Found existing .vscode/settings.json, leaving it unchanged."
-        fi
+        echo "    Wrote .vscode/settings.json"
 
-        if [[ ! -f "$launch_file" ]]; then
-                cat > "$launch_file" <<'JSON'
+        cat > "$launch_file" <<'JSON'
 {
     "version": "0.2.0",
     "configurations": [
@@ -87,7 +82,7 @@ JSON
             "name": "Python: NiceGUI App (configured port)",
             "type": "python",
             "request": "launch",
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${config:python.defaultInterpreterPath}",
             "program": "${workspaceFolder}/klipper_vault.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -100,7 +95,7 @@ JSON
             "name": "Python: Index Macros (CLI)",
             "type": "python",
             "request": "launch",
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${config:python.defaultInterpreterPath}",
             "program": "${workspaceFolder}/src/klipper_macro_indexer.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -119,7 +114,7 @@ JSON
             "name": "Python: Index Macros (CLI, prune stale)",
             "type": "python",
             "request": "launch",
-            "python": "${workspaceFolder}/.venv/bin/python",
+            "python": "${config:python.defaultInterpreterPath}",
             "program": "${workspaceFolder}/src/klipper_macro_indexer.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -138,10 +133,7 @@ JSON
     ]
 }
 JSON
-                echo "    Created .vscode/launch.json"
-        else
-                echo "    Found existing .vscode/launch.json, leaving it unchanged."
-        fi
+        echo "    Wrote .vscode/launch.json"
 }
 
 echo "==> KlipperVault dev environment setup"

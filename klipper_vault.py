@@ -37,8 +37,9 @@ def main() -> None:
     vault_cfg = _load_vault_config(config_dir)
     favicon_path = REPO_ROOT / "assets" / "favicon.svg"
     build_ui(app_version=_load_app_version())
+    # Intentional: the web UI must be reachable from other devices on the LAN.
     ui.run(
-        host="0.0.0.0", # nosec B104 - intentional: GUI must be reachable on LAN
+        host="0.0.0.0",  # nosec B104
         port=vault_cfg.port,
         title=t("Klipper Vault"),
         dark=True,
