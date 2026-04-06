@@ -273,6 +273,39 @@ def test_run_indexing_reports_dynamic_insert_count(tmp_path: Path) -> None:
         assert result["dynamic_macros_inserted"] == 1
 
 
+def test_run_indexing_ignores_dot_dynamicmacros_cfg(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [include loaded.cfg]
+                """,
+        )
+        _write(
+                config_dir / "loaded.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="loaded"
+                """,
+        )
+        _write(
+                config_dir / ".dynamicmacros.cfg",
+                """
+                [gcode_macro SHOULD_BE_IGNORED]
+                gcode:
+                    RESPOND MSG="ignored"
+                """,
+        )
+
+        result = run_indexing(config_dir, db_path)
+        macros = load_macro_list(db_path)
+
+        assert result["cfg_files_scanned"] == 2
+        assert {row["macro_name"] for row in macros} == {"HELLO"}
+
+
 def test_renamed_runtime_alias_not_counted_as_duplicate(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "macros.db"

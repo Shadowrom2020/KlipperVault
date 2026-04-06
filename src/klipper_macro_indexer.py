@@ -53,6 +53,13 @@ FROM macros
 GROUP BY file_path, macro_name
 """.strip()
 
+_IGNORED_CFG_FILE_NAMES = {".dynamicmacros.cfg"}
+
+
+def _should_index_cfg_file(path: Path) -> bool:
+    """Return True when cfg file should be parsed by the indexer."""
+    return path.name.lower() not in _IGNORED_CFG_FILE_NAMES
+
 
 def _iter_cfg_glob_matches(path_expr: str, base_dir: Path) -> Iterable[Path]:
     """Expand one cfg path expression into matching existing .cfg files."""
@@ -69,7 +76,7 @@ def _iter_cfg_glob_matches(path_expr: str, base_dir: Path) -> Iterable[Path]:
         pattern = str(base_dir / expr)
 
     for cfg_path in sorted(Path(p) for p in glob.glob(pattern)):
-        if cfg_path.is_file() and cfg_path.suffix.lower() == ".cfg":
+        if cfg_path.is_file() and cfg_path.suffix.lower() == ".cfg" and _should_index_cfg_file(cfg_path):
             yield cfg_path
 
 
@@ -181,8 +188,9 @@ def _iter_cfg_files(config_dir: Path) -> Iterable[Path]:
         dirs[:] = kept_dirs
 
         for file_name in sorted(files):
-            if file_name.lower().endswith(".cfg"):
-                yield Path(root) / file_name
+            cfg_path = Path(root) / file_name
+            if file_name.lower().endswith(".cfg") and _should_index_cfg_file(cfg_path):
+                yield cfg_path
 
 
 def _parse_key_value(line: str) -> Optional[tuple[str, str]]:
