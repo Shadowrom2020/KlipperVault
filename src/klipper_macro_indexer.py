@@ -38,6 +38,7 @@ class MacroRecord:
     variables_json: str
     body_checksum: str
     is_loaded: bool = True
+    is_dynamic: bool = False
 
 
 _LATEST_VERSION_SUBQUERY = """
@@ -53,54 +54,85 @@ GROUP BY file_path, macro_name
 """.strip()
 
 
-def _iter_included_files(file_path: Path, config_dir: Path) -> Iterable[Path]:
-    """Yield included cfg files in the same order they appear in file_path."""
+def _iter_cfg_glob_matches(path_expr: str, base_dir: Path) -> Iterable[Path]:
+    """Expand one cfg path expression into matching existing .cfg files."""
+    expr = str(path_expr or "").strip().strip('"').strip("'")
+    if not expr:
+        return
+
+    cfg_glob = Path(expr)
+    if cfg_glob.is_absolute():
+        pattern = str(cfg_glob)
+    else:
+        # Preserve lexical paths (including symlink hops) so stored
+        # file_path values remain rooted in config_dir when possible.
+        pattern = str(base_dir / expr)
+
+    for cfg_path in sorted(Path(p) for p in glob.glob(pattern)):
+        if cfg_path.is_file() and cfg_path.suffix.lower() == ".cfg":
+            yield cfg_path
+
+
+def _iter_dynamicmacros_configs(value: str, base_dir: Path) -> Iterable[Path]:
+    """Yield cfg files listed in a [dynamicmacros] `configs:` value."""
+    for part in str(value or "").split(","):
+        yield from _iter_cfg_glob_matches(part, base_dir)
+
+
+def _iter_included_files(file_path: Path, config_dir: Path) -> Iterable[tuple[Path, bool]]:
+    """Yield cfg files referenced by [include] and [dynamicmacros] sections.
+
+    Each yielded tuple is ``(cfg_path, is_dynamic_source)`` where
+    ``is_dynamic_source`` is True when the file came from a [dynamicmacros]
+    ``configs:`` entry.
+    """
     try:
         with file_path.open("r", encoding="utf-8", errors="ignore") as handle:
+            current_section_type: Optional[str] = None
             for raw_line in handle:
                 line = raw_line.strip()
                 if not (line.startswith("[") and line.endswith("]")):
+                    if current_section_type != "dynamicmacros":
+                        continue
+
+                    pair = _parse_key_value(raw_line)
+                    if not pair:
+                        continue
+                    key, value = pair
+                    if key != "configs" or not value:
+                        continue
+                    for cfg in _iter_dynamicmacros_configs(value, file_path.parent):
+                        yield cfg, True
                     continue
 
                 section_name = line[1:-1].strip()
                 section_type, section_arg = _section_parts(section_name)
+                current_section_type = section_type
+
                 if section_type != "include" or not section_arg:
                     continue
 
-                include_expr = section_arg.strip().strip('"').strip("'")
-                if not include_expr:
-                    continue
-
-                include_base = file_path.parent
-                include_glob = Path(include_expr)
-                if include_glob.is_absolute():
-                    pattern = str(include_glob)
-                else:
-                    # Preserve lexical paths (including symlink hops) so stored
-                    # file_path values remain rooted in config_dir when possible.
-                    pattern = str(include_base / include_expr)
-
-                include_candidates = sorted(Path(p) for p in glob.glob(pattern))
-                for include_path in include_candidates:
-                    if include_path.is_file() and include_path.suffix.lower() == ".cfg":
-                        yield include_path
+                for cfg in _iter_cfg_glob_matches(section_arg, file_path.parent):
+                    yield cfg, False
     except FileNotFoundError:
         return
 
 
-def _resolve_cfg_file_sets(config_dir: Path) -> tuple[List[Path], set[Path]]:
-    """Return (scan_order, loaded_set) for cfg files under config_dir.
+def _resolve_cfg_file_sets(config_dir: Path) -> tuple[List[Path], set[Path], set[Path]]:
+    """Return (scan_order, loaded_set, dynamic_loaded_set) for cfg files.
 
-    loaded_set contains only files loaded by Klipper from printer.cfg include
-    traversal. scan_order also appends unreferenced cfg files for visibility.
+    loaded_set contains files loaded by Klipper from printer.cfg traversal of
+    [include ...] and [dynamicmacros] configs entries. scan_order also appends
+    unreferenced cfg files for visibility.
     """
     root_cfg = config_dir / "printer.cfg"
     if not root_cfg.exists() or not root_cfg.is_file():
         all_cfg = sorted((p for p in _iter_cfg_files(config_dir)), key=lambda p: str(p))
-        return all_cfg, {p.resolve() for p in all_cfg}
+        return all_cfg, {p.resolve() for p in all_cfg}, set()
 
     loaded: List[Path] = []
     visited: set[Path] = set()
+    dynamic_loaded: set[Path] = set()
 
     def visit(path: Path) -> None:
         resolved = path.resolve()
@@ -108,7 +140,9 @@ def _resolve_cfg_file_sets(config_dir: Path) -> tuple[List[Path], set[Path]]:
             return
         visited.add(resolved)
         loaded.append(path)
-        for included in _iter_included_files(resolved, config_dir):
+        for included, is_dynamic_source in _iter_included_files(resolved, config_dir):
+            if is_dynamic_source:
+                dynamic_loaded.add(included.resolve())
             visit(included)
 
     visit(root_cfg)
@@ -117,12 +151,12 @@ def _resolve_cfg_file_sets(config_dir: Path) -> tuple[List[Path], set[Path]]:
     for cfg in sorted((p for p in _iter_cfg_files(config_dir)), key=lambda p: str(p)):
         if cfg.resolve() not in visited:
             ordered.append(cfg)
-    return ordered, visited
+    return ordered, visited, dynamic_loaded
 
 
 def get_cfg_load_order(config_dir: Path) -> List[Path]:
     """Resolve cfg load order starting from printer.cfg and following [include ...]."""
-    ordered, _ = _resolve_cfg_file_sets(config_dir)
+    ordered, _, _ = _resolve_cfg_file_sets(config_dir)
     return ordered
 
 
@@ -235,7 +269,13 @@ def _is_trailing_gcode_comment_or_blank(line: str) -> bool:
     return not stripped or stripped.startswith("#") or stripped.startswith(";")
 
 
-def parse_macros_from_cfg(file_path: Path, base_dir: Path, *, is_loaded: bool = True) -> List[MacroRecord]:
+def parse_macros_from_cfg(
+    file_path: Path,
+    base_dir: Path,
+    *,
+    is_loaded: bool = True,
+    is_dynamic: bool = False,
+) -> List[MacroRecord]:
     """Parse all [gcode_macro ...] sections from one cfg file."""
     results: List[MacroRecord] = []
     current_section: Optional[str] = None
@@ -282,6 +322,7 @@ def parse_macros_from_cfg(file_path: Path, base_dir: Path, *, is_loaded: bool = 
                 variables_json=json.dumps(current_variables, separators=(",", ":"), sort_keys=True),
                 body_checksum=_make_checksum(body_text),
                 is_loaded=is_loaded,
+                is_dynamic=is_dynamic,
             )
         )
 
@@ -375,6 +416,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             renamed_from TEXT,
             is_deleted  INTEGER NOT NULL DEFAULT 0,
             is_loaded   INTEGER NOT NULL DEFAULT 1,
+            is_dynamic  INTEGER NOT NULL DEFAULT 0,
             is_new      INTEGER NOT NULL DEFAULT 0,
             version     INTEGER NOT NULL,
             indexed_at  INTEGER NOT NULL
@@ -402,6 +444,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # v6→v7: mark imported rows as new for quick discovery in the UI.
     if not rebuilt and existing_cols and "is_new" not in existing_cols:
         conn.execute("ALTER TABLE macros ADD COLUMN is_new INTEGER NOT NULL DEFAULT 0")
+    # v7→v8: track whether a loaded macro came from [dynamicmacros] configs.
+    if not rebuilt and existing_cols and "is_dynamic" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN is_dynamic INTEGER NOT NULL DEFAULT 0")
 
     conn.execute(
         """
@@ -495,13 +540,14 @@ def _promote_existing_version_to_latest(
 def index_macros(
     conn: sqlite3.Connection, records: List[MacroRecord], now_ts: int,
     max_versions: int = _MAX_VERSIONS,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Insert a new version only when parsed macro content truly changed.
 
-    Returns (inserted, unchanged).
+    Returns (inserted, unchanged, dynamic_inserted).
     """
     inserted = 0
     unchanged = 0
+    dynamic_inserted = 0
     for rec in records:
         versions = conn.execute(
             """
@@ -680,10 +726,10 @@ def index_macros(
             INSERT INTO macros (
                 file_path, section_type, macro_name, line_number,
                 description, rename_existing, gcode, variables_json, body_checksum, is_active,
-                runtime_macro_name, renamed_from, is_loaded, is_new,
+                runtime_macro_name, renamed_from, is_loaded, is_dynamic, is_new,
                 version, indexed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rec.file_path,
@@ -699,6 +745,7 @@ def index_macros(
                 rec.macro_name,
                 None,
                 1 if rec.is_loaded else 0,
+                1 if rec.is_dynamic else 0,
                 0,
                 new_version,
                 now_ts,
@@ -717,30 +764,36 @@ def index_macros(
             (rec.file_path, rec.macro_name, max_versions, rec.file_path, rec.macro_name),
         )
         inserted += 1
+        if rec.is_dynamic:
+            dynamic_inserted += 1
 
     # Mark latest rows as deleted when their macro is no longer present on disk,
     # and stamp whether the source cfg is currently loaded by Klipper.
-    seen_identity_loaded = {
-        (rec.file_path, rec.macro_name): bool(rec.is_loaded)
+    seen_identity_status = {
+        (rec.file_path, rec.macro_name): (bool(rec.is_loaded), bool(rec.is_dynamic))
         for rec in records
     }
     latest_rows = conn.execute(_LATEST_VERSION_SUBQUERY).fetchall()
     for file_path, macro_name, max_version in latest_rows:
         identity = (str(file_path), str(macro_name))
-        is_deleted = 0 if identity in seen_identity_loaded else 1
-        is_loaded = 1 if seen_identity_loaded.get(identity, False) else 0
+        is_deleted = 0 if identity in seen_identity_status else 1
+        row_loaded, row_dynamic = seen_identity_status.get(identity, (False, False))
+        is_loaded = 1 if row_loaded else 0
+        is_dynamic = 1 if row_dynamic else 0
         conn.execute(
             """
             UPDATE macros
             SET is_deleted = ?,
                 is_loaded = ?,
+                is_dynamic = ?,
                 is_new = CASE WHEN ? = 1 THEN 0 ELSE is_new END
             WHERE file_path = ? AND macro_name = ? AND version = ?
             """,
             (
                 is_deleted,
                 is_loaded,
-                1 if identity in seen_identity_loaded else 0,
+                is_dynamic,
+                1 if identity in seen_identity_status else 0,
                 str(file_path),
                 str(macro_name),
                 int(max_version),
@@ -808,7 +861,7 @@ def index_macros(
             (selected_runtime, renamed_from, file_path, macro_name, file_path, macro_name),
         )
 
-    return inserted, unchanged
+    return inserted, unchanged, dynamic_inserted
 
 
 def run_indexing(
@@ -820,14 +873,16 @@ def run_indexing(
 
     all_records: List[MacroRecord] = []
     cfg_count = 0
-    cfg_files, loaded_cfg_resolved = _resolve_cfg_file_sets(config_dir)
+    cfg_files, loaded_cfg_resolved, dynamic_cfg_resolved = _resolve_cfg_file_sets(config_dir)
     for cfg_file in cfg_files:
         cfg_count += 1
+        cfg_resolved = cfg_file.resolve()
         all_records.extend(
             parse_macros_from_cfg(
                 cfg_file,
                 config_dir,
-                is_loaded=cfg_file.resolve() in loaded_cfg_resolved,
+                is_loaded=cfg_resolved in loaded_cfg_resolved,
+                is_dynamic=cfg_resolved in dynamic_cfg_resolved,
             )
         )
 
@@ -837,12 +892,13 @@ def run_indexing(
         ensure_schema=ensure_schema,
         pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
     ) as conn:
-        inserted, unchanged = index_macros(conn, all_records, now_ts, max_versions=max_versions)
+        inserted, unchanged, dynamic_inserted = index_macros(conn, all_records, now_ts, max_versions=max_versions)
         conn.commit()
 
     return {
         "cfg_files_scanned": cfg_count,
         "macros_inserted": inserted,
+        "dynamic_macros_inserted": dynamic_inserted,
         "macros_unchanged": unchanged,
         "db_path": str(db_path),
     }
@@ -1056,11 +1112,12 @@ def import_macro_share_payload(
                     renamed_from,
                     is_deleted,
                     is_loaded,
+                    is_dynamic,
                     is_new,
                     version,
                     indexed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_path,
@@ -1075,6 +1132,7 @@ def import_macro_share_payload(
                     0,
                     macro_name,
                     None,
+                    0,
                     0,
                     0,
                     1,
@@ -1240,6 +1298,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
                 m.renamed_from,
                 m.is_deleted,
                 m.is_loaded,
+                m.is_dynamic,
                 m.is_new,
                 cnt.version_count
             FROM macros AS m
@@ -1272,6 +1331,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             "display_name": str(runtime_macro_name or macro_name),
             "is_deleted": bool(is_deleted),
             "is_loaded": bool(is_loaded),
+            "is_dynamic": bool(is_dynamic),
             "is_new": bool(is_new),
             "version_count": int(version_count),
         }
@@ -1290,6 +1350,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             renamed_from,
             is_deleted,
             is_loaded,
+            is_dynamic,
             is_new,
             version_count,
         ) in rows
@@ -1319,6 +1380,7 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
                 renamed_from,
                 is_deleted,
                 is_loaded,
+                is_dynamic,
                 is_new
             FROM macros
             WHERE file_path = ? AND macro_name = ?
@@ -1344,6 +1406,7 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
             "display_name": str(runtime_macro_name or row_macro_name),
             "is_deleted": bool(is_deleted),
             "is_loaded": bool(is_loaded),
+            "is_dynamic": bool(is_dynamic),
             "is_new": bool(is_new),
         }
         for (
@@ -1361,6 +1424,7 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
             renamed_from,
             is_deleted,
             is_loaded,
+            is_dynamic,
             is_new,
         ) in rows
     ]

@@ -36,6 +36,7 @@ _STATUS_BADGE_CLASSES: dict[str, str] = {
     "deleted": "text-[10px] uppercase tracking-wide text-white bg-grey-6 rounded px-1.5 py-0.5",
     "new": "text-[10px] uppercase tracking-wide text-white bg-purple-7 rounded px-1.5 py-0.5",
     "not_loaded": "text-[10px] uppercase tracking-wide text-white bg-orange-7 rounded px-1.5 py-0.5",
+    "dynamic": "text-[10px] uppercase tracking-wide text-white bg-blue-7 rounded px-1.5 py-0.5",
     "renamed": "text-[10px] uppercase tracking-wide text-white bg-blue-8 rounded px-1.5 py-0.5",
     "active": "text-[10px] uppercase tracking-wide text-white bg-green-8 rounded px-1.5 py-0.5",
     "inactive": "text-[10px] uppercase tracking-wide text-black bg-yellow-6 rounded px-1.5 py-0.5",
@@ -94,6 +95,9 @@ def build_ui(app_version: str = "unknown") -> None:
         ui.space()
         export_button = ui.button(t("Export macros"), icon="upload_file").props("flat color=white")
         import_button = ui.button(t("Import macros"), icon="file_download").props("flat color=white")
+        reload_dynamic_macros_button = ui.button(t("Reload Dynamic Macros"), icon="autorenew").props("flat color=white")
+        reload_dynamic_macros_button.classes("text-blue-4")
+        reload_dynamic_macros_button.set_visibility(False)
         restart_klipper_button = ui.button(t("Restart Klipper"), icon="restart_alt").props("flat color=white")
         restart_klipper_button.classes("text-orange-4")
         restart_klipper_button.set_visibility(False)
@@ -123,6 +127,7 @@ def build_ui(app_version: str = "unknown") -> None:
     printer_state: str = "unknown"
     print_lock_popup_open: bool = False
     restart_required: bool = False
+    dynamic_reload_required: bool = False
     watcher = ConfigWatcher(config_dir)
     duplicate_compare_view = MacroCompareView()
 
@@ -148,23 +153,76 @@ def build_ui(app_version: str = "unknown") -> None:
         uploaded_import_name = str(getattr(uploaded_file, "name", "") or "")
         import_error_label.set_text("")
 
-    def _refresh_restart_button() -> None:
-        """Show restart button only when macro changes require reload and printer is idle."""
-        is_allowed = restart_required and (not printer_is_printing) and (not printer_is_busy)
-        restart_klipper_button.set_visibility(is_allowed)
-        restart_klipper_button.set_enabled(is_allowed)
+    def _refresh_reload_buttons() -> None:
+        """Show exactly one pending reload action button when printer is idle."""
+        is_allowed = (not printer_is_printing) and (not printer_is_busy)
+        show_restart = restart_required and is_allowed
+        # Dynamic macros can be reloaded while printing.
+        show_dynamic_reload = (not restart_required) and dynamic_reload_required
 
-    def _mark_restart_required() -> None:
-        """Mark that a macro-affecting change requires Klipper restart."""
+        restart_klipper_button.set_enabled(show_restart)
+        restart_klipper_button.set_visibility(show_restart)
+
+        reload_dynamic_macros_button.set_enabled(show_dynamic_reload)
+        reload_dynamic_macros_button.set_visibility(show_dynamic_reload)
+
+    def _mark_reload_required(*, is_dynamic: bool = False) -> None:
+        """Mark pending runtime action after macro-affecting changes."""
         nonlocal restart_required
-        restart_required = True
-        _refresh_restart_button()
+        nonlocal dynamic_reload_required
+
+        if is_dynamic and not restart_required:
+            dynamic_reload_required = True
+        else:
+            restart_required = True
+            dynamic_reload_required = False
+        _refresh_reload_buttons()
 
     def _clear_restart_required() -> None:
-        """Clear pending restart requirement after successful restart."""
+        """Clear pending runtime action after successful restart/reload."""
         nonlocal restart_required
+        nonlocal dynamic_reload_required
         restart_required = False
-        _refresh_restart_button()
+        dynamic_reload_required = False
+        _refresh_reload_buttons()
+
+    def _is_dynamic_version_row(version_row: dict[str, object]) -> bool:
+        """Return True when selected macro version is sourced from dynamic configs."""
+        return bool(version_row.get("is_dynamic", False))
+
+    def _files_include_dynamic_macros(paths: list[str]) -> bool:
+        """Return True when any touched cfg path maps to known dynamic macros."""
+        if not paths:
+            return False
+
+        dynamic_files = {
+            str(macro.get("file_path", ""))
+            for macro in cached_macros
+            if bool(macro.get("is_dynamic", False))
+        }
+        if not dynamic_files:
+            return False
+
+        normalized: set[str] = set()
+        for raw in paths:
+            path_str = str(raw or "").strip()
+            if not path_str:
+                continue
+            candidate = Path(path_str)
+            if candidate.is_absolute():
+                try:
+                    path_str = str(candidate.resolve().relative_to(config_dir.resolve()))
+                except Exception:
+                    path_str = str(candidate)
+            normalized.add(path_str)
+            normalized.add(str(Path(path_str).name))
+
+        for dynamic_file in dynamic_files:
+            if dynamic_file in normalized:
+                return True
+            if Path(dynamic_file).name in normalized:
+                return True
+        return False
 
     with ui.dialog().props("persistent") as print_lock_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
         ui.label(t("Printer is currently printing")).classes("text-lg font-semibold text-warning")
@@ -479,7 +537,8 @@ def build_ui(app_version: str = "unknown") -> None:
     def restore_macro_version_from_viewer(version_row: dict) -> None:
         """Restore selected macro version into cfg file, then rescan."""
         nonlocal force_latest_for_key
-        if blocked_by_print_state(status_message="Blocked: printer is currently printing. Editing is disabled."):
+        if printer_is_printing and not _is_dynamic_version_row(version_row):
+            status_label.set_text(t("Blocked: printer is currently printing. Editing is disabled."))
             return
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
@@ -504,7 +563,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             version=result["version"],
         ))
-        _mark_restart_required()
+        _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro restore")
 
@@ -514,7 +573,7 @@ def build_ui(app_version: str = "unknown") -> None:
         """Save edited macro text back into its source cfg file and re-index."""
         nonlocal force_latest_for_key
 
-        if printer_is_printing:
+        if printer_is_printing and not _is_dynamic_version_row(version_row):
             raise ValueError("Blocked: printer is currently printing. Editing is disabled.")
 
         file_path = str(version_row.get("file_path", ""))
@@ -539,7 +598,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             operation=result["operation"],
         ))
-        _mark_restart_required()
+        _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro edit")
 
@@ -549,7 +608,7 @@ def build_ui(app_version: str = "unknown") -> None:
         """Delete selected macro section from cfg file and re-index."""
         nonlocal force_latest_for_key
 
-        if printer_is_printing:
+        if printer_is_printing and not _is_dynamic_version_row(version_row):
             raise ValueError(t("Blocked: printer is currently printing. Editing is disabled."))
 
         file_path = str(version_row.get("file_path", ""))
@@ -584,7 +643,7 @@ def build_ui(app_version: str = "unknown") -> None:
             file_path=result["file_path"],
             removed=removed,
         ))
-        _mark_restart_required()
+        _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro delete")
 
@@ -642,6 +701,8 @@ def build_ui(app_version: str = "unknown") -> None:
             return "new"
         if not macro.get("is_loaded", True):
             return "not_loaded"
+        if macro.get("is_active", False) and macro.get("is_dynamic", False):
+            return "dynamic"
         if macro.get("is_active", False) and macro.get("renamed_from"):
             return "renamed"
         if macro.get("is_active", False):
@@ -709,7 +770,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     ui.label(str(entry.get("file_path", "-"))).classes("flex-1 text-sm")
                     ui.label(f"v{entry.get('version', '-')}").classes("text-[11px] text-grey-5")
                     if entry.get("is_active", False):
-                        render_status_badge("active")
+                        render_status_badge(status_badge_key(entry))
 
         options = {
             str(entry.get("file_path", "")): str(entry.get("file_path", ""))
@@ -874,7 +935,8 @@ def build_ui(app_version: str = "unknown") -> None:
             removed_sections=result["removed_sections"],
             file_count=touched_files_count,
         ))
-        _mark_restart_required()
+        touched_files = [str(path) for path in touched_files_raw] if isinstance(touched_files_raw, list) else []
+        _mark_reload_required(is_dynamic=_files_include_dynamic_macros(touched_files))
         perform_index("duplicate wizard")
 
     def render_macro_list() -> None:
@@ -970,6 +1032,8 @@ def build_ui(app_version: str = "unknown") -> None:
             prefer_latest=prefer_latest,
             prefer_active=prefer_active,
         )
+        # While printing, allow editing only for dynamic macros.
+        viewer.set_editing_enabled((not printer_is_printing) or bool(selected_macro.get("is_dynamic", False)))
 
     def render_backup_list() -> None:
         """Render right-panel backup entries and attach action handlers."""
@@ -1097,7 +1161,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     macro_count=result["macro_count"],
                 )
             )
-        _mark_restart_required()
+        _mark_reload_required(is_dynamic=False)
         perform_index("backup restore")
 
     def perform_delete_backup() -> None:
@@ -1159,7 +1223,9 @@ def build_ui(app_version: str = "unknown") -> None:
                 )
             )
             if trigger != "startup" and _to_int(result.get("macros_inserted", 0)) > 0:
-                _mark_restart_required()
+                inserted = _to_int(result.get("macros_inserted", 0))
+                dynamic_inserted = _to_int(result.get("dynamic_macros_inserted", 0))
+                _mark_reload_required(is_dynamic=(inserted > 0 and dynamic_inserted == inserted))
             refresh_data()
             watcher.reset()
         except FileNotFoundError as exc:
@@ -1373,6 +1439,23 @@ def build_ui(app_version: str = "unknown") -> None:
         _clear_restart_required()
         status_label.set_text(t("Klipper restart requested. The restart button will reappear after another macro change."))
 
+    def reload_dynamic_macros() -> None:
+        """Request dynamic macro reload when pending dynamic macro changes exist."""
+        if not dynamic_reload_required:
+            status_label.set_text(t("No pending dynamic macro changes require a dynamic macro reload."))
+            return
+
+        try:
+            service.reload_dynamic_macros(timeout=3.0)
+        except Exception as exc:
+            status_label.set_text(t("Failed to reload dynamic macros: {error}", error=exc))
+            return
+
+        _clear_restart_required()
+        status_label.set_text(
+            t("Dynamic macro reload requested. The reload button will reappear after another dynamic macro change.")
+        )
+
     def set_print_lock(locked: bool, moonraker_state: str, moonraker_message: str) -> None:
         """Toggle UI mutation lock while printer is actively printing."""
         nonlocal printer_is_printing
@@ -1383,7 +1466,13 @@ def build_ui(app_version: str = "unknown") -> None:
         printer_is_printing = locked
         printer_state = moonraker_state
         printer_is_busy = moonraker_state not in {"standby", "ready", "complete", "cancelled"}
-        editing_enabled = not locked
+        selected_macro_dynamic = False
+        if selected_key:
+            for macro in cached_macros:
+                if macro_key(macro) == selected_key:
+                    selected_macro_dynamic = bool(macro.get("is_dynamic", False))
+                    break
+        editing_enabled = (not locked) or selected_macro_dynamic
 
         index_button.set_enabled(editing_enabled)
         backup_button.set_enabled(editing_enabled)
@@ -1401,7 +1490,7 @@ def build_ui(app_version: str = "unknown") -> None:
         duplicate_next_button.set_enabled(editing_enabled and duplicate_wizard_index < len(duplicate_wizard_groups) - 1)
         duplicate_apply_button.set_enabled(editing_enabled)
         viewer.set_editing_enabled(editing_enabled)
-        _refresh_restart_button()
+        _refresh_reload_buttons()
 
         if locked:
             if moonraker_message:
@@ -1503,6 +1592,7 @@ def build_ui(app_version: str = "unknown") -> None:
     backup_button.on_click(open_backup_dialog)
     export_button.on_click(open_export_dialog)
     import_button.on_click(open_import_dialog)
+    reload_dynamic_macros_button.on_click(reload_dynamic_macros)
     restart_klipper_button.on_click(restart_klipper)
     create_backup_button.on_click(perform_backup)
     confirm_export_button.on_click(perform_export)

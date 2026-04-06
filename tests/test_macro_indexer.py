@@ -103,6 +103,23 @@ def test_get_cfg_load_order_follows_include_order_and_appends_unreferenced_files
     assert order == ["printer.cfg", "extras/b.cfg", "extras/a.cfg", "orphan.cfg"]
 
 
+def test_get_cfg_load_order_includes_dynamicmacros_configs(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [dynamicmacros]
+        configs: generated/one.cfg, generated/two.cfg
+        """,
+    )
+    _write(tmp_path / "generated" / "one.cfg", "[printer]\n")
+    _write(tmp_path / "generated" / "two.cfg", "[printer]\n")
+    _write(tmp_path / "orphan.cfg", "[printer]\n")
+
+    order = [str(path.relative_to(tmp_path)) for path in get_cfg_load_order(tmp_path)]
+
+    assert order == ["printer.cfg", "generated/one.cfg", "generated/two.cfg", "orphan.cfg"]
+
+
 def test_run_indexing_marks_only_last_duplicate_macro_active(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "macros.db"
@@ -174,9 +191,86 @@ def test_run_indexing_marks_unreferenced_cfg_macros_not_loaded(tmp_path: Path) -
         assert result["cfg_files_scanned"] == 3
         assert set(rows_by_path) == {"loaded.cfg", "orphan.cfg"}
         assert rows_by_path["loaded.cfg"]["is_loaded"] is True
+        assert rows_by_path["loaded.cfg"]["is_dynamic"] is False
         assert rows_by_path["loaded.cfg"]["is_active"] is True
         assert rows_by_path["orphan.cfg"]["is_loaded"] is False
+        assert rows_by_path["orphan.cfg"]["is_dynamic"] is False
         assert rows_by_path["orphan.cfg"]["is_active"] is False
+
+
+def test_run_indexing_treats_dynamicmacros_configs_as_loaded(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [dynamicmacros]
+                configs: generated.cfg
+                """,
+        )
+        _write(
+                config_dir / "generated.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="generated"
+                """,
+        )
+        _write(
+                config_dir / "orphan.cfg",
+                """
+                [gcode_macro BYE]
+                gcode:
+                    RESPOND MSG="orphan"
+                """,
+        )
+
+        result = run_indexing(config_dir, db_path)
+        macros = load_macro_list(db_path)
+        rows_by_path = {row["file_path"]: row for row in macros}
+
+        assert result["cfg_files_scanned"] == 3
+        assert set(rows_by_path) == {"generated.cfg", "orphan.cfg"}
+        assert rows_by_path["generated.cfg"]["is_loaded"] is True
+        assert rows_by_path["generated.cfg"]["is_dynamic"] is True
+        assert rows_by_path["generated.cfg"]["is_active"] is True
+        assert rows_by_path["orphan.cfg"]["is_loaded"] is False
+        assert rows_by_path["orphan.cfg"]["is_dynamic"] is False
+        assert rows_by_path["orphan.cfg"]["is_active"] is False
+
+
+def test_run_indexing_reports_dynamic_insert_count(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [dynamicmacros]
+                configs: generated.cfg
+                [include static.cfg]
+                """,
+        )
+        _write(
+                config_dir / "generated.cfg",
+                """
+                [gcode_macro DYN_HELLO]
+                gcode:
+                    RESPOND MSG="dyn"
+                """,
+        )
+        _write(
+                config_dir / "static.cfg",
+                """
+                [gcode_macro STATIC_HELLO]
+                gcode:
+                    RESPOND MSG="static"
+                """,
+        )
+
+        result = run_indexing(config_dir, db_path)
+
+        assert result["macros_inserted"] == 2
+        assert result["dynamic_macros_inserted"] == 1
 
 
 def test_renamed_runtime_alias_not_counted_as_duplicate(tmp_path: Path) -> None:
