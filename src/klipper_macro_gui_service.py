@@ -278,12 +278,14 @@ class MacroGuiService:
             source_model=source_model,
             now_ts=int(time.time()),
         )
+        exported_macros = payload.get("macros", [])
+        macro_count = len(exported_macros) if isinstance(exported_macros, list) else 0
         out_file = out_file.expanduser().resolve()
         out_file.parent.mkdir(parents=True, exist_ok=True)
         out_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         return {
             "file_path": str(out_file),
-            "macro_count": len(payload.get("macros", [])),
+            "macro_count": macro_count,
         }
 
     def import_macro_share_file(
@@ -316,9 +318,11 @@ class MacroGuiService:
             and src_vendor_norm == tgt_vendor_norm
             and src_model_norm == tgt_model_norm
         )
+        imported_raw = result.get("imported", 0)
+        imported_count = imported_raw if isinstance(imported_raw, int) else 0
 
         return {
-            "imported": int(result.get("imported", 0)),
+            "imported": imported_count,
             "source_vendor": source_vendor,
             "source_model": source_model,
             "printer_matches": printer_matches,
