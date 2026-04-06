@@ -40,6 +40,7 @@ def duplicate_names_for_macros(macros: list[dict[str, object]]) -> set[str]:
         _display_macro_name(m).lower()
         for m in macros
         if not bool(m.get("is_deleted", False))
+        and bool(m.get("is_loaded", True))
     )
     return {name for name, count in name_counts.items() if count > 1}
 

@@ -139,6 +139,44 @@ def test_run_indexing_marks_only_last_duplicate_macro_active(tmp_path: Path) -> 
     assert rows_by_path["override.cfg"]["runtime_macro_name"] == "HELLO"
 
 
+def test_run_indexing_marks_unreferenced_cfg_macros_not_loaded(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [include loaded.cfg]
+                """,
+        )
+        _write(
+                config_dir / "loaded.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="loaded"
+                """,
+        )
+        _write(
+                config_dir / "orphan.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="orphan"
+                """,
+        )
+
+        result = run_indexing(config_dir, db_path)
+        macros = load_macro_list(db_path)
+        rows_by_path = {row["file_path"]: row for row in macros}
+
+        assert result["cfg_files_scanned"] == 3
+        assert set(rows_by_path) == {"loaded.cfg", "orphan.cfg"}
+        assert rows_by_path["loaded.cfg"]["is_loaded"] is True
+        assert rows_by_path["loaded.cfg"]["is_active"] is True
+        assert rows_by_path["orphan.cfg"]["is_loaded"] is False
+        assert rows_by_path["orphan.cfg"]["is_active"] is False
+
+
 def test_renamed_runtime_alias_not_counted_as_duplicate(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "macros.db"

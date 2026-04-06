@@ -37,6 +37,7 @@ class MacroRecord:
     gcode: Optional[str]
     variables_json: str
     body_checksum: str
+    is_loaded: bool = True
 
 
 _LATEST_VERSION_SUBQUERY = """
@@ -87,14 +88,18 @@ def _iter_included_files(file_path: Path, config_dir: Path) -> Iterable[Path]:
         return
 
 
-def get_cfg_load_order(config_dir: Path) -> List[Path]:
-    """Resolve cfg load order starting from printer.cfg and following [include ...]."""
+def _resolve_cfg_file_sets(config_dir: Path) -> tuple[List[Path], set[Path]]:
+    """Return (scan_order, loaded_set) for cfg files under config_dir.
+
+    loaded_set contains only files loaded by Klipper from printer.cfg include
+    traversal. scan_order also appends unreferenced cfg files for visibility.
+    """
     root_cfg = config_dir / "printer.cfg"
     if not root_cfg.exists() or not root_cfg.is_file():
-        # Fall back to deterministic full-tree scan if printer.cfg is missing.
-        return sorted((p for p in _iter_cfg_files(config_dir)), key=lambda p: str(p))
+        all_cfg = sorted((p for p in _iter_cfg_files(config_dir)), key=lambda p: str(p))
+        return all_cfg, {p.resolve() for p in all_cfg}
 
-    ordered: List[Path] = []
+    loaded: List[Path] = []
     visited: set[Path] = set()
 
     def visit(path: Path) -> None:
@@ -102,16 +107,22 @@ def get_cfg_load_order(config_dir: Path) -> List[Path]:
         if resolved in visited:
             return
         visited.add(resolved)
-        ordered.append(path)
+        loaded.append(path)
         for included in _iter_included_files(resolved, config_dir):
             visit(included)
 
     visit(root_cfg)
 
-    # Keep any non-included cfg files discoverable for visibility, deterministically.
+    ordered: List[Path] = list(loaded)
     for cfg in sorted((p for p in _iter_cfg_files(config_dir)), key=lambda p: str(p)):
         if cfg.resolve() not in visited:
             ordered.append(cfg)
+    return ordered, visited
+
+
+def get_cfg_load_order(config_dir: Path) -> List[Path]:
+    """Resolve cfg load order starting from printer.cfg and following [include ...]."""
+    ordered, _ = _resolve_cfg_file_sets(config_dir)
     return ordered
 
 
@@ -224,7 +235,7 @@ def _is_trailing_gcode_comment_or_blank(line: str) -> bool:
     return not stripped or stripped.startswith("#") or stripped.startswith(";")
 
 
-def parse_macros_from_cfg(file_path: Path, base_dir: Path) -> List[MacroRecord]:
+def parse_macros_from_cfg(file_path: Path, base_dir: Path, *, is_loaded: bool = True) -> List[MacroRecord]:
     """Parse all [gcode_macro ...] sections from one cfg file."""
     results: List[MacroRecord] = []
     current_section: Optional[str] = None
@@ -270,6 +281,7 @@ def parse_macros_from_cfg(file_path: Path, base_dir: Path) -> List[MacroRecord]:
                 gcode=gcode_text,
                 variables_json=json.dumps(current_variables, separators=(",", ":"), sort_keys=True),
                 body_checksum=_make_checksum(body_text),
+                is_loaded=is_loaded,
             )
         )
 
@@ -362,6 +374,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             runtime_macro_name TEXT,
             renamed_from TEXT,
             is_deleted  INTEGER NOT NULL DEFAULT 0,
+            is_loaded   INTEGER NOT NULL DEFAULT 1,
             version     INTEGER NOT NULL,
             indexed_at  INTEGER NOT NULL
         )
@@ -382,6 +395,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE macros ADD COLUMN runtime_macro_name TEXT")
     if not rebuilt and existing_cols and "renamed_from" not in existing_cols:
         conn.execute("ALTER TABLE macros ADD COLUMN renamed_from TEXT")
+    # v5→v6: track whether a macro lives in cfg files loaded by Klipper.
+    if not rebuilt and existing_cols and "is_loaded" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN is_loaded INTEGER NOT NULL DEFAULT 1")
 
     conn.execute(
         """
@@ -656,10 +672,10 @@ def index_macros(
             INSERT INTO macros (
                 file_path, section_type, macro_name, line_number,
                 description, rename_existing, gcode, variables_json, body_checksum, is_active,
-                runtime_macro_name, renamed_from,
+                runtime_macro_name, renamed_from, is_loaded,
                 version, indexed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 rec.file_path,
@@ -674,6 +690,7 @@ def index_macros(
                 0,
                 rec.macro_name,
                 None,
+                1 if rec.is_loaded else 0,
                 new_version,
                 now_ts,
             ),
@@ -692,18 +709,25 @@ def index_macros(
         )
         inserted += 1
 
-    # Mark latest rows as deleted when their macro is no longer present on disk.
-    seen_identities = {(rec.file_path, rec.macro_name) for rec in records}
+    # Mark latest rows as deleted when their macro is no longer present on disk,
+    # and stamp whether the source cfg is currently loaded by Klipper.
+    seen_identity_loaded = {
+        (rec.file_path, rec.macro_name): bool(rec.is_loaded)
+        for rec in records
+    }
     latest_rows = conn.execute(_LATEST_VERSION_SUBQUERY).fetchall()
     for file_path, macro_name, max_version in latest_rows:
-        is_deleted = 0 if (str(file_path), str(macro_name)) in seen_identities else 1
+        identity = (str(file_path), str(macro_name))
+        is_deleted = 0 if identity in seen_identity_loaded else 1
+        is_loaded = 1 if seen_identity_loaded.get(identity, False) else 0
         conn.execute(
             """
             UPDATE macros
-            SET is_deleted = ?
+            SET is_deleted = ?,
+                is_loaded = ?
             WHERE file_path = ? AND macro_name = ? AND version = ?
             """,
-            (is_deleted, str(file_path), str(macro_name), int(max_version)),
+            (is_deleted, is_loaded, str(file_path), str(macro_name), int(max_version)),
         )
 
     # Determine active runtime command mapping by cfg loading order.
@@ -711,6 +735,8 @@ def index_macros(
     # the previous X definition becomes callable as Y.
     runtime_target_by_name: Dict[str, tuple[str, str, str]] = {}
     for rec in records:
+        if not rec.is_loaded:
+            continue
         prev_target = runtime_target_by_name.get(rec.macro_name.lower())
         rename_target = str(rec.rename_existing or "").strip()
         if rename_target and prev_target is not None:
@@ -755,6 +781,7 @@ def index_macros(
                 renamed_from = ?
             WHERE file_path = ? AND macro_name = ?
                             AND is_deleted = 0
+                            AND is_loaded = 1
               AND version = (
                 SELECT MAX(version)
                 FROM macros
@@ -776,9 +803,16 @@ def run_indexing(
 
     all_records: List[MacroRecord] = []
     cfg_count = 0
-    for cfg_file in get_cfg_load_order(config_dir):
+    cfg_files, loaded_cfg_resolved = _resolve_cfg_file_sets(config_dir)
+    for cfg_file in cfg_files:
         cfg_count += 1
-        all_records.extend(parse_macros_from_cfg(cfg_file, config_dir))
+        all_records.extend(
+            parse_macros_from_cfg(
+                cfg_file,
+                config_dir,
+                is_loaded=cfg_file.resolve() in loaded_cfg_resolved,
+            )
+        )
 
     now_ts = int(time.time())
     with open_sqlite_connection(
@@ -937,6 +971,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
                 m.runtime_macro_name,
                 m.renamed_from,
                 m.is_deleted,
+                m.is_loaded,
                 cnt.version_count
             FROM macros AS m
             INNER JOIN (
@@ -967,6 +1002,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             "renamed_from": renamed_from,
             "display_name": str(runtime_macro_name or macro_name),
             "is_deleted": bool(is_deleted),
+            "is_loaded": bool(is_loaded),
             "version_count": int(version_count),
         }
         for (
@@ -983,6 +1019,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             runtime_macro_name,
             renamed_from,
             is_deleted,
+            is_loaded,
             version_count,
         ) in rows
     ]
@@ -1009,7 +1046,8 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
                 is_active,
                 runtime_macro_name,
                 renamed_from,
-                is_deleted
+                is_deleted,
+                is_loaded
             FROM macros
             WHERE file_path = ? AND macro_name = ?
             ORDER BY version DESC
@@ -1033,6 +1071,7 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
             "renamed_from": renamed_from,
             "display_name": str(runtime_macro_name or row_macro_name),
             "is_deleted": bool(is_deleted),
+            "is_loaded": bool(is_loaded),
         }
         for (
             row_macro_name,
@@ -1048,6 +1087,7 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
             runtime_macro_name,
             renamed_from,
             is_deleted,
+            is_loaded,
         ) in rows
     ]
 
@@ -1070,6 +1110,7 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
                    AND m.macro_name = l.macro_name
                    AND m.version = l.max_version
                 WHERE m.is_deleted = 0
+                                    AND m.is_loaded = 1
                   AND COALESCE(NULLIF(TRIM(m.runtime_macro_name), ''), m.macro_name) = m.macro_name
             ), duplicated AS (
                 SELECT macro_name

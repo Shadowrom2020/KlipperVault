@@ -34,6 +34,7 @@ DEFAULT_DB_PATH = str((Path.home() / "printer_data" / "db" / "klipper_macros.db"
 
 _STATUS_BADGE_CLASSES: dict[str, str] = {
     "deleted": "text-[10px] uppercase tracking-wide text-white bg-grey-6 rounded px-1.5 py-0.5",
+    "not_loaded": "text-[10px] uppercase tracking-wide text-white bg-orange-7 rounded px-1.5 py-0.5",
     "renamed": "text-[10px] uppercase tracking-wide text-white bg-blue-8 rounded px-1.5 py-0.5",
     "active": "text-[10px] uppercase tracking-wide text-white bg-green-8 rounded px-1.5 py-0.5",
     "inactive": "text-[10px] uppercase tracking-wide text-black bg-yellow-6 rounded px-1.5 py-0.5",
@@ -586,6 +587,8 @@ def build_ui(app_version: str = "unknown") -> None:
         """Resolve macro row status key for consistent badge rendering."""
         if macro.get("is_deleted", False):
             return "deleted"
+        if not macro.get("is_loaded", True):
+            return "not_loaded"
         if macro.get("is_active", False) and macro.get("renamed_from"):
             return "renamed"
         if macro.get("is_active", False):
