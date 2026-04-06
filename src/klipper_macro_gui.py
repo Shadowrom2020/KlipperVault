@@ -14,7 +14,6 @@ from nicegui import ui
 
 from klipper_macro_compare import MacroCompareView
 from klipper_macro_gui_logic import (
-    duplicate_count_from_stats,
     duplicate_names_for_macros,
     filter_macros,
     find_active_override,
@@ -1130,7 +1129,7 @@ def build_ui(app_version: str = "unknown") -> None:
         stats, cached_macros = service.load_dashboard()
         deleted_macros = _to_int(stats.get("deleted_macros", 0))
         deleted_macro_count = deleted_macros
-        duplicate_macros = duplicate_count_from_stats(stats)
+        duplicate_macros = len(duplicate_names_for_macros(cached_macros))
         duplicate_warning_button.set_visibility(duplicate_macros > 0)
         total_macros_label.set_text(t("Total macros: {count}", count=stats["total_macros"]))
         duplicate_macros_label.set_text(t("Duplicate macros: {count}", count=duplicate_macros))
