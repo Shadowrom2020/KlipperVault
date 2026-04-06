@@ -150,6 +150,46 @@ class MacroGuiService:
             "payload": payload,
         }
 
+    def reload_dynamic_macros(self, timeout: float = 3.0) -> dict[str, object]:
+        """Execute DYNAMIC_MACRO command through Moonraker gcode API."""
+        url = f"{self._moonraker_base_url}/printer/gcode/script"
+        parsed = urlparse(url)
+
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Moonraker URL must use http/https.")
+
+        body = json.dumps({"script": "DYNAMIC_MACRO"})
+        connection: http.client.HTTPConnection | http.client.HTTPSConnection
+        if parsed.scheme == "https":
+            connection = http.client.HTTPSConnection(parsed.netloc, timeout=timeout)
+        else:
+            connection = http.client.HTTPConnection(parsed.netloc, timeout=timeout)
+
+        try:
+            path = parsed.path or "/"
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            connection.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+            response = connection.getresponse()
+            raw_payload = response.read().decode("utf-8")
+        finally:
+            connection.close()
+
+        try:
+            payload = json.loads(raw_payload) if raw_payload else {}
+        except ValueError:
+            payload = {}
+
+        if response.status >= 400:
+            error_message = str(payload.get("error", {}).get("message") or raw_payload or response.reason).strip()
+            raise RuntimeError(error_message or f"Moonraker dynamic reload request failed with status {response.status}")
+
+        return {
+            "ok": True,
+            "status": response.status,
+            "payload": payload,
+        }
+
     def index(self) -> dict[str, object]:
         """Run config indexing with configured retention settings."""
         return run_indexing(

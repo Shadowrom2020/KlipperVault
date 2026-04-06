@@ -14,6 +14,8 @@ It is built for Klipper systems that keep configuration in `~/printer_data/confi
 
 - Automatic macro version history (changes are stored only when content differs).
 - Active/inactive and loaded/not-loaded state tracking across include chains.
+- Dynamic macro awareness for configs loaded via `[dynamicmacros]` `configs:` entries.
+- Dynamic macro status badge (`Dynamic`) and dedicated `Reload Dynamic Macros` action.
 - Duplicate macro detection with guided conflict resolution.
 - In-place macro editing with write-back to cfg files.
 - Backup and restore of both indexed rows and cfg snapshots.
@@ -24,6 +26,9 @@ It is built for Klipper systems that keep configuration in `~/printer_data/confi
   - Imported macros default to `macros.cfg`; include is ensured in `printer.cfg`.
 - Moonraker print-state safety gates for mutating actions.
 - Optional script explanation panel with macro-to-macro cross-links.
+
+Dynamic Macros project:
+- https://github.com/3DCoded/DynamicMacros
 
 ## Requirements
 
@@ -110,8 +115,10 @@ Typical flow:
 1. Open KlipperVault.
 2. Click `Scan macros`.
 3. Select a macro and review details/history.
-4. Edit latest non-deleted version when printer is idle.
-5. Save and re-index.
+4. Edit latest non-deleted version.
+5. For dynamic macros, editing is allowed even while printing.
+6. Use `Reload Dynamic Macros` to apply dynamic-macro changes without a full Klipper restart.
+7. Save and re-index.
 
 Share/import flow:
 
@@ -128,7 +135,11 @@ Compatibility behavior:
 
 ## Safety Model
 
-When Moonraker reports `printing`, KlipperVault blocks mutating actions (edit/import/export/backup/restore/duplicate resolution), pauses watcher writes, and shows a warning.
+When Moonraker reports `printing`, KlipperVault blocks most mutating actions (import/export/backup/restore/duplicate resolution), pauses watcher writes, and shows a warning.
+
+Exception for dynamic macros:
+- Dynamic macros remain editable while printing.
+- `Reload Dynamic Macros` remains available while printing and triggers Klipper command `DYNAMIC_MACRO` via Moonraker.
 
 ## Troubleshooting
 

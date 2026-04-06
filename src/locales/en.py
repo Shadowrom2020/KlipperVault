@@ -8,5 +8,7 @@ from __future__ import annotations
 TRANSLATIONS: dict[str, str] = {
 	"NEW": "NEW",
 	"new": "new",
+	"Reload Dynamic Macros": "Reload Dynamic Macros",
+	"dynamic": "dynamic",
 	"not_loaded": "not loaded",
 }
