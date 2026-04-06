@@ -51,6 +51,7 @@ def filter_macros(
     show_duplicates_only: bool,
     active_filter: str,
     duplicate_names: set[str],
+    show_new_only: bool = False,
 ) -> list[dict[str, object]]:
     """Apply search/duplicate/active filters to macro list."""
     query = search_query.strip().lower()
@@ -72,6 +73,7 @@ def filter_macros(
             or (active_filter == "active" and bool(macro.get("is_active", False)))
             or (active_filter == "inactive" and not bool(macro.get("is_active", False)))
         )
+        and ((not show_new_only) or bool(macro.get("is_new", False)))
     ]
 
 

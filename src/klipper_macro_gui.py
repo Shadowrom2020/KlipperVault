@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 import os
 from pathlib import Path
+import tempfile
 
 from nicegui import ui
 
@@ -34,6 +35,7 @@ DEFAULT_DB_PATH = str((Path.home() / "printer_data" / "db" / "klipper_macros.db"
 
 _STATUS_BADGE_CLASSES: dict[str, str] = {
     "deleted": "text-[10px] uppercase tracking-wide text-white bg-grey-6 rounded px-1.5 py-0.5",
+    "new": "text-[10px] uppercase tracking-wide text-white bg-purple-7 rounded px-1.5 py-0.5",
     "not_loaded": "text-[10px] uppercase tracking-wide text-white bg-orange-7 rounded px-1.5 py-0.5",
     "renamed": "text-[10px] uppercase tracking-wide text-white bg-blue-8 rounded px-1.5 py-0.5",
     "active": "text-[10px] uppercase tracking-wide text-white bg-green-8 rounded px-1.5 py-0.5",
@@ -91,6 +93,8 @@ def build_ui(app_version: str = "unknown") -> None:
     with ui.header().classes("items-center gap-4 px-6 py-2 bg-grey-9"):
         ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
         ui.space()
+        export_button = ui.button(t("Export macros"), icon="upload_file").props("flat color=white")
+        import_button = ui.button(t("Import macros"), icon="file_download").props("flat color=white")
         restart_klipper_button = ui.button(t("Restart Klipper"), icon="restart_alt").props("flat color=white")
         restart_klipper_button.classes("text-orange-4")
         restart_klipper_button.set_visibility(False)
@@ -110,6 +114,7 @@ def build_ui(app_version: str = "unknown") -> None:
     duplicate_wizard_index: int = 0
     search_query: str = ""
     show_duplicates_only: bool = False
+    show_new_only: bool = False
     active_filter: str = "all"
     sort_order: str = "load_order"
     is_indexing: bool = False
@@ -125,6 +130,24 @@ def build_ui(app_version: str = "unknown") -> None:
     def flat_dialog_button(label_key: str, on_click) -> None:
         """Render a standard flat no-caps dialog action button."""
         ui.button(t(label_key), on_click=on_click).props("flat no-caps")
+
+    uploaded_import_bytes: bytes | None = None
+    uploaded_import_name: str = ""
+
+    async def _on_import_upload(e) -> None:
+        """Capture uploaded macro share file contents for import."""
+        nonlocal uploaded_import_bytes
+        nonlocal uploaded_import_name
+        uploaded_file = getattr(e, "file", None)
+        if uploaded_file is None:
+            uploaded_import_bytes = None
+            uploaded_import_name = ""
+            import_error_label.set_text(t("Please upload a macro share file."))
+            return
+
+        uploaded_import_bytes = await uploaded_file.read()
+        uploaded_import_name = str(getattr(uploaded_file, "name", "") or "")
+        import_error_label.set_text("")
 
     def _refresh_restart_button() -> None:
         """Show restart button only when macro changes require reload and printer is idle."""
@@ -197,6 +220,7 @@ def build_ui(app_version: str = "unknown") -> None:
             search_input = ui.input(placeholder=t("Search macros…")).props("clearable dense outlined").classes("w-full mb-1 shrink-0")
             with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
                 duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
+                new_button = ui.button(t("Show new")).props("flat dense no-caps")
                 active_filter_button = ui.button(t("Filter: {state}", state="all")).props("flat dense no-caps")
             with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
                 ui.label(t("Sort:")).classes("text-xs text-grey-4")
@@ -281,6 +305,27 @@ def build_ui(app_version: str = "unknown") -> None:
             flat_dialog_button("Cancel", delete_dialog.close)
             confirm_delete_button = ui.button(t("Delete")).props("color=negative no-caps")
 
+    with ui.dialog() as export_dialog, ui.card().classes("w-[42rem] max-w-[98vw]"):
+        ui.label(t("Export macros")).classes("text-lg font-semibold")
+        ui.label(t("Select one or more macros to export into a share file.")).classes("text-sm text-grey-5")
+        ui.label(t("Macros")).classes("text-sm mt-2")
+        export_macro_list = ui.column().classes("w-full max-h-[20rem] overflow-y-auto gap-1 border rounded p-2")
+        export_error_label = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            flat_dialog_button("Cancel", export_dialog.close)
+            confirm_export_button = ui.button(t("Export")).props("color=primary no-caps")
+
+    export_macro_checkboxes: dict[str, object] = {}
+
+    with ui.dialog() as import_dialog, ui.card().classes("w-[38rem] max-w-[98vw]"):
+        ui.label(t("Import macros")).classes("text-lg font-semibold")
+        ui.label(t("Import a shared macro file into inactive new versions.")).classes("text-sm text-grey-5")
+        import_upload = ui.upload(on_upload=_on_import_upload, auto_upload=True).props("accept=.json").classes("w-full mt-2")
+        import_error_label = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            flat_dialog_button("Cancel", import_dialog.close)
+            confirm_import_button = ui.button(t("Import")).props("color=primary no-caps")
+
     macro_delete_target: dict[str, object] | None = None
     with ui.dialog() as macro_delete_dialog, ui.card().classes("w-[30rem] max-w-[96vw]"):
         ui.label(t("Delete macro from cfg file")).classes("text-lg font-semibold")
@@ -322,14 +367,17 @@ def build_ui(app_version: str = "unknown") -> None:
         # Ensure the active target is visible after link navigation.
         # If filters hide it, clear filters and search first.
         nonlocal show_duplicates_only
+        nonlocal show_new_only
         nonlocal active_filter
         nonlocal search_query
         show_duplicates_only = False
+        show_new_only = False
         active_filter = "all"
         search_query = ""
         search_input.value = ""
         search_input.update()
         update_duplicates_button_label()
+        update_new_button_label()
         update_active_filter_button_label()
 
         for macro in cached_macros:
@@ -579,6 +627,10 @@ def build_ui(app_version: str = "unknown") -> None:
         """Sync duplicates filter button text with current filter state."""
         duplicates_button.set_text(t("Show all macros") if show_duplicates_only else t("Show duplicates"))
 
+    def update_new_button_label() -> None:
+        """Sync new-macros filter button text with current filter state."""
+        new_button.set_text(t("Show all macros") if show_new_only else t("Show new"))
+
     def update_active_filter_button_label() -> None:
         """Sync active/inactive cycle button text with current filter state."""
         active_filter_button.set_text(t("Filter: {state}", state=active_filter))
@@ -587,6 +639,8 @@ def build_ui(app_version: str = "unknown") -> None:
         """Resolve macro row status key for consistent badge rendering."""
         if macro.get("is_deleted", False):
             return "deleted"
+        if macro.get("is_new", False):
+            return "new"
         if not macro.get("is_loaded", True):
             return "not_loaded"
         if macro.get("is_active", False) and macro.get("renamed_from"):
@@ -839,10 +893,11 @@ def build_ui(app_version: str = "unknown") -> None:
             show_duplicates_only=show_duplicates_only,
             active_filter=active_filter,
             duplicate_names=duplicate_names,
+            show_new_only=show_new_only,
         )
         visible_macros = sort_macros(visible_macros, sort_order)
         query = search_query.strip().lower()
-        filter_active = bool(query) or show_duplicates_only or active_filter != "all"
+        filter_active = bool(query) or show_duplicates_only or show_new_only or active_filter != "all"
         macro_count_label.set_text(
             t("Items: {visible} / {total}", visible=len(visible_macros), total=len(cached_macros))
             if filter_active
@@ -1151,6 +1206,131 @@ def build_ui(app_version: str = "unknown") -> None:
         )
         render_backup_list()
 
+    def open_export_dialog() -> None:
+        """Open macro export dialog with selectable latest macro identities."""
+        export_macro_checkboxes.clear()
+        export_macro_list.clear()
+        with export_macro_list:
+            for macro in cached_macros:
+                identity = f"{str(macro.get('file_path', ''))}::{str(macro.get('macro_name', ''))}"
+                label = f"{str(macro.get('display_name') or macro.get('macro_name', ''))} ({str(macro.get('file_path', ''))})"
+                checkbox = ui.checkbox(label, value=(identity == selected_key)).props("dense")
+                export_macro_checkboxes[identity] = checkbox
+        export_error_label.set_text("")
+        export_dialog.open()
+
+    def perform_export() -> None:
+        """Export selected macros to a share file on disk."""
+        selections = [
+            identity
+            for identity, checkbox in export_macro_checkboxes.items()
+            if bool(getattr(checkbox, "value", False))
+        ]
+        if not selections:
+            export_error_label.set_text(t("Select at least one macro to export."))
+            return
+
+        identities: list[tuple[str, str]] = []
+        for identity in selections:
+            if "::" not in identity:
+                continue
+            file_path, macro_name = identity.split("::", 1)
+            identities.append((file_path, macro_name))
+
+        if not identities:
+            export_error_label.set_text(t("Select at least one macro to export."))
+            return
+
+        generated_name = datetime.now().strftime("klippervault-macros-share-%Y%m%d-%H%M%S.json")
+        out_path = Path(tempfile.gettempdir()) / generated_name
+
+        try:
+            result = service.export_macro_share_file(
+                identities=identities,
+                source_vendor=vault_cfg.printer_vendor,
+                source_model=vault_cfg.printer_model,
+                out_file=out_path,
+            )
+        except Exception as exc:
+            export_error_label.set_text(t("Export failed: {error}", error=exc))
+            status_label.set_text(t("Export failed: {error}", error=exc))
+            return
+
+        export_dialog.close()
+        exported_path = Path(str(result.get("file_path", "")))
+        ui.download(exported_path, filename=exported_path.name)
+        status_label.set_text(
+            t(
+                "Exported {count} macro(s) to {path}.",
+                count=result.get("macro_count", 0),
+                path=result.get("file_path", ""),
+            )
+        )
+
+    def open_import_dialog() -> None:
+        """Open macro import dialog."""
+        nonlocal uploaded_import_bytes
+        nonlocal uploaded_import_name
+        uploaded_import_bytes = None
+        uploaded_import_name = ""
+        import_upload.reset()
+        import_error_label.set_text("")
+        import_dialog.open()
+
+    def perform_import() -> None:
+        """Import a macro share file and refresh dashboard state."""
+        if not uploaded_import_bytes:
+            import_error_label.set_text(t("Please upload a macro share file."))
+            return
+
+        suffix = Path(uploaded_import_name).suffix or ".json"
+        temp_import_file = Path(tempfile.gettempdir()) / (
+            datetime.now().strftime("klippervault-import-%Y%m%d-%H%M%S") + suffix
+        )
+        temp_import_file.write_bytes(uploaded_import_bytes)
+
+        try:
+            result = service.import_macro_share_file(
+                import_file=temp_import_file,
+                target_vendor=vault_cfg.printer_vendor,
+                target_model=vault_cfg.printer_model,
+            )
+        except Exception as exc:
+            import_error_label.set_text(t("Import failed: {error}", error=exc))
+            status_label.set_text(t("Import failed: {error}", error=exc))
+            return
+        finally:
+            temp_import_file.unlink(missing_ok=True)
+
+        import_dialog.close()
+        imported = _to_int(result.get("imported", 0))
+        source_vendor = str(result.get("source_vendor", "")).strip()
+        source_model = str(result.get("source_model", "")).strip()
+        if imported <= 0:
+            status_label.set_text(t("No macros were imported."))
+            return
+
+        if bool(result.get("printer_matches", False)):
+            status_label.set_text(t("Imported {count} macro(s) as new inactive entries.", count=imported))
+        elif source_vendor and source_model:
+            status_label.set_text(
+                t(
+                    "Imported {count} macro(s) for printer {vendor} {model}. Review before enabling.",
+                    count=imported,
+                    vendor=source_vendor,
+                    model=source_model,
+                )
+            )
+        else:
+            status_label.set_text(
+                t(
+                    "Imported {count} macro(s) with unknown source printer. Review before enabling.",
+                    count=imported,
+                )
+            )
+
+        refresh_data()
+
     def purge_deleted_macros() -> None:
         """Remove all deleted macro histories from SQLite in one action."""
         if printer_is_printing:
@@ -1208,9 +1388,13 @@ def build_ui(app_version: str = "unknown") -> None:
 
         index_button.set_enabled(editing_enabled)
         backup_button.set_enabled(editing_enabled)
+        export_button.set_enabled(editing_enabled)
+        import_button.set_enabled(editing_enabled)
         duplicate_warning_button.set_enabled(editing_enabled)
         purge_deleted_button.set_enabled(editing_enabled and deleted_macro_count > 0)
         create_backup_button.set_enabled(editing_enabled)
+        confirm_export_button.set_enabled(editing_enabled)
+        confirm_import_button.set_enabled(editing_enabled)
         confirm_restore_button.set_enabled(editing_enabled)
         confirm_delete_button.set_enabled(editing_enabled)
         duplicate_compare_button.set_enabled(editing_enabled)
@@ -1277,6 +1461,13 @@ def build_ui(app_version: str = "unknown") -> None:
         update_duplicates_button_label()
         render_macro_list()
 
+    def toggle_new_filter() -> None:
+        """Toggle new-only filter and rerender list."""
+        nonlocal show_new_only
+        show_new_only = not show_new_only
+        update_new_button_label()
+        render_macro_list()
+
     def cycle_active_filter() -> None:
         """Cycle active filter through all -> active -> inactive."""
         nonlocal active_filter
@@ -1296,6 +1487,7 @@ def build_ui(app_version: str = "unknown") -> None:
         render_macro_list()
 
     update_duplicates_button_label()
+    update_new_button_label()
     update_active_filter_button_label()
     sort_radio.on_value_change(on_sort_change)
     duplicate_keep_select.on_value_change(_on_duplicate_keep_change)
@@ -1305,12 +1497,17 @@ def build_ui(app_version: str = "unknown") -> None:
     duplicate_next_button.on_click(duplicate_wizard_next)
     duplicate_apply_button.on_click(apply_duplicate_resolution)
     duplicates_button.on_click(toggle_duplicates_filter)
+    new_button.on_click(toggle_new_filter)
     active_filter_button.on_click(cycle_active_filter)
     search_input.on_value_change(on_search_change)
     duplicate_warning_button.on_click(open_duplicate_wizard)
     backup_button.on_click(open_backup_dialog)
+    export_button.on_click(open_export_dialog)
+    import_button.on_click(open_import_dialog)
     restart_klipper_button.on_click(restart_klipper)
     create_backup_button.on_click(perform_backup)
+    confirm_export_button.on_click(perform_export)
+    confirm_import_button.on_click(perform_import)
     purge_deleted_button.on_click(purge_deleted_macros)
     confirm_restore_button.on_click(perform_restore)
     confirm_delete_button.on_click(perform_delete_backup)

@@ -6,5 +6,7 @@
 from __future__ import annotations
 
 TRANSLATIONS: dict[str, str] = {
+	"NEW": "NEW",
+	"new": "new",
 	"not_loaded": "not loaded",
 }

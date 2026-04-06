@@ -214,23 +214,30 @@ class MacroViewer:
         latest_version = max(self._all_versions.keys()) if self._all_versions else int(macro.get("version", 0))
         selected_version = int(macro.get("version", 0))
         is_deleted = bool(macro.get("is_deleted", False))
+        is_new = bool(macro.get("is_new", False))
         is_older_version = selected_version < latest_version
         is_currently_deleted = self._is_macro_currently_deleted()
         can_restore_deleted = is_currently_deleted and is_deleted
+        can_restore_new = is_new and (not is_deleted)
 
-        if not (can_restore_deleted or is_older_version):
+        if not (can_restore_deleted or is_older_version or can_restore_new):
             self._restore_version_button.set_visibility(False)
             return
 
-        self._restore_version_button.set_text(
-            t("Restore deleted macro") if can_restore_deleted else t("Revert to this version")
-        )
+        if can_restore_deleted:
+            self._restore_version_button.set_text(t("Restore deleted macro"))
+        elif can_restore_new:
+            self._restore_version_button.set_text(t("Enable imported macro"))
+        else:
+            self._restore_version_button.set_text(t("Revert to this version"))
         self._restore_version_button.set_visibility(True)
 
     def _version_status_label(self, version_row: dict) -> str:
         """Return compact status label for one version option."""
         if version_row.get("is_deleted", False):
             return t("DELETED")
+        if version_row.get("is_new", False):
+            return t("NEW")
         if version_row.get("is_active", False):
             return "★"
         return t("inactive")

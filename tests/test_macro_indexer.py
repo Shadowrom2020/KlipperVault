@@ -3,7 +3,9 @@ import textwrap
 from pathlib import Path
 
 from klipper_macro_indexer import (
+    export_macro_share_payload,
     get_cfg_load_order,
+    import_macro_share_payload,
     load_duplicate_macro_groups,
     load_macro_list,
     macro_row_to_section_text,
@@ -314,3 +316,56 @@ def test_remove_inactive_macro_version_rejects_active_row(tmp_path: Path) -> Non
     result = remove_inactive_macro_version(db_path, "printer.cfg", "HELLO", int(active_row["version"]))
 
     assert result == {"removed": 0, "reason": "not_inactive"}
+
+
+def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> None:
+    source_config_dir = tmp_path / "source_config"
+    source_db_path = tmp_path / "source_db" / "macros.db"
+    _write(
+        source_config_dir / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        description: shared hello
+        gcode:
+          RESPOND MSG="hello"
+        """,
+    )
+    run_indexing(source_config_dir, source_db_path)
+
+    payload = export_macro_share_payload(
+        db_path=source_db_path,
+        identities=[("printer.cfg", "HELLO")],
+        source_vendor="Voron",
+        source_model="V2.4",
+    )
+
+    assert payload["format"] == "klippervault.macro-share.v1"
+    assert payload["source_printer"] == {"vendor": "Voron", "model": "V2.4"}
+    assert len(payload["macros"]) == 1
+
+    target_db_path = tmp_path / "target_db" / "macros.db"
+    import_result = import_macro_share_payload(target_db_path, payload)
+    assert import_result["imported"] == 1
+
+    imported_rows = load_macro_list(target_db_path)
+    assert len(imported_rows) == 1
+    imported_row = imported_rows[0]
+    assert imported_row["macro_name"] == "HELLO"
+    assert imported_row["is_active"] is False
+    assert imported_row["is_loaded"] is False
+    assert imported_row["is_new"] is True
+
+    target_config_dir = tmp_path / "target_config"
+    restore_result = restore_macro_version(
+        db_path=target_db_path,
+        config_dir=target_config_dir,
+        file_path=str(imported_row["file_path"]),
+        macro_name="HELLO",
+        version=int(imported_row["version"]),
+    )
+
+    assert restore_result["file_path"] == "macros.cfg"
+    restored_cfg = (target_config_dir / "macros.cfg").read_text(encoding="utf-8")
+    assert "[gcode_macro HELLO]" in restored_cfg
+    printer_cfg = (target_config_dir / "printer.cfg").read_text(encoding="utf-8")
+    assert "[include macros.cfg]" in printer_cfg
