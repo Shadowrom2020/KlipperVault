@@ -25,6 +25,7 @@ The toolbar provides quick access to essential operations for managing your macr
 - **Backup**: Create snapshots of your current macro state
 - **Export/Import**: Share macros with other users or import shared macros
 - **Reload Dynamic Macros**: Update macros loaded via DynamicMacros plugin
+- **Restart Klipper**: Update macros loaded by restarting Klipper
 - **Settings**: Configure KlipperVault and printer information
 
 ## In-Place Macro Editing
