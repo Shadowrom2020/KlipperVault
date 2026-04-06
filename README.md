@@ -4,6 +4,8 @@
 
 KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definitions with version history, safe editing workflows, backup/restore, duplicate handling, and Mainsail integration.
 
+**[📸 View UI Overview with Screenshots](overview.md)**
+
 ## Overview
 
 KlipperVault scans your Klipper config tree, indexes every `[gcode_macro ...]` section in SQLite, and presents the results in a NiceGUI interface.
