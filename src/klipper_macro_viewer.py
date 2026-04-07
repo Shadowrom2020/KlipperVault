@@ -33,9 +33,9 @@ class MacroViewer:
         self._editing_enabled = True
         self._available_macros: list[dict[str, object]] = []
 
-        with ui.card().classes("col-span-2 h-full overflow-y-auto"):
+        with ui.card().classes("col-span-1 md:col-span-2 xl:h-full overflow-y-auto"):
             ui.label(t("Macro viewer")).classes("text-lg font-semibold mb-2")
-            with ui.row().classes("w-full items-center gap-3"):
+            with ui.row().classes("w-full items-center gap-3 flex-wrap"):
                 self._name_label = ui.label(t("No macro selected")).classes("text-xl font-bold flex-1")
                 self._active_star_label = ui.label("★").classes("text-xl text-positive")
                 self._active_star_label.set_visibility(False)
