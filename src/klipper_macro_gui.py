@@ -91,7 +91,7 @@ def build_ui(app_version: str = "unknown") -> None:
     )
 
     # ── Top toolbar ──────────────────────────────────────────────────────────
-    with ui.header().classes("items-center gap-4 px-6 py-2 bg-grey-9"):
+    with ui.header().classes("items-center gap-2 px-4 py-2 bg-grey-9 flex-wrap"):
         ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
         ui.space()
         with ui.button(t("Macro actions"), icon="menu").props("flat color=white") as macro_actions_button:
@@ -277,8 +277,8 @@ def build_ui(app_version: str = "unknown") -> None:
 
     save_printer_profile_button.on_click(_save_printer_profile)
 
-    with ui.grid().classes("w-full grid-cols-4 gap-4 p-4 h-[calc(100vh-110px)]"):
-        with ui.card().classes("col-span-1 h-full flex flex-col overflow-hidden"):
+    with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4 p-4 xl:h-[calc(100vh-110px)]"):
+        with ui.card().classes("col-span-1 xl:h-full flex flex-col overflow-hidden min-h-[55vh] xl:min-h-0"):
             ui.label(t("Indexed macros")).classes("text-lg font-semibold mb-2 shrink-0")
             search_input = ui.input(placeholder=t("Search macros…")).props("clearable dense outlined").classes("w-full mb-1 shrink-0")
             with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
@@ -300,7 +300,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
         viewer = MacroViewer()
 
-        with ui.card().classes("col-span-1 h-full overflow-auto"):
+        with ui.card().classes("col-span-1 md:col-span-3 xl:col-span-1 xl:h-full overflow-auto"):
             ui.label(t("Stored macro statistics")).classes("text-lg font-semibold")
             with ui.column().classes("gap-2 mt-2"):
                 total_macros_label = ui.label(t("Total macros: {count}", count=0))
