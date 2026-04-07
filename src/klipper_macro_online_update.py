@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
@@ -208,7 +208,31 @@ def _local_latest_source_row(conn, source_vendor: str, source_model: str, macro_
         """,
         (vendor_norm, model_norm, macro_name),
     ).fetchone()
-    return row
+    if row is not None:
+        return row
+
+    # Fallback for pre-import local macros that do not yet carry source identity
+    # metadata. Prefer the active/latest non-deleted row for overwrite targeting.
+    return conn.execute(
+        """
+        SELECT
+            section_type,
+            description,
+            rename_existing,
+            gcode,
+            variables_json,
+            body_checksum,
+            file_path,
+            version,
+            indexed_at
+        FROM macros
+        WHERE macro_name = ?
+          AND is_deleted = 0
+        ORDER BY is_active DESC, is_loaded DESC, indexed_at DESC, version DESC
+        LIMIT 1
+        """,
+        (macro_name,),
+    ).fetchone()
 
 
 def _upsert_online_state(
@@ -273,6 +297,7 @@ def check_online_macro_updates(
     source_vendor: str,
     source_model: str,
     now_ts: int | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> Dict[str, object]:
     """Return changed remote macros for configured source vendor/model."""
     clean_repo = str(repo_url or "").strip()
@@ -285,6 +310,8 @@ def check_online_macro_updates(
 
     manifest = _fetch_json_url(_build_raw_url(clean_repo, clean_ref, clean_manifest))
     manifest_entries = _manifest_entries_for_identity(manifest, source_vendor, source_model)
+    if progress_callback is not None:
+        progress_callback(0, len(manifest_entries))
 
     updates: List[Dict[str, object]] = []
     unchanged = 0
@@ -294,7 +321,7 @@ def check_online_macro_updates(
         ensure_schema=ensure_schema,
         pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
     ) as conn:
-        for entry in manifest_entries:
+        for index, entry in enumerate(manifest_entries, start=1):
             remote_payload = _fetch_remote_macro_payload(
                 clean_repo,
                 clean_ref,
@@ -336,6 +363,9 @@ def check_online_macro_updates(
             )
 
             if changed:
+                target_file_path = str(remote_payload.get("source_file_path", ""))
+                if local_latest is not None:
+                    target_file_path = str(local_latest[6] or "").strip() or target_file_path
                 updates.append(
                     {
                         "identity": (
@@ -346,7 +376,7 @@ def check_online_macro_updates(
                         "source_vendor": _normalize_identity_component(source_vendor),
                         "source_model": _normalize_identity_component(source_model),
                         "section_text": str(parsed.get("section_text", remote_payload["section_text"])),
-                        "source_file_path": str(remote_payload.get("source_file_path", "")),
+                        "source_file_path": target_file_path,
                         "remote_path": str(remote_payload.get("remote_path", "")),
                         "remote_version": str(remote_payload.get("remote_version", "")),
                         "remote_checksum": remote_checksum,
@@ -355,6 +385,9 @@ def check_online_macro_updates(
                 )
             else:
                 unchanged += 1
+
+            if progress_callback is not None:
+                progress_callback(index, len(manifest_entries))
 
         conn.commit()
 

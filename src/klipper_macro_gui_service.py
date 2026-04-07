@@ -13,7 +13,7 @@ import http.client
 import json
 import time
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 from urllib.parse import urlencode, urlparse
 
 from klipper_macro_backup import (
@@ -383,6 +383,7 @@ class MacroGuiService:
         repo_ref: str,
         source_vendor: str,
         source_model: str,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict[str, object]:
         """Check GitHub manifest for online macro updates for one printer identity."""
         return check_online_macro_updates(
@@ -393,6 +394,7 @@ class MacroGuiService:
             source_vendor=source_vendor,
             source_model=source_model,
             now_ts=int(time.time()),
+            progress_callback=progress_callback,
         )
 
     def import_online_updates(

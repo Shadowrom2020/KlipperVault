@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 import os
 from pathlib import Path
@@ -139,6 +140,9 @@ def build_ui(app_version: str = "unknown") -> None:
     uploaded_import_bytes: bytes | None = None
     uploaded_import_name: str = ""
     pending_online_updates: list[dict[str, object]] = []
+    online_update_check_in_progress: bool = False
+    online_update_progress_current: int = 0
+    online_update_progress_total: int = 1
 
     async def _on_import_upload(e) -> None:
         """Capture uploaded macro share file contents for import."""
@@ -389,6 +393,10 @@ def build_ui(app_version: str = "unknown") -> None:
     with ui.dialog() as online_update_dialog, ui.card().classes("w-[46rem] max-w-[98vw]"):
         ui.label(t("Online macro updates")).classes("text-lg font-semibold")
         ui.label(t("Changed macros are imported as new versions. Select which ones to activate now.")).classes("text-sm text-grey-5")
+        online_update_progress_label = ui.label("").classes("text-sm text-grey-5 mt-2")
+        online_update_progress_bar = ui.linear_progress(value=0.0).classes("w-full mt-1")
+        online_update_progress_label.set_visibility(False)
+        online_update_progress_bar.set_visibility(False)
         online_update_summary_label = ui.label("").classes("text-sm text-grey-5 mt-1")
         ui.label(t("Macros")).classes("text-sm mt-2")
         online_update_list = ui.column().classes("w-full max-h-[20rem] overflow-y-auto gap-1 border rounded p-2")
@@ -396,6 +404,7 @@ def build_ui(app_version: str = "unknown") -> None:
         with ui.row().classes("w-full justify-end gap-2 mt-3"):
             flat_dialog_button("Cancel", online_update_dialog.close)
             confirm_online_update_button = ui.button(t("Import updates")).props("color=primary no-caps")
+            confirm_online_update_button.set_visibility(False)
 
     macro_delete_target: dict[str, object] | None = None
     with ui.dialog() as macro_delete_dialog, ui.card().classes("w-[30rem] max-w-[96vw]"):
@@ -1439,15 +1448,41 @@ def build_ui(app_version: str = "unknown") -> None:
             )
         )
 
-    def open_online_update_dialog() -> None:
+    def _refresh_online_update_progress_ui() -> None:
+        """Sync online update progress widgets with current background state."""
+        if not online_update_check_in_progress:
+            online_update_progress_label.set_visibility(False)
+            online_update_progress_bar.set_visibility(False)
+            return
+
+        display_total = max(online_update_progress_total, 1)
+        progress_value = min(max(online_update_progress_current / display_total, 0.0), 1.0)
+        online_update_progress_label.set_text(
+            t(
+                "Checking updates: {current}/{total}",
+                current=min(online_update_progress_current, display_total),
+                total=display_total,
+            )
+        )
+        online_update_progress_bar.value = progress_value
+        online_update_progress_bar.update()
+        online_update_progress_label.set_visibility(True)
+        online_update_progress_bar.set_visibility(True)
+
+    async def open_online_update_dialog() -> None:
         """Check online source for changed macros and open update selection dialog."""
         nonlocal pending_online_updates
+        nonlocal online_update_check_in_progress
+        nonlocal online_update_progress_current
+        nonlocal online_update_progress_total
 
         online_update_activate_checkboxes.clear()
         online_update_list.clear()
         online_update_error_label.set_text("")
         online_update_summary_label.set_text("")
         pending_online_updates = []
+        confirm_online_update_button.set_enabled(False)
+        confirm_online_update_button.set_visibility(False)
 
         if _printer_profile_missing():
             status_label.set_text(t("Set printer vendor/model before checking updates."))
@@ -1458,17 +1493,38 @@ def build_ui(app_version: str = "unknown") -> None:
             status_label.set_text(t("Online updater repository URL is not configured."))
             return
 
+        online_update_check_in_progress = True
+        online_update_progress_current = 0
+        online_update_progress_total = 1
+        online_update_summary_label.set_text(t("Checking for updates..."))
+        _refresh_online_update_progress_ui()
+        online_update_dialog.open()
+        await asyncio.sleep(0)
+
+        def report_progress(current: int, total: int) -> None:
+            nonlocal online_update_progress_current
+            nonlocal online_update_progress_total
+            online_update_progress_current = max(int(current), 0)
+            online_update_progress_total = max(int(total), 0)
+
         try:
-            result = service.check_online_updates(
+            result = await asyncio.to_thread(
+                service.check_online_updates,
                 repo_url=repo_url,
                 manifest_path=vault_cfg.online_update_manifest_path,
                 repo_ref=vault_cfg.online_update_ref,
                 source_vendor=vault_cfg.printer_vendor,
                 source_model=vault_cfg.printer_model,
+                progress_callback=report_progress,
             )
         except Exception as exc:
+            online_update_check_in_progress = False
+            _refresh_online_update_progress_ui()
             status_label.set_text(t("Update check failed: {error}", error=exc))
             return
+
+        online_update_check_in_progress = False
+        _refresh_online_update_progress_ui()
 
         updates = result.get("updates", [])
         pending_online_updates = [item for item in updates if isinstance(item, dict)] if isinstance(updates, list) else []
@@ -1497,7 +1553,9 @@ def build_ui(app_version: str = "unknown") -> None:
                 checkbox = ui.checkbox(row_label, value=False).props("dense")
                 online_update_activate_checkboxes[identity] = checkbox
 
-        online_update_dialog.open()
+            confirm_online_update_button.set_enabled(bool(pending_online_updates))
+            confirm_online_update_button.set_visibility(bool(pending_online_updates))
+            online_update_dialog.open()
         status_label.set_text(t("Online update check complete."))
 
     def perform_online_update_import() -> None:
@@ -1635,7 +1693,7 @@ def build_ui(app_version: str = "unknown") -> None:
         create_backup_button.set_enabled(editing_enabled)
         confirm_export_button.set_enabled(editing_enabled)
         confirm_import_button.set_enabled(editing_enabled)
-        confirm_online_update_button.set_enabled(editing_enabled)
+        confirm_online_update_button.set_enabled(editing_enabled and bool(pending_online_updates))
         confirm_restore_button.set_enabled(editing_enabled)
         confirm_delete_button.set_enabled(editing_enabled)
         duplicate_compare_button.set_enabled(editing_enabled)
@@ -1773,6 +1831,7 @@ def build_ui(app_version: str = "unknown") -> None:
     else:
         refresh_data()
     watcher.reset()
+    ui.timer(0.1, _refresh_online_update_progress_ui)
     ui.timer(2.0, check_config_changes)
 
     with ui.footer().classes("items-center justify-end px-4 py-1 bg-grey-9 text-grey-3"):

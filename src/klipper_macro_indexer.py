@@ -833,24 +833,28 @@ def index_macros(
     latest_rows = conn.execute(_LATEST_VERSION_SUBQUERY).fetchall()
     for file_path, macro_name, max_version in latest_rows:
         identity = (str(file_path), str(macro_name))
-        is_deleted = 0 if identity in seen_identity_status else 1
+        is_seen = identity in seen_identity_status
         row_loaded, row_dynamic = seen_identity_status.get(identity, (False, False))
         is_loaded = 1 if row_loaded else 0
         is_dynamic = 1 if row_dynamic else 0
         conn.execute(
             """
             UPDATE macros
-            SET is_deleted = ?,
+            SET is_deleted = CASE
+                    WHEN ? = 1 THEN 0
+                    WHEN is_new = 1 AND TRIM(import_source) != '' THEN 0
+                    ELSE 1
+                END,
                 is_loaded = ?,
                 is_dynamic = ?,
                 is_new = CASE WHEN ? = 1 THEN 0 ELSE is_new END
             WHERE file_path = ? AND macro_name = ? AND version = ?
             """,
             (
-                is_deleted,
+                1 if is_seen else 0,
                 is_loaded,
                 is_dynamic,
-                1 if identity in seen_identity_status else 0,
+                1 if is_seen else 0,
                 str(file_path),
                 str(macro_name),
                 int(max_version),
@@ -1362,7 +1366,13 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
                 m.is_deleted,
                 m.is_loaded,
                 m.is_dynamic,
-                m.is_new,
+                                EXISTS(
+                                        SELECT 1
+                                        FROM macros AS pending
+                                        WHERE pending.file_path = m.file_path
+                                            AND pending.macro_name = m.macro_name
+                                            AND pending.is_new = 1
+                                ) AS has_new_version,
                 cnt.version_count
             FROM macros AS m
             INNER JOIN (
@@ -1395,7 +1405,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             "is_deleted": bool(is_deleted),
             "is_loaded": bool(is_loaded),
             "is_dynamic": bool(is_dynamic),
-            "is_new": bool(is_new),
+            "is_new": bool(has_new_version),
             "version_count": int(version_count),
         }
         for (
@@ -1414,7 +1424,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             is_deleted,
             is_loaded,
             is_dynamic,
-            is_new,
+            has_new_version,
             version_count,
         ) in rows
     ]
@@ -1767,12 +1777,12 @@ def restore_macro_version(
         raise ValueError("macro version not found")
 
     config_dir = config_dir.expanduser().resolve()
-    restore_target_path = "macros.cfg" if bool(int(row[6])) else file_path
+    restore_target_path = file_path
     cfg_file = _safe_cfg_path(config_dir, restore_target_path)
     section_text = _macro_version_to_section_text(row[:6])
     operation = _replace_or_append_macro_section(cfg_file, macro_name, section_text)
 
-    if bool(int(row[6])):
+    if bool(int(row[6])) and Path(restore_target_path).name.lower() == "macros.cfg":
         _ensure_printer_cfg_includes_macros_cfg(config_dir)
 
     return {

@@ -193,6 +193,8 @@ TRANSLATIONS: dict[str, str] = {
     'Export failed: {error}': 'Export fehlgeschlagen: {error}',
     'Exported {count} macro(s) to {path}.': '{count} Makro(s) nach {path} exportiert.',
     'Import a shared macro file into inactive new versions.': 'Importiere eine geteilte Makrodatei als neue inaktive Versionen.',
+    'Checking for updates...': 'Suche nach Updates...',
+    'Checking updates: {current}/{total}': 'Prüfe Updates: {current}/{total}',
     'Check for updates': 'Nach Updates suchen',
     'Online macro updates': 'Online-Makro-Updates',
     'Changed macros are imported as new versions. Select which ones to activate now.': 'Geänderte Makros werden als neue Versionen importiert. Wähle aus, welche jetzt aktiviert werden sollen.',
