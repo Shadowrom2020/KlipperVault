@@ -457,6 +457,9 @@ class MacroGuiService:
         out_file: Path,
         source_vendor: str,
         source_model: str,
+        repo_url: str,
+        repo_ref: str,
+        manifest_path: str,
     ) -> dict[str, object]:
         """Export active local macros as a repository-ready online update zip."""
         return export_online_update_repository_zip(
@@ -464,5 +467,8 @@ class MacroGuiService:
             out_file=out_file,
             source_vendor=source_vendor,
             source_model=source_model,
+            repo_url=repo_url,
+            repo_ref=repo_ref,
+            manifest_path=manifest_path,
             now_ts=int(time.time()),
         )
