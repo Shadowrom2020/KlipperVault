@@ -6,10 +6,14 @@
 from __future__ import annotations
 
 import configparser
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dataclass_fields
 from pathlib import Path
 
 _CFG_FILENAME = "klippervault.cfg"
+_FREEDI_CFG_FILENAME = "freedi.cfg"
+_DEFAULT_ONLINE_UPDATE_REPO_URL = "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
+_DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
+_DEFAULT_ONLINE_UPDATE_REF = "main"
 
 _DEFAULT_CONTENT = """\
 # KlipperVault configuration
@@ -32,6 +36,20 @@ ui_language: en
 # If left empty, KlipperVault asks once on first start.
 printer_vendor:
 printer_model:
+
+# Optional GitHub source for online macro updates.
+# Example: https://github.com/<owner>/<repo>
+online_update_repo_url: https://github.com/Shadowrom2020/KlipperVault-Online-Updates
+
+# Manifest file path inside the repository.
+online_update_manifest_path: updates/manifest.json
+
+# Branch, tag, or commit used for update checks.
+online_update_ref: main
+
+# Developer mode: enables export of local macros to update repository bundles.
+# WARNING: This is intended for repository maintainers; keep disabled for normal use.
+developer: false
 """
 
 
@@ -42,7 +60,64 @@ class VaultConfig:
     ui_language: str = "en"
     printer_vendor: str = ""
     printer_model: str = ""
+    online_update_repo_url: str = _DEFAULT_ONLINE_UPDATE_REPO_URL
+    online_update_manifest_path: str = _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
+    online_update_ref: str = _DEFAULT_ONLINE_UPDATE_REF
+    developer: bool = False
     printer_profile_prompt_required: bool = True
+
+
+def _persisted_config_keys() -> set[str]:
+    """Return config keys that should be stored in klippervault.cfg."""
+    return {
+        field.name
+        for field in dataclass_fields(VaultConfig)
+        if field.name != "printer_profile_prompt_required"
+    }
+
+
+def _missing_persisted_config_keys(parser: configparser.ConfigParser) -> set[str]:
+    """Return persisted config keys missing from the [vault] section."""
+    return {
+        key for key in _persisted_config_keys() if not parser.has_option("vault", key)
+    }
+
+
+def _read_key_value_line(raw_line: str) -> tuple[str, str] | None:
+    """Parse simple cfg lines like `key: value` or `key = value`."""
+    line = raw_line.split("#", 1)[0].strip()
+    if not line:
+        return None
+    for separator in (":", "="):
+        if separator in line:
+            key, value = line.split(separator, 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if key:
+                return key, value
+    return None
+
+
+def _detect_printer_identity(config_dir: Path) -> tuple[str, str] | None:
+    """Detect printer identity from known vendor-specific config files."""
+    freedi_cfg_path = config_dir / _FREEDI_CFG_FILENAME
+    if not freedi_cfg_path.exists():
+        return None
+
+    printer_model = ""
+    for raw_line in freedi_cfg_path.read_text(encoding="utf-8").splitlines():
+        parsed_line = _read_key_value_line(raw_line)
+        if parsed_line is None:
+            continue
+        key, value = parsed_line
+        if key == "printer_model" and value:
+            printer_model = value
+            break
+
+    if printer_model:
+        return "freedi", printer_model
+
+    return None
 
 
 def save(config_dir: Path, config: VaultConfig) -> None:
@@ -72,6 +147,20 @@ def save(config_dir: Path, config: VaultConfig) -> None:
         f"printer_vendor: {str(config.printer_vendor or '').strip()}",
         f"printer_model: {str(config.printer_model or '').strip()}",
         "",
+        "# Optional GitHub source for online macro updates.",
+        "# Example: https://github.com/<owner>/<repo>",
+        f"online_update_repo_url: {str(config.online_update_repo_url or _DEFAULT_ONLINE_UPDATE_REPO_URL).strip() or _DEFAULT_ONLINE_UPDATE_REPO_URL}",
+        "",
+        "# Manifest file path inside the repository.",
+        f"online_update_manifest_path: {str(config.online_update_manifest_path or _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH).strip() or _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH}",
+        "",
+        "# Branch, tag, or commit used for update checks.",
+        f"online_update_ref: {str(config.online_update_ref or _DEFAULT_ONLINE_UPDATE_REF).strip() or _DEFAULT_ONLINE_UPDATE_REF}",
+        "",
+        "# Developer mode: enables export of local macros to update repository bundles.",
+        "# WARNING: This is intended for repository maintainers; keep disabled for normal use.",
+        f"developer: {'true' if config.developer else 'false'}",
+        "",
     ]
     cfg_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -90,6 +179,7 @@ def load_or_create(config_dir: Path) -> VaultConfig:
 
     parser = configparser.ConfigParser()
     parser.read(str(cfg_path), encoding="utf-8")
+    missing_persisted_keys = _missing_persisted_config_keys(parser)
 
     version_history_size = 5
     port = 10090
@@ -125,6 +215,36 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         model_is_stored = True
         printer_model = parser.get("vault", "printer_model").strip()
 
+    online_update_repo_url = _DEFAULT_ONLINE_UPDATE_REPO_URL
+    if parser.has_option("vault", "online_update_repo_url"):
+        online_update_repo_url = parser.get("vault", "online_update_repo_url").strip()
+
+    online_update_manifest_path = _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
+    if parser.has_option("vault", "online_update_manifest_path"):
+        parsed_manifest_path = parser.get("vault", "online_update_manifest_path").strip()
+        if parsed_manifest_path:
+            online_update_manifest_path = parsed_manifest_path
+
+    online_update_ref = _DEFAULT_ONLINE_UPDATE_REF
+    if parser.has_option("vault", "online_update_ref"):
+        parsed_ref = parser.get("vault", "online_update_ref").strip()
+        if parsed_ref:
+            online_update_ref = parsed_ref
+
+    developer = False
+    if parser.has_option("vault", "developer"):
+        dev_value = parser.get("vault", "developer").strip().lower()
+        developer = dev_value in ("true", "1", "yes")
+
+    detected_printer_identity = False
+    if not printer_vendor or not printer_model:
+        detected_identity = _detect_printer_identity(config_dir)
+        if detected_identity is not None:
+            printer_vendor, printer_model = detected_identity
+            vendor_is_stored = True
+            model_is_stored = True
+            detected_printer_identity = True
+
     # Prompt on first start and on upgrades where old cfg files do not yet
     # contain these keys, or when stored values are still empty.
     printer_profile_prompt_required = (
@@ -134,11 +254,25 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         or not printer_model
     )
 
-    return VaultConfig(
+    config = VaultConfig(
         version_history_size=version_history_size,
         port=port,
         ui_language=ui_language,
         printer_vendor=printer_vendor,
         printer_model=printer_model,
+        online_update_repo_url=online_update_repo_url,
+        online_update_manifest_path=online_update_manifest_path,
+        online_update_ref=online_update_ref,
+        developer=developer,
         printer_profile_prompt_required=printer_profile_prompt_required,
     )
+
+    should_backfill_config = (
+        detected_printer_identity
+        or bool(missing_persisted_keys)
+    )
+
+    if should_backfill_config:
+        save(config_dir, config)
+
+    return config

@@ -21,12 +21,15 @@ The toolbar provides quick access to essential operations for managing your macr
 ![Toolbar](assets/toolbar.png)
 
 **Key Actions:**
+- **Macro Actions Menu**: Consolidated menu containing:
+  - **Export Macros**: Share macros with other users or import shared macros
+  - **Import Macros**: Upload previously exported macro files
+  - **Check for Updates**: Search for macro updates from configured GitHub repositories
+  - **Export Update Repo ZIP**: Export local macros as repository bundle (developer mode only)
 - **Scan Macros**: Re-index all macros from your config files
 - **Backup**: Create snapshots of your current macro state
-- **Export/Import**: Share macros with other users or import shared macros
 - **Reload Dynamic Macros**: Update macros loaded via DynamicMacros plugin
 - **Restart Klipper**: Update macros loaded by restarting Klipper
-- **Settings**: Configure KlipperVault and printer information
 
 ## In-Place Macro Editing
 
@@ -53,6 +56,20 @@ Understand complex macros with AI-assisted explanations and cross-linking betwee
 - Help understanding complex gcode sequences
 - Optional panel that appears alongside macro details
 
+## Online Macro Updates
+
+Check for and import macro updates from GitHub-hosted repositories with selective activation.
+
+![Online Updates](assets/online_updates.png)
+
+**Update Features:**
+- Check for updates from optional GitHub repositories
+- Compare local macros against remote versions via checksums
+- Import updates as new inactive versions for review
+- Selectively activate imported updates
+- Support for printer vendor/model-specific macro updates
+- Export local macros as repository bundles (developer mode)
+
 ## Core Capabilities
 
 ### 📋 Version History
@@ -78,6 +95,13 @@ Understand complex macros with AI-assisted explanations and cross-linking betwee
 - Import shared macros for review before activation
 - Track printer vendor/model information
 - Collaborative macro development
+
+### 🌐 Online Macro Updates
+- Connect to GitHub-hosted macro repositories
+- Automatic update checking with version comparison
+- Import updates as inactive versions for selective activation
+- Support for printer-specific macro variants
+- Developer mode for exporting macro bundles
 
 ### ⚡ Dynamic Macro Support
 - Full support for [DynamicMacros](https://github.com/3DCoded/DynamicMacros) plugin

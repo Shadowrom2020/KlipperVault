@@ -2,6 +2,7 @@ import json
 import textwrap
 from pathlib import Path
 
+from klipper_macro_online_update import import_online_macro_updates
 from klipper_macro_indexer import (
     export_macro_share_payload,
     get_cfg_load_order,
@@ -496,3 +497,102 @@ def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> 
     assert "[gcode_macro HELLO]" in restored_cfg
     printer_cfg = (target_config_dir / "printer.cfg").read_text(encoding="utf-8")
     assert "[include macros.cfg]" in printer_cfg
+
+
+def test_reindex_keeps_unactivated_imported_macros_marked_new(tmp_path: Path) -> None:
+        source_config_dir = tmp_path / "source_config"
+        source_db_path = tmp_path / "source_db" / "macros.db"
+        _write(
+                source_config_dir / "printer.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="hello"
+
+                [gcode_macro BYE]
+                gcode:
+                    RESPOND MSG="bye"
+                """,
+        )
+        run_indexing(source_config_dir, source_db_path)
+
+        payload = export_macro_share_payload(
+                db_path=source_db_path,
+                identities=[("printer.cfg", "HELLO"), ("printer.cfg", "BYE")],
+                source_vendor="Voron",
+                source_model="V2.4",
+        )
+
+        target_db_path = tmp_path / "target_db" / "macros.db"
+        import_macro_share_payload(target_db_path, payload)
+
+        imported_rows = load_macro_list(target_db_path)
+        hello_row = next(row for row in imported_rows if row["macro_name"] == "HELLO")
+
+        target_config_dir = tmp_path / "target_config"
+        restore_macro_version(
+                db_path=target_db_path,
+                config_dir=target_config_dir,
+                file_path=str(hello_row["file_path"]),
+                macro_name="HELLO",
+                version=int(hello_row["version"]),
+        )
+
+        run_indexing(target_config_dir, target_db_path)
+
+        rows_after_index = load_macro_list(target_db_path)
+        bye_row = next(row for row in rows_after_index if row["macro_name"] == "BYE")
+
+        assert bye_row["is_new"] is True
+        assert bye_row["is_deleted"] is False
+        assert bye_row["is_active"] is False
+
+
+def test_load_macro_list_marks_identity_new_when_older_pending_version_exists(tmp_path: Path) -> None:
+    target_config_dir = tmp_path / "target_config"
+    target_db_path = tmp_path / "target_db" / "macros.db"
+    _write(
+        target_config_dir / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        description: current hello
+        gcode:
+          RESPOND MSG="current"
+        """,
+    )
+    run_indexing(target_config_dir, target_db_path)
+
+    import_online_macro_updates(
+        target_db_path,
+        updates=[
+            {
+                "identity": "voron::v2.4::HELLO",
+                "macro_name": "HELLO",
+                "source_vendor": "Voron",
+                "source_model": "V2.4",
+                "source_file_path": "printer.cfg",
+                "section_text": textwrap.dedent(
+                    """
+                    [gcode_macro HELLO]
+                    description: imported hello
+                    gcode:
+                      RESPOND MSG="imported"
+                    """
+                ).lstrip("\n"),
+                "remote_path": "voron/v2.4/HELLO.json",
+                "remote_version": "2026-04-07",
+            }
+        ],
+        repo_url="https://github.com/example/klipper-macros",
+        repo_ref="main",
+    )
+
+    # Re-index the unchanged local cfg so the original on-disk version becomes
+    # latest again while the imported version remains pending in history.
+    run_indexing(target_config_dir, target_db_path)
+
+    macros = load_macro_list(target_db_path)
+    assert len(macros) == 1
+    assert macros[0]["macro_name"] == "HELLO"
+    assert macros[0]["is_new"] is True
+    assert macros[0]["is_active"] is True

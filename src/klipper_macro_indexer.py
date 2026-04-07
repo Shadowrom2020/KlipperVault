@@ -426,6 +426,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             is_loaded   INTEGER NOT NULL DEFAULT 1,
             is_dynamic  INTEGER NOT NULL DEFAULT 0,
             is_new      INTEGER NOT NULL DEFAULT 0,
+            source_vendor TEXT NOT NULL DEFAULT '',
+            source_model  TEXT NOT NULL DEFAULT '',
+            import_source TEXT NOT NULL DEFAULT '',
+            remote_repo_url TEXT,
+            remote_ref      TEXT,
+            remote_path     TEXT,
+            remote_version  TEXT,
             version     INTEGER NOT NULL,
             indexed_at  INTEGER NOT NULL
         )
@@ -455,6 +462,21 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # v7→v8: track whether a loaded macro came from [dynamicmacros] configs.
     if not rebuilt and existing_cols and "is_dynamic" not in existing_cols:
         conn.execute("ALTER TABLE macros ADD COLUMN is_dynamic INTEGER NOT NULL DEFAULT 0")
+    # v8→v9: attach source identity/import metadata for share/online imports.
+    if not rebuilt and existing_cols and "source_vendor" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN source_vendor TEXT NOT NULL DEFAULT ''")
+    if not rebuilt and existing_cols and "source_model" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN source_model TEXT NOT NULL DEFAULT ''")
+    if not rebuilt and existing_cols and "import_source" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN import_source TEXT NOT NULL DEFAULT ''")
+    if not rebuilt and existing_cols and "remote_repo_url" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN remote_repo_url TEXT")
+    if not rebuilt and existing_cols and "remote_ref" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN remote_ref TEXT")
+    if not rebuilt and existing_cols and "remote_path" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN remote_path TEXT")
+    if not rebuilt and existing_cols and "remote_version" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN remote_version TEXT")
 
     conn.execute(
         """
@@ -468,6 +490,33 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "ON macros(file_path, macro_name, version)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_macros_name ON macros(macro_name)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_macros_source_identity "
+        "ON macros(source_vendor, source_model, macro_name, indexed_at DESC)"
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS macro_online_update_state (
+            id INTEGER PRIMARY KEY,
+            source_vendor TEXT NOT NULL,
+            source_model TEXT NOT NULL,
+            macro_name TEXT NOT NULL,
+            remote_repo_url TEXT NOT NULL,
+            remote_ref TEXT,
+            remote_path TEXT NOT NULL,
+            remote_version TEXT,
+            remote_checksum TEXT NOT NULL,
+            update_available INTEGER NOT NULL DEFAULT 1,
+            last_checked INTEGER NOT NULL,
+            UNIQUE(source_vendor, source_model, macro_name, remote_repo_url, remote_path)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_macro_online_update_state_identity "
+        "ON macro_online_update_state(source_vendor, source_model, macro_name)"
+    )
 
     ensure_backup_schema(conn)
 
@@ -784,24 +833,28 @@ def index_macros(
     latest_rows = conn.execute(_LATEST_VERSION_SUBQUERY).fetchall()
     for file_path, macro_name, max_version in latest_rows:
         identity = (str(file_path), str(macro_name))
-        is_deleted = 0 if identity in seen_identity_status else 1
+        is_seen = identity in seen_identity_status
         row_loaded, row_dynamic = seen_identity_status.get(identity, (False, False))
         is_loaded = 1 if row_loaded else 0
         is_dynamic = 1 if row_dynamic else 0
         conn.execute(
             """
             UPDATE macros
-            SET is_deleted = ?,
+            SET is_deleted = CASE
+                    WHEN ? = 1 THEN 0
+                    WHEN is_new = 1 AND TRIM(import_source) != '' THEN 0
+                    ELSE 1
+                END,
                 is_loaded = ?,
                 is_dynamic = ?,
                 is_new = CASE WHEN ? = 1 THEN 0 ELSE is_new END
             WHERE file_path = ? AND macro_name = ? AND version = ?
             """,
             (
-                is_deleted,
+                1 if is_seen else 0,
                 is_loaded,
                 is_dynamic,
-                1 if identity in seen_identity_status else 0,
+                1 if is_seen else 0,
                 str(file_path),
                 str(macro_name),
                 int(max_version),
@@ -1075,6 +1128,13 @@ def import_macro_share_payload(
     if not imported_rows:
         raise ValueError("macro share file contains no valid gcode macros")
 
+    source_printer = payload.get("source_printer", {})
+    source_vendor = ""
+    source_model = ""
+    if isinstance(source_printer, dict):
+        source_vendor = str(source_printer.get("vendor", "")).strip()
+        source_model = str(source_printer.get("model", "")).strip()
+
     inserted = 0
     with open_sqlite_connection(
         db_path,
@@ -1122,10 +1182,13 @@ def import_macro_share_payload(
                     is_loaded,
                     is_dynamic,
                     is_new,
+                    source_vendor,
+                    source_model,
+                    import_source,
                     version,
                     indexed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_path,
@@ -1144,19 +1207,15 @@ def import_macro_share_payload(
                     0,
                     0,
                     1,
+                    source_vendor,
+                    source_model,
+                    "share",
                     new_version,
                     indexed_at,
                 ),
             )
             inserted += 1
         conn.commit()
-
-    source_printer = payload.get("source_printer", {})
-    source_vendor = ""
-    source_model = ""
-    if isinstance(source_printer, dict):
-        source_vendor = str(source_printer.get("vendor", "")).strip()
-        source_model = str(source_printer.get("model", "")).strip()
 
     return {
         "imported": inserted,
@@ -1307,7 +1366,13 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
                 m.is_deleted,
                 m.is_loaded,
                 m.is_dynamic,
-                m.is_new,
+                                EXISTS(
+                                        SELECT 1
+                                        FROM macros AS pending
+                                        WHERE pending.file_path = m.file_path
+                                            AND pending.macro_name = m.macro_name
+                                            AND pending.is_new = 1
+                                ) AS has_new_version,
                 cnt.version_count
             FROM macros AS m
             INNER JOIN (
@@ -1340,7 +1405,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             "is_deleted": bool(is_deleted),
             "is_loaded": bool(is_loaded),
             "is_dynamic": bool(is_dynamic),
-            "is_new": bool(is_new),
+            "is_new": bool(has_new_version),
             "version_count": int(version_count),
         }
         for (
@@ -1359,7 +1424,7 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             is_deleted,
             is_loaded,
             is_dynamic,
-            is_new,
+            has_new_version,
             version_count,
         ) in rows
     ]
@@ -1712,12 +1777,12 @@ def restore_macro_version(
         raise ValueError("macro version not found")
 
     config_dir = config_dir.expanduser().resolve()
-    restore_target_path = "macros.cfg" if bool(int(row[6])) else file_path
+    restore_target_path = file_path
     cfg_file = _safe_cfg_path(config_dir, restore_target_path)
     section_text = _macro_version_to_section_text(row[:6])
     operation = _replace_or_append_macro_section(cfg_file, macro_name, section_text)
 
-    if bool(int(row[6])):
+    if bool(int(row[6])) and Path(restore_target_path).name.lower() == "macros.cfg":
         _ensure_printer_cfg_includes_macros_cfg(config_dir)
 
     return {

@@ -13,6 +13,7 @@ import http.client
 import json
 import time
 from pathlib import Path
+from typing import Callable, cast
 from urllib.parse import urlencode, urlparse
 
 from klipper_macro_backup import (
@@ -39,6 +40,11 @@ from klipper_macro_indexer import (
     run_indexing,
     save_macro_edit,
 )
+from klipper_macro_online_update import (
+    check_online_macro_updates,
+    import_online_macro_updates,
+)
+from klipper_macro_online_repo_export import export_online_update_repository_zip
 
 
 class MacroGuiService:
@@ -368,3 +374,95 @@ class MacroGuiService:
             "printer_matches": printer_matches,
             "file_path": str(import_file),
         }
+
+    def check_online_updates(
+        self,
+        *,
+        repo_url: str,
+        manifest_path: str,
+        repo_ref: str,
+        source_vendor: str,
+        source_model: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> dict[str, object]:
+        """Check GitHub manifest for online macro updates for one printer identity."""
+        return check_online_macro_updates(
+            db_path=self._db_path,
+            repo_url=repo_url,
+            manifest_path=manifest_path,
+            repo_ref=repo_ref,
+            source_vendor=source_vendor,
+            source_model=source_model,
+            now_ts=int(time.time()),
+            progress_callback=progress_callback,
+        )
+
+    def import_online_updates(
+        self,
+        *,
+        updates: list[dict[str, object]],
+        activate_identities: list[str],
+        repo_url: str,
+        repo_ref: str,
+    ) -> dict[str, object]:
+        """Import online updates and optionally activate selected imported versions."""
+        import_result = import_online_macro_updates(
+            db_path=self._db_path,
+            updates=updates,
+            repo_url=repo_url,
+            repo_ref=repo_ref,
+            now_ts=int(time.time()),
+        )
+
+        imported_items_raw = import_result.get("imported_items", [])
+        imported_items = imported_items_raw if isinstance(imported_items_raw, list) else []
+        activate_set = {str(identity) for identity in activate_identities}
+        activated_count = 0
+
+        for item in imported_items:
+            if not isinstance(item, dict):
+                continue
+            identity = str(item.get("identity", ""))
+            if identity not in activate_set:
+                continue
+
+            file_path = str(item.get("file_path", ""))
+            macro_name = str(item.get("macro_name", ""))
+            try:
+                version = int(item.get("version", 0) or 0)
+            except (TypeError, ValueError):
+                version = 0
+            if not file_path or not macro_name or version <= 0:
+                continue
+
+            restore_macro_version(
+                db_path=self._db_path,
+                config_dir=self._config_dir,
+                file_path=file_path,
+                macro_name=macro_name,
+                version=version,
+            )
+            activated_count += 1
+
+        imported_count = int(cast(int, import_result.get("imported", 0)) or 0)
+        return {
+            "imported": imported_count,
+            "activated": activated_count,
+            "imported_items": imported_items,
+        }
+
+    def export_online_update_repository_zip(
+        self,
+        *,
+        out_file: Path,
+        source_vendor: str,
+        source_model: str,
+    ) -> dict[str, object]:
+        """Export active local macros as a repository-ready online update zip."""
+        return export_online_update_repository_zip(
+            db_path=self._db_path,
+            out_file=out_file,
+            source_vendor=source_vendor,
+            source_model=source_model,
+            now_ts=int(time.time()),
+        )
