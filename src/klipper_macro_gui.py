@@ -1433,6 +1433,9 @@ def build_ui(app_version: str = "unknown") -> None:
                 out_file=out_path,
                 source_vendor=vault_cfg.printer_vendor,
                 source_model=vault_cfg.printer_model,
+                repo_url=vault_cfg.online_update_repo_url,
+                repo_ref=vault_cfg.online_update_ref,
+                manifest_path=vault_cfg.online_update_manifest_path,
             )
         except Exception as exc:
             status_label.set_text(t("Update repository export failed: {error}", error=exc))
