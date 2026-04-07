@@ -93,8 +93,9 @@ def build_ui(app_version: str = "unknown") -> None:
     with ui.header().classes("items-center gap-4 px-6 py-2 bg-grey-9"):
         ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
         ui.space()
-        export_button = ui.button(t("Export macros"), icon="upload_file").props("flat color=white")
-        import_button = ui.button(t("Import macros"), icon="file_download").props("flat color=white")
+        with ui.button(t("Macro actions"), icon="menu").props("flat color=white") as macro_actions_button:
+            with ui.menu() as macro_actions_menu:
+                pass
         reload_dynamic_macros_button = ui.button(t("Reload Dynamic Macros"), icon="autorenew").props("flat color=white")
         reload_dynamic_macros_button.classes("text-blue-4")
         reload_dynamic_macros_button.set_visibility(False)
@@ -137,6 +138,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     uploaded_import_bytes: bytes | None = None
     uploaded_import_name: str = ""
+    pending_online_updates: list[dict[str, object]] = []
 
     async def _on_import_upload(e) -> None:
         """Capture uploaded macro share file contents for import."""
@@ -382,6 +384,18 @@ def build_ui(app_version: str = "unknown") -> None:
         with ui.row().classes("w-full justify-end gap-2 mt-3"):
             flat_dialog_button("Cancel", import_dialog.close)
             confirm_import_button = ui.button(t("Import")).props("color=primary no-caps")
+
+    online_update_activate_checkboxes: dict[str, object] = {}
+    with ui.dialog() as online_update_dialog, ui.card().classes("w-[46rem] max-w-[98vw]"):
+        ui.label(t("Online macro updates")).classes("text-lg font-semibold")
+        ui.label(t("Changed macros are imported as new versions. Select which ones to activate now.")).classes("text-sm text-grey-5")
+        online_update_summary_label = ui.label("").classes("text-sm text-grey-5 mt-1")
+        ui.label(t("Macros")).classes("text-sm mt-2")
+        online_update_list = ui.column().classes("w-full max-h-[20rem] overflow-y-auto gap-1 border rounded p-2")
+        online_update_error_label = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            flat_dialog_button("Cancel", online_update_dialog.close)
+            confirm_online_update_button = ui.button(t("Import updates")).props("color=primary no-caps")
 
     macro_delete_target: dict[str, object] | None = None
     with ui.dialog() as macro_delete_dialog, ui.card().classes("w-[30rem] max-w-[96vw]"):
@@ -1396,6 +1410,145 @@ def build_ui(app_version: str = "unknown") -> None:
 
         refresh_data()
 
+    def export_online_update_repo_zip() -> None:
+        """Export active local macros as a ZIP for the online update repository."""
+        if _printer_profile_missing():
+            status_label.set_text(t("Set printer vendor/model before exporting update repository zip."))
+            return
+
+        generated_name = datetime.now().strftime("klippervault-online-update-repo-%Y%m%d-%H%M%S.zip")
+        out_path = Path(tempfile.gettempdir()) / generated_name
+
+        try:
+            result = service.export_online_update_repository_zip(
+                out_file=out_path,
+                source_vendor=vault_cfg.printer_vendor,
+                source_model=vault_cfg.printer_model,
+            )
+        except Exception as exc:
+            status_label.set_text(t("Update repository export failed: {error}", error=exc))
+            return
+
+        exported_path = Path(str(result.get("file_path", "")))
+        ui.download(exported_path, filename=exported_path.name)
+        status_label.set_text(
+            t(
+                "Exported {count} active macro(s) as update repository ZIP: {path}",
+                count=result.get("macro_count", 0),
+                path=result.get("file_path", ""),
+            )
+        )
+
+    def open_online_update_dialog() -> None:
+        """Check online source for changed macros and open update selection dialog."""
+        nonlocal pending_online_updates
+
+        online_update_activate_checkboxes.clear()
+        online_update_list.clear()
+        online_update_error_label.set_text("")
+        online_update_summary_label.set_text("")
+        pending_online_updates = []
+
+        if _printer_profile_missing():
+            status_label.set_text(t("Set printer vendor/model before checking updates."))
+            return
+
+        repo_url = str(vault_cfg.online_update_repo_url or "").strip()
+        if not repo_url:
+            status_label.set_text(t("Online updater repository URL is not configured."))
+            return
+
+        try:
+            result = service.check_online_updates(
+                repo_url=repo_url,
+                manifest_path=vault_cfg.online_update_manifest_path,
+                repo_ref=vault_cfg.online_update_ref,
+                source_vendor=vault_cfg.printer_vendor,
+                source_model=vault_cfg.printer_model,
+            )
+        except Exception as exc:
+            status_label.set_text(t("Update check failed: {error}", error=exc))
+            return
+
+        updates = result.get("updates", [])
+        pending_online_updates = [item for item in updates if isinstance(item, dict)] if isinstance(updates, list) else []
+        checked = _to_int(result.get("checked", 0))
+        changed = _to_int(result.get("changed", 0))
+        unchanged = _to_int(result.get("unchanged", 0))
+        online_update_summary_label.set_text(
+            t(
+                "Checked {checked} macro(s): {changed} update(s), {unchanged} unchanged.",
+                checked=checked,
+                changed=changed,
+                unchanged=unchanged,
+            )
+        )
+
+        with online_update_list:
+            if not pending_online_updates:
+                ui.label(t("No online updates available.")).classes("text-sm text-grey-5")
+            for item in pending_online_updates:
+                identity = str(item.get("identity", ""))
+                macro_name = str(item.get("macro_name", "")).strip() or t("Unnamed macro")
+                local_version = _to_int(item.get("local_version", 0))
+                remote_version = str(item.get("remote_version", "")).strip()
+                version_label = t("local v{local} -> remote {remote}", local=local_version, remote=remote_version or "-")
+                row_label = f"{macro_name} ({version_label})"
+                checkbox = ui.checkbox(row_label, value=False).props("dense")
+                online_update_activate_checkboxes[identity] = checkbox
+
+        online_update_dialog.open()
+        status_label.set_text(t("Online update check complete."))
+
+    def perform_online_update_import() -> None:
+        """Import checked online updates and activate only selected macros."""
+        if not pending_online_updates:
+            online_update_error_label.set_text(t("No online updates to import."))
+            return
+
+        activate_identities = [
+            identity
+            for identity, checkbox in online_update_activate_checkboxes.items()
+            if bool(getattr(checkbox, "value", False))
+        ]
+
+        try:
+            result = service.import_online_updates(
+                updates=pending_online_updates,
+                activate_identities=activate_identities,
+                repo_url=vault_cfg.online_update_repo_url,
+                repo_ref=vault_cfg.online_update_ref,
+            )
+        except Exception as exc:
+            online_update_error_label.set_text(t("Import updates failed: {error}", error=exc))
+            status_label.set_text(t("Import updates failed: {error}", error=exc))
+            return
+
+        imported = _to_int(result.get("imported", 0))
+        activated = _to_int(result.get("activated", 0))
+        if imported <= 0:
+            online_update_error_label.set_text(t("No online updates were imported."))
+            status_label.set_text(t("No online updates were imported."))
+            return
+
+        online_update_dialog.close()
+        status_label.set_text(
+            t(
+                "Imported {imported} online update(s); activated {activated}.",
+                imported=imported,
+                activated=activated,
+            )
+        )
+        if activated > 0:
+            _mark_reload_required(is_dynamic=False)
+
+        # Re-index immediately only when every imported update was activated.
+        # Otherwise keep imported-but-not-activated rows visible as inactive.
+        if activated > 0 and activated == imported:
+            perform_index("online updates")
+        else:
+            refresh_data()
+
     def purge_deleted_macros() -> None:
         """Remove all deleted macro histories from SQLite in one action."""
         if printer_is_printing:
@@ -1476,13 +1629,13 @@ def build_ui(app_version: str = "unknown") -> None:
 
         index_button.set_enabled(editing_enabled)
         backup_button.set_enabled(editing_enabled)
-        export_button.set_enabled(editing_enabled)
-        import_button.set_enabled(editing_enabled)
+        macro_actions_button.set_enabled(editing_enabled)
         duplicate_warning_button.set_enabled(editing_enabled)
         purge_deleted_button.set_enabled(editing_enabled and deleted_macro_count > 0)
         create_backup_button.set_enabled(editing_enabled)
         confirm_export_button.set_enabled(editing_enabled)
         confirm_import_button.set_enabled(editing_enabled)
+        confirm_online_update_button.set_enabled(editing_enabled)
         confirm_restore_button.set_enabled(editing_enabled)
         confirm_delete_button.set_enabled(editing_enabled)
         duplicate_compare_button.set_enabled(editing_enabled)
@@ -1590,13 +1743,18 @@ def build_ui(app_version: str = "unknown") -> None:
     search_input.on_value_change(on_search_change)
     duplicate_warning_button.on_click(open_duplicate_wizard)
     backup_button.on_click(open_backup_dialog)
-    export_button.on_click(open_export_dialog)
-    import_button.on_click(open_import_dialog)
+    with macro_actions_menu:
+        ui.menu_item(t("Export macros"), on_click=open_export_dialog)
+        ui.menu_item(t("Import macros"), on_click=open_import_dialog)
+        if vault_cfg.developer:
+            ui.menu_item(t("Export Update Repo ZIP"), on_click=export_online_update_repo_zip)
+        ui.menu_item(t("Check for updates"), on_click=open_online_update_dialog)
     reload_dynamic_macros_button.on_click(reload_dynamic_macros)
     restart_klipper_button.on_click(restart_klipper)
     create_backup_button.on_click(perform_backup)
     confirm_export_button.on_click(perform_export)
     confirm_import_button.on_click(perform_import)
+    confirm_online_update_button.on_click(perform_online_update_import)
     purge_deleted_button.on_click(purge_deleted_macros)
     confirm_restore_button.on_click(perform_restore)
     confirm_delete_button.on_click(perform_delete_backup)

@@ -426,6 +426,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             is_loaded   INTEGER NOT NULL DEFAULT 1,
             is_dynamic  INTEGER NOT NULL DEFAULT 0,
             is_new      INTEGER NOT NULL DEFAULT 0,
+            source_vendor TEXT NOT NULL DEFAULT '',
+            source_model  TEXT NOT NULL DEFAULT '',
+            import_source TEXT NOT NULL DEFAULT '',
+            remote_repo_url TEXT,
+            remote_ref      TEXT,
+            remote_path     TEXT,
+            remote_version  TEXT,
             version     INTEGER NOT NULL,
             indexed_at  INTEGER NOT NULL
         )
@@ -455,6 +462,21 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # v7→v8: track whether a loaded macro came from [dynamicmacros] configs.
     if not rebuilt and existing_cols and "is_dynamic" not in existing_cols:
         conn.execute("ALTER TABLE macros ADD COLUMN is_dynamic INTEGER NOT NULL DEFAULT 0")
+    # v8→v9: attach source identity/import metadata for share/online imports.
+    if not rebuilt and existing_cols and "source_vendor" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN source_vendor TEXT NOT NULL DEFAULT ''")
+    if not rebuilt and existing_cols and "source_model" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN source_model TEXT NOT NULL DEFAULT ''")
+    if not rebuilt and existing_cols and "import_source" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN import_source TEXT NOT NULL DEFAULT ''")
+    if not rebuilt and existing_cols and "remote_repo_url" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN remote_repo_url TEXT")
+    if not rebuilt and existing_cols and "remote_ref" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN remote_ref TEXT")
+    if not rebuilt and existing_cols and "remote_path" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN remote_path TEXT")
+    if not rebuilt and existing_cols and "remote_version" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN remote_version TEXT")
 
     conn.execute(
         """
@@ -468,6 +490,33 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "ON macros(file_path, macro_name, version)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_macros_name ON macros(macro_name)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_macros_source_identity "
+        "ON macros(source_vendor, source_model, macro_name, indexed_at DESC)"
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS macro_online_update_state (
+            id INTEGER PRIMARY KEY,
+            source_vendor TEXT NOT NULL,
+            source_model TEXT NOT NULL,
+            macro_name TEXT NOT NULL,
+            remote_repo_url TEXT NOT NULL,
+            remote_ref TEXT,
+            remote_path TEXT NOT NULL,
+            remote_version TEXT,
+            remote_checksum TEXT NOT NULL,
+            update_available INTEGER NOT NULL DEFAULT 1,
+            last_checked INTEGER NOT NULL,
+            UNIQUE(source_vendor, source_model, macro_name, remote_repo_url, remote_path)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_macro_online_update_state_identity "
+        "ON macro_online_update_state(source_vendor, source_model, macro_name)"
+    )
 
     ensure_backup_schema(conn)
 
@@ -1075,6 +1124,13 @@ def import_macro_share_payload(
     if not imported_rows:
         raise ValueError("macro share file contains no valid gcode macros")
 
+    source_printer = payload.get("source_printer", {})
+    source_vendor = ""
+    source_model = ""
+    if isinstance(source_printer, dict):
+        source_vendor = str(source_printer.get("vendor", "")).strip()
+        source_model = str(source_printer.get("model", "")).strip()
+
     inserted = 0
     with open_sqlite_connection(
         db_path,
@@ -1122,10 +1178,13 @@ def import_macro_share_payload(
                     is_loaded,
                     is_dynamic,
                     is_new,
+                    source_vendor,
+                    source_model,
+                    import_source,
                     version,
                     indexed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_path,
@@ -1144,19 +1203,15 @@ def import_macro_share_payload(
                     0,
                     0,
                     1,
+                    source_vendor,
+                    source_model,
+                    "share",
                     new_version,
                     indexed_at,
                 ),
             )
             inserted += 1
         conn.commit()
-
-    source_printer = payload.get("source_printer", {})
-    source_vendor = ""
-    source_model = ""
-    if isinstance(source_printer, dict):
-        source_vendor = str(source_printer.get("vendor", "")).strip()
-        source_model = str(source_printer.get("model", "")).strip()
 
     return {
         "imported": inserted,

@@ -26,6 +26,10 @@ It is built for Klipper systems that keep configuration in `~/printer_data/confi
   - Attach source printer vendor/model metadata.
   - Import via file upload as inactive `NEW` entries for review first.
   - Imported macros default to `macros.cfg`; include is ensured in `printer.cfg`.
+- Online macro updates from GitHub repositories:
+  - Check for updates from optional GitHub-hosted update repository.
+  - Import updates as new inactive versions for selective activation.
+  - Export local macros as repository bundle (developer mode only).
 - Moonraker print-state safety gates for mutating actions.
 - Optional script explanation panel with macro-to-macro cross-links.
 
@@ -61,6 +65,10 @@ port: 10090
 ui_language: en
 printer_vendor:
 printer_model:
+online_update_repo_url:
+online_update_manifest_path: updates/manifest.json
+online_update_ref: main
+developer: false
 ```
 
 - `version_history_size`: max stored versions per macro
@@ -68,6 +76,10 @@ printer_model:
 - `ui_language`: UI language (`en`, `de`)
 - `printer_vendor`: optional printer vendor shown in UI and exported share metadata
 - `printer_model`: optional printer model shown in UI and exported share metadata
+- `online_update_repo_url`: optional GitHub URL for macro update repository (e.g., `https://github.com/owner/macros`)
+- `online_update_manifest_path`: path to manifest file inside the update repository (default: `updates/manifest.json`)
+- `online_update_ref`: branch, tag, or commit SHA for update checks (default: `main`)
+- `developer`: enable developer features including export of local macros to ZIP bundles (default: `false`)
 
 If vendor/model are missing, KlipperVault prompts for them and writes them back to config.
 
@@ -130,10 +142,25 @@ Share/import flow:
 4. On another system, click `Import macros` and upload that JSON file.
 5. Review imported `NEW` inactive entries, then enable individually.
 
+Online updates flow:
+
+1. Configure `online_update_repo_url` and optional `online_update_manifest_path`, `online_update_ref` in `klippervault.cfg`.
+2. Click `Check for updates` to fetch the manifest and compare local macros against remote versions.
+3. Review available updates in the dialog; select which ones to activate.
+4. Click `Import updates` to add new versions; activate selectively or defer.
+5. Updated macros appear as `NEW` inactive versions for review before enabling.
+
+Developer mode (export repository bundle):
+
+1. Set `developer: true` in `klippervault.cfg`.
+2. Click `Macro actions` → `Export Update Repo ZIP` to download an archive.
+3. The ZIP contains `updates/manifest.json` and `vendor/model/macro.json` structure ready for upload to your update repository.
+
 Compatibility behavior:
 
 - Share files carry source printer vendor/model.
 - Import warns when source printer metadata is unknown or differs from local printer metadata.
+- Online updates use checksum comparison to detect changes; only changed macros appear in the update list.
 
 ## Safety Model
 
