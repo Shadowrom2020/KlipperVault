@@ -10,13 +10,14 @@ import hashlib
 import json
 from pathlib import Path
 import re
-from typing import cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 import zipfile
 
+from pydantic import BaseModel, field_validator
+
 from klipper_macro_indexer import load_macro_list, macro_row_to_section_text
+from klipper_repo_url_utils import build_raw_githubusercontent_url
 
 
 def _as_int(value: object, default: int = 0) -> int:
@@ -49,46 +50,83 @@ def _safe_macro_file_name(macro_name: str) -> str:
     return f"{cleaned or 'macro'}.json"
 
 
+def _macro_relative_path(vendor: str, model: str, macro_name: str) -> str:
+    """Build one normalized repository-relative path for a macro payload file."""
+    return f"{vendor}/{model}/{_safe_macro_file_name(macro_name)}"
+
+
+def _macro_version(indexed_at_raw: object, fallback_ts: int) -> str:
+    """Derive stable YYYY-MM-DD version text from one macro timestamp value."""
+    indexed_at = _as_int(indexed_at_raw, default=fallback_ts)
+    return datetime.fromtimestamp(indexed_at, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
 def _sha256(text: str) -> str:
     """Compute SHA-256 checksum for UTF-8 text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+class ManifestEntry(BaseModel):
+    """Validated manifest macro entry with normalized vendor/model."""
+
+    vendor: str
+    model: str
+    macro_name: str
+    path: str
+    version: str = ""
+    checksum_sha256: str = ""
+
+    @field_validator("vendor", "model", mode="before")
+    @classmethod
+    def normalize_component_field(cls, v: object) -> str:
+        """Normalize vendor/model using path-safe rules."""
+        return _normalize_component(str(v or ""))
+
+    @field_validator("macro_name", "path", mode="before")
+    @classmethod
+    def validate_required_fields(cls, v: object) -> str:
+        """Validate required fields are non-empty."""
+        text = str(v or "").strip()
+        if not text:
+            raise ValueError("field must not be empty")
+        return text
 
 
 def _normalize_manifest_entry(entry: object) -> dict[str, object] | None:
     """Return normalized manifest macro entry or None when invalid."""
     if not isinstance(entry, dict):
         return None
-    vendor = _normalize_component(str(entry.get("vendor", ""))) if str(entry.get("vendor", "")).strip() else ""
-    model = _normalize_component(str(entry.get("model", ""))) if str(entry.get("model", "")).strip() else ""
-    macro_name = str(entry.get("macro_name", "")).strip()
-    path = str(entry.get("path", "")).strip()
-    if not vendor or not model or not macro_name or not path:
+    try:
+        validated = ManifestEntry(**entry)
+        return validated.model_dump()
+    except Exception:
         return None
-    normalized = dict(entry)
-    normalized["vendor"] = vendor
-    normalized["model"] = model
-    normalized["macro_name"] = macro_name
-    normalized["path"] = path
-    return normalized
+
+
+def _normalize_manifest_entries(entries_raw: object) -> list[dict[str, object]]:
+    """Normalize one manifest entries collection, dropping invalid rows."""
+    if not isinstance(entries_raw, list):
+        return []
+
+    out: list[dict[str, object]] = []
+    for entry in entries_raw:
+        normalized_entry = _normalize_manifest_entry(entry)
+        if normalized_entry is not None:
+            out.append(normalized_entry)
+    return out
 
 
 def _build_raw_github_url(repo_url: str, repo_ref: str, file_path: str) -> str:
     """Build raw.githubusercontent URL for one file."""
-    parsed = urlparse(str(repo_url or "").strip())
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("online update repository URL must use http/https")
-    if parsed.netloc.lower() not in {"github.com", "www.github.com"}:
-        raise ValueError("online update repository URL must point to github.com")
-
-    path_parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(path_parts) < 2:
-        raise ValueError("online update repository URL must include owner/repo")
-    owner, repo = path_parts[0], path_parts[1]
-    encoded_ref = quote(str(repo_ref or "main").strip() or "main", safe="")
-    encoded_path = quote(str(file_path or "").strip().lstrip("/"), safe="/")
-    if not encoded_path:
-        raise ValueError("manifest path must not be empty")
-    return f"https://raw.githubusercontent.com/{owner}/{repo}/{encoded_ref}/{encoded_path}"
+    return build_raw_githubusercontent_url(
+        repo_url,
+        repo_ref=repo_ref,
+        file_path=file_path,
+        invalid_scheme_error="online update repository URL must use http/https",
+        invalid_host_error="online update repository URL must point to github.com",
+        invalid_path_error="online update repository URL must include owner/repo",
+        empty_path_error="manifest path must not be empty",
+    )
 
 
 def _load_remote_manifest(repo_url: str, repo_ref: str, manifest_path: str) -> dict[str, object]:
@@ -157,13 +195,7 @@ def build_online_update_repository_artifacts(
     else:
         manifest = {"manifest_version": "1", "macros": []}
 
-    existing_entries_raw = manifest.get("macros", [])
-    existing_entries: list[dict[str, object]] = []
-    if isinstance(existing_entries_raw, list):
-        for entry in existing_entries_raw:
-            normalized_entry = _normalize_manifest_entry(entry)
-            if normalized_entry is not None:
-                existing_entries.append(normalized_entry)
+    existing_entries = _normalize_manifest_entries(manifest.get("macros", []))
 
     # Lookup: (vendor, model, macro_name) -> existing manifest entry for checksum comparison.
     existing_by_key: dict[tuple[str, str, str], dict[str, object]] = {
@@ -182,8 +214,7 @@ def build_online_update_repository_artifacts(
             continue
 
         section_text = macro_row_to_section_text(macro)
-        file_name = _safe_macro_file_name(macro_name)
-        relative_path = f"{vendor}/{model}/{file_name}"
+        relative_path = _macro_relative_path(vendor, model, macro_name)
         checksum = _sha256(section_text)
 
         existing_entry = existing_by_key.get((vendor, model, macro_name))
@@ -195,12 +226,7 @@ def build_online_update_repository_artifacts(
             version = existing_version
         else:
             # New or changed macro: derive version from its last-indexed timestamp.
-            indexed_at_raw = cast(int | None, macro.get("indexed_at", timestamp))
-            try:
-                indexed_at = int(indexed_at_raw) if indexed_at_raw is not None else timestamp
-            except (TypeError, ValueError):
-                indexed_at = timestamp
-            version = datetime.fromtimestamp(indexed_at, tz=timezone.utc).strftime("%Y-%m-%d")
+            version = _macro_version(macro.get("indexed_at", timestamp), timestamp)
             files_to_write[relative_path] = json.dumps(
                 {
                     "macro_name": macro_name,
@@ -301,16 +327,10 @@ def export_online_update_repository_zip(
             continue
 
         section_text = macro_row_to_section_text(macro)
-        file_name = _safe_macro_file_name(macro_name)
-        relative_path = f"{vendor}/{model}/{file_name}"
+        relative_path = _macro_relative_path(vendor, model, macro_name)
         checksum = _sha256(section_text)
 
-        indexed_at_raw = cast(int | None, macro.get("indexed_at", timestamp))
-        try:
-            indexed_at = int(indexed_at_raw) if indexed_at_raw is not None else timestamp
-        except (TypeError, ValueError):
-            indexed_at = timestamp
-        version = datetime.fromtimestamp(indexed_at, tz=timezone.utc).strftime("%Y-%m-%d")
+        version = _macro_version(macro.get("indexed_at", timestamp), timestamp)
         macro_payload = {
             "macro_name": macro_name,
             "source_file_path": "macros.cfg",
@@ -342,13 +362,7 @@ def export_online_update_repository_zip(
     else:
         manifest = {"manifest_version": "1", "macros": []}
 
-    existing_entries_raw = manifest.get("macros", [])
-    existing_entries: list[dict[str, object]] = []
-    if isinstance(existing_entries_raw, list):
-        for entry in existing_entries_raw:
-            normalized_entry = _normalize_manifest_entry(entry)
-            if normalized_entry is not None:
-                existing_entries.append(normalized_entry)
+    existing_entries = _normalize_manifest_entries(manifest.get("macros", []))
 
     exported_keyed = {
         (vendor, model, str(entry["macro_name"])): entry

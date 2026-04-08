@@ -10,8 +10,9 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, List
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
+
+from pydantic import BaseModel, field_validator
 
 from klipper_macro_indexer import (
     _gcode_equivalent,
@@ -20,6 +21,7 @@ from klipper_macro_indexer import (
     ensure_schema,
 )
 from klipper_vault_db import open_sqlite_connection
+from klipper_repo_url_utils import build_raw_githubusercontent_url
 
 
 def _normalize_identity_component(value: str) -> str:
@@ -27,42 +29,74 @@ def _normalize_identity_component(value: str) -> str:
     return str(value or "").strip().lower()
 
 
+def _as_text(value: object) -> str:
+    """Normalize dynamic values into stripped text."""
+    return str(value or "").strip()
+
+
+class OnlineImportCandidate(BaseModel):
+    """Normalized update item payload used for online import processing."""
+
+    identity: str = ""
+    source_vendor: str
+    source_model: str
+    section_text: str
+    source_file_path: str = ""
+    remote_path: str = ""
+    remote_version: str = ""
+
+    @field_validator("source_vendor", "source_model", mode="before")
+    @classmethod
+    def normalize_identity(cls, v: object) -> str:
+        """Normalize vendor/model to lowercase."""
+        normalized = _normalize_identity_component(_as_text(v))
+        if not normalized:
+            raise ValueError("vendor/model must not be empty")
+        return normalized
+
+    @field_validator("section_text", mode="before")
+    @classmethod
+    def validate_section_text(cls, v: object) -> str:
+        """Validate section_text is not empty after normalization."""
+        text = _as_text(v)
+        if not text:
+            raise ValueError("section_text must not be empty")
+        return text
+
+    @field_validator("identity", "source_file_path", "remote_path", "remote_version", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, v: object) -> str:
+        """Normalize optional text fields."""
+        return _as_text(v)
+
+
+def _parse_online_import_candidate(item: object) -> OnlineImportCandidate | None:
+    """Parse one import item payload and return normalized candidate or None."""
+    if not isinstance(item, dict):
+        return None
+
+    try:
+        return OnlineImportCandidate(**item)
+    except Exception:
+        return None
+
+
 def _default_online_file_path(source_vendor: str, source_model: str) -> str:
     """Build stable DB identity path for online imports per vendor/model."""
     return "macros.cfg"
 
 
-def _parse_github_repo(repo_url: str) -> tuple[str, str]:
-    """Parse GitHub repository URL and return (owner, repo)."""
-    parsed = urlparse(str(repo_url or "").strip())
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("online update repository URL must use http/https")
-    if parsed.netloc.lower() not in {"github.com", "www.github.com"}:
-        raise ValueError("only github.com repositories are supported")
-
-    parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(parts) < 2:
-        raise ValueError("invalid GitHub repository URL")
-
-    owner = parts[0]
-    repo = parts[1]
-    if repo.endswith(".git"):
-        repo = repo[:-4]
-    if not owner or not repo:
-        raise ValueError("invalid GitHub repository URL")
-    return owner, repo
-
-
 def _build_raw_url(repo_url: str, ref: str, file_path: str) -> str:
     """Build raw.githubusercontent.com URL for one repository path."""
-    owner, repo = _parse_github_repo(repo_url)
-    clean_ref = str(ref or "main").strip() or "main"
-    clean_path = str(file_path or "").strip().lstrip("/")
-    if not clean_path:
-        raise ValueError("remote file path is empty")
-    encoded_path = "/".join(quote(part, safe="") for part in clean_path.split("/"))
-    encoded_ref = quote(clean_ref, safe="")
-    return f"https://raw.githubusercontent.com/{owner}/{repo}/{encoded_ref}/{encoded_path}"
+    return build_raw_githubusercontent_url(
+        repo_url,
+        repo_ref=ref,
+        file_path=file_path,
+        invalid_scheme_error="online update repository URL must use http/https",
+        invalid_host_error="only github.com repositories are supported",
+        invalid_path_error="invalid GitHub repository URL",
+        empty_path_error="remote file path is empty",
+    )
 
 
 def _fetch_json_url(url: str, timeout: float = 10.0) -> object:
@@ -313,6 +347,8 @@ def check_online_macro_updates(
     if progress_callback is not None:
         progress_callback(0, len(manifest_entries))
 
+    source_vendor_norm = _normalize_identity_component(source_vendor)
+    source_model_norm = _normalize_identity_component(source_model)
     updates: List[Dict[str, object]] = []
     unchanged = 0
 
@@ -369,12 +405,12 @@ def check_online_macro_updates(
                 updates.append(
                     {
                         "identity": (
-                            f"{_normalize_identity_component(source_vendor)}::"
-                            f"{_normalize_identity_component(source_model)}::{macro_name}"
+                            f"{source_vendor_norm}::"
+                            f"{source_model_norm}::{macro_name}"
                         ),
                         "macro_name": macro_name,
-                        "source_vendor": _normalize_identity_component(source_vendor),
-                        "source_model": _normalize_identity_component(source_model),
+                        "source_vendor": source_vendor_norm,
+                        "source_model": source_model_norm,
                         "section_text": str(parsed.get("section_text", remote_payload["section_text"])),
                         "source_file_path": target_file_path,
                         "remote_path": str(remote_payload.get("remote_path", "")),
@@ -395,8 +431,8 @@ def check_online_macro_updates(
         "checked": len(manifest_entries),
         "changed": len(updates),
         "unchanged": unchanged,
-        "source_vendor": _normalize_identity_component(source_vendor),
-        "source_model": _normalize_identity_component(source_model),
+        "source_vendor": source_vendor_norm,
+        "source_model": source_model_norm,
         "repo_url": clean_repo,
         "repo_ref": clean_ref,
         "manifest_path": clean_manifest,
@@ -425,19 +461,20 @@ def import_online_macro_updates(
         pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
     ) as conn:
         for item in updates:
-            source_vendor = _normalize_identity_component(str(item.get("source_vendor", "")))
-            source_model = _normalize_identity_component(str(item.get("source_model", "")))
-            section_text = str(item.get("section_text", "")).strip()
-            if not source_vendor or not source_model or not section_text:
+            candidate = _parse_online_import_candidate(item)
+            if candidate is None:
                 continue
 
-            parsed = _parse_macro_section_text(section_text)
+            parsed = _parse_macro_section_text(candidate.section_text)
             macro_name = str(parsed.get("macro_name", "")).strip()
             if not macro_name:
                 continue
 
-            file_path = str(item.get("source_file_path", "")).strip() or _default_online_file_path(source_vendor, source_model)
-            body_checksum = _make_checksum(str(parsed.get("section_text", section_text)))
+            file_path = candidate.source_file_path or _default_online_file_path(
+                candidate.source_vendor,
+                candidate.source_model,
+            )
+            body_checksum = _make_checksum(str(parsed.get("section_text", candidate.section_text)))
 
             latest = conn.execute(
                 """
@@ -502,20 +539,20 @@ def import_online_macro_updates(
                     0,
                     0,
                     1,
-                    source_vendor,
-                    source_model,
+                    candidate.source_vendor,
+                    candidate.source_model,
                     "online",
-                    str(repo_url or "").strip(),
-                    str(repo_ref or "").strip(),
-                    str(item.get("remote_path", "")).strip(),
-                    str(item.get("remote_version", "")).strip(),
+                    _as_text(repo_url),
+                    _as_text(repo_ref),
+                    candidate.remote_path,
+                    candidate.remote_version,
                     new_version,
                     ts,
                 ),
             )
             imported_items.append(
                 {
-                    "identity": str(item.get("identity", "")),
+                    "identity": candidate.identity,
                     "file_path": file_path,
                     "macro_name": macro_name,
                     "version": new_version,

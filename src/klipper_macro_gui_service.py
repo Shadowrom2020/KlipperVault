@@ -9,12 +9,15 @@ module can focus on rendering and user interactions.
 
 from __future__ import annotations
 
-import http.client
 import json
 import time
 from pathlib import Path
-from typing import Callable, cast
-from urllib.parse import urlencode, urlparse
+from typing import Callable
+from urllib.parse import urlparse
+
+import httpx
+from pydantic import BaseModel, field_validator
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from klipper_macro_backup import (
     create_macro_backup,
@@ -73,6 +76,159 @@ def _as_int(value: object, default: int = 0) -> int:
     return default
 
 
+def _as_list(value: object) -> list[object]:
+    """Return list values unchanged and coerce everything else to an empty list."""
+    return value if isinstance(value, list) else []
+
+
+def _as_text(value: object) -> str:
+    """Normalize dynamic values into stripped text, matching existing truthy/falsey behavior."""
+    return str(value or "").strip()
+
+
+class MoonrakerStatusResult(BaseModel):
+    """Typed Moonraker printer status payload used internally by the service."""
+
+    connected: bool
+    state: str
+    message: str
+    is_printing: bool
+    is_busy: bool
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def normalize_state(cls, v: object) -> str:
+        """Normalize state to lowercase."""
+        return _as_text(v).lower()
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def normalize_message(cls, v: object) -> str:
+        """Normalize message (stripped but not lowercased)."""
+        return _as_text(v)
+
+    def as_dict(self) -> dict[str, object]:
+        """Convert typed status payload to legacy dictionary contract."""
+        return {
+            "connected": self.connected,
+            "state": self.state,
+            "message": self.message,
+            "is_printing": self.is_printing,
+            "is_busy": self.is_busy,
+        }
+
+
+class MoonrakerCommandResult(BaseModel):
+    """Typed Moonraker command response payload used internally by the service."""
+
+    ok: bool
+    status: int
+    payload: dict[str, object]
+    notification: str = ""
+
+    @field_validator("status", mode="before")
+    @classmethod
+    def validate_status_code(cls, v: object) -> int:
+        """Ensure status is a valid HTTP status code."""
+        status = _as_int(v)
+        if status < 100 or status > 999:
+            raise ValueError("HTTP status code must be 100-999")
+        return status
+
+    @field_validator("notification", mode="before")
+    @classmethod
+    def normalize_notification(cls, v: object) -> str:
+        """Normalize notification field."""
+        return _as_text(v)
+
+    def as_dict(self) -> dict[str, object]:
+        """Convert typed command payload to legacy dictionary contract."""
+        result: dict[str, object] = {
+            "ok": self.ok,
+            "status": self.status,
+            "payload": self.payload,
+        }
+        if self.notification:
+            result["notification"] = self.notification
+        return result
+
+
+class PullRequestCreationResult(BaseModel):
+    """Typed pull request creation payload used internally by the service."""
+
+    created: bool
+    existing: bool
+    pull_request_number: int
+    pull_request_url: str
+    head_branch: str
+    updated_files: int
+    macro_count: int
+    no_changes: bool
+    commit_count: int
+
+    @field_validator("pull_request_number", "updated_files", "macro_count", "commit_count", mode="before")
+    @classmethod
+    def validate_non_negative_int(cls, v: object) -> int:
+        """Ensure all count fields are non-negative integers."""
+        value = _as_int(v)
+        if value < 0:
+            raise ValueError("count fields must be non-negative")
+        return value
+
+    @field_validator("pull_request_url", "head_branch", mode="before")
+    @classmethod
+    def normalize_url_and_branch(cls, v: object) -> str:
+        """Normalize URL and branch name fields."""
+        return _as_text(v)
+
+    def as_dict(self) -> dict[str, object]:
+        """Convert typed PR creation payload to legacy dictionary contract."""
+        return {
+            "created": self.created,
+            "existing": self.existing,
+            "pull_request_number": self.pull_request_number,
+            "pull_request_url": self.pull_request_url,
+            "head_branch": self.head_branch,
+            "updated_files": self.updated_files,
+            "macro_count": self.macro_count,
+            "no_changes": self.no_changes,
+            "commit_count": self.commit_count,
+        }
+
+
+class ImportedUpdateItem(BaseModel):
+    """Typed imported update payload used for optional activation logic."""
+
+    identity: str = ""
+    file_path: str
+    macro_name: str
+    version: int
+
+    @field_validator("file_path", "macro_name", mode="before")
+    @classmethod
+    def validate_required_fields(cls, v: object) -> str:
+        """Ensure required fields are non-empty."""
+        text = _as_text(v)
+        if not text:
+            raise ValueError("field must not be empty")
+        return text
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def validate_version(cls, v: object) -> int:
+        """Ensure version is a positive integer."""
+        value = _as_int(v)
+        if value <= 0:
+            raise ValueError("version must be a positive integer")
+        return value
+
+    @field_validator("identity", mode="before")
+    @classmethod
+    def normalize_identity(cls, v: object) -> str:
+        """Normalize identity field."""
+        return _as_text(v)
+
+
 class MacroGuiService:
     """Coordinates backend operations used by the GUI layer."""
 
@@ -88,55 +244,144 @@ class MacroGuiService:
         self._version_history_size = version_history_size
         self._moonraker_base_url = moonraker_base_url.rstrip("/")
 
-    def query_printer_status(self, timeout: float = 2.0) -> dict[str, object]:
-        """Query Moonraker print stats and return normalized printer status."""
-        query = urlencode({"print_stats": "state,message"})
-        url = f"{self._moonraker_base_url}/printer/objects/query?{query}"
-        parsed = urlparse(url)
-
+    def _moonraker_url(self, path: str) -> str:
+        """Build and validate a Moonraker URL for one API path."""
+        parsed = urlparse(self._moonraker_base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return {
-                "connected": False,
-                "state": "unknown",
-                "message": "Moonraker URL must use http/https.",
-                "is_printing": False,
-            }
+            raise ValueError("Moonraker URL must use http/https.")
+        clean_path = path if path.startswith("/") else f"/{path}"
+        return f"{self._moonraker_base_url}{clean_path}"
 
+    @staticmethod
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.2, min=0.2, max=1.5),
+        retry=retry_if_exception_type(httpx.RequestError),
+    )
+    def _moonraker_get(
+        url: str,
+        *,
+        params: dict[str, str] | None,
+        timeout: float,
+    ) -> httpx.Response:
+        """Perform one Moonraker GET with bounded retry for transient transport errors."""
+        return httpx.get(url, params=params, timeout=timeout)
+
+    @staticmethod
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.2, min=0.2, max=1.5),
+        retry=retry_if_exception_type(httpx.RequestError),
+    )
+    def _moonraker_post(
+        url: str,
+        *,
+        json_body: dict[str, str] | dict[str, object] | None,
+        timeout: float,
+    ) -> httpx.Response:
+        """Perform one Moonraker POST with bounded retry for transient transport errors."""
+        if json_body is None:
+            return httpx.post(url, timeout=timeout)
+        return httpx.post(url, json=json_body, timeout=timeout)
+
+    @staticmethod
+    def _decode_json_payload(response: httpx.Response) -> dict[str, object]:
+        """Decode JSON response payload with a safe fallback to empty dict."""
+        if not response.text:
+            return {}
         try:
-            connection: http.client.HTTPConnection | http.client.HTTPSConnection
-            if parsed.scheme == "https":
-                connection = http.client.HTTPSConnection(parsed.netloc, timeout=timeout)
-            else:
-                connection = http.client.HTTPConnection(parsed.netloc, timeout=timeout)
-            path = parsed.path or "/"
-            if parsed.query:
-                path = f"{path}?{parsed.query}"
-            connection.request("GET", path)
-            response = connection.getresponse()
-            raw_payload = response.read().decode("utf-8")
-            connection.close()
-            payload = json.loads(raw_payload)
-        except (OSError, TimeoutError, ValueError, http.client.HTTPException) as exc:
-            return {
-                "connected": False,
-                "state": "unknown",
-                "message": str(exc),
-                "is_printing": False,
-            }
+            decoded = response.json()
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
 
-        status_block = payload.get("result", {}).get("status", {})
-        print_stats = status_block.get("print_stats", {})
-        state = str(print_stats.get("state", "unknown")).strip().lower()
-        message = str(print_stats.get("message", "")).strip()
+    @staticmethod
+    def _error_message_from_response(response: httpx.Response, payload: dict[str, object]) -> str:
+        """Extract best-effort Moonraker error text from response payload/body."""
+        payload_error = payload.get("error")
+        if isinstance(payload_error, dict):
+            message = str(payload_error.get("message", "")).strip()
+            if message:
+                return message
+        body = response.text.strip()
+        if body:
+            return body
+        return (response.reason_phrase or "").strip()
+
+    @staticmethod
+    def _status_result_from_payload(payload: dict[str, object]) -> MoonrakerStatusResult:
+        """Normalize raw Moonraker status payload into typed status result."""
+        result_block = payload.get("result")
+        status_block = result_block.get("status") if isinstance(result_block, dict) else {}
+        print_stats = status_block.get("print_stats") if isinstance(status_block, dict) else {}
+        stats = print_stats if isinstance(print_stats, dict) else {}
+
+        state = str(stats.get("state", "unknown")).strip().lower()
+        message = str(stats.get("message", "")).strip()
         is_printing = state == "printing"
         is_busy = state not in {"standby", "ready", "complete", "cancelled"}
-        return {
-            "connected": True,
-            "state": state,
-            "message": message,
-            "is_printing": is_printing,
-            "is_busy": is_busy,
-        }
+        return MoonrakerStatusResult(
+            connected=True,
+            state=state,
+            message=message,
+            is_printing=is_printing,
+            is_busy=is_busy,
+        )
+
+    def _moonraker_post_command(
+        self,
+        *,
+        path: str,
+        timeout: float,
+        json_body: dict[str, str] | dict[str, object] | None,
+        error_prefix: str,
+    ) -> MoonrakerCommandResult:
+        """Execute one Moonraker POST command and normalize error handling."""
+        url = self._moonraker_url(path)
+        try:
+            response = self._moonraker_post(url, json_body=json_body, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        payload = self._decode_json_payload(response)
+        if response.status_code >= 400:
+            error_message = self._error_message_from_response(response, payload)
+            raise RuntimeError(error_message or f"{error_prefix} failed with status {response.status_code}")
+
+        return MoonrakerCommandResult(
+            ok=True,
+            status=response.status_code,
+            payload=payload,
+        )
+
+    def query_printer_status(self, timeout: float = 2.0) -> dict[str, object]:
+        """Query Moonraker print stats and return normalized printer status."""
+        try:
+            url = self._moonraker_url("/printer/objects/query")
+            response = self._moonraker_get(url, params={"print_stats": "state,message"}, timeout=timeout)
+            payload = self._decode_json_payload(response)
+        except (ValueError, httpx.HTTPError) as exc:
+            return MoonrakerStatusResult(
+                connected=False,
+                state="unknown",
+                message=str(exc),
+                is_printing=False,
+                is_busy=False,
+            ).as_dict()
+
+        if response.status_code >= 400:
+            error_message = self._error_message_from_response(response, payload)
+            return MoonrakerStatusResult(
+                connected=False,
+                state="unknown",
+                message=error_message or f"Moonraker status request failed with status {response.status_code}",
+                is_printing=False,
+                is_busy=False,
+            ).as_dict()
+
+        return self._status_result_from_payload(payload).as_dict()
 
     def is_printer_printing(self, timeout: float = 2.0) -> bool:
         """Return True when Moonraker reports active printing."""
@@ -145,82 +390,50 @@ class MacroGuiService:
 
     def restart_klipper(self, timeout: float = 3.0) -> dict[str, object]:
         """Request a Klipper host restart through Moonraker."""
-        url = f"{self._moonraker_base_url}/printer/restart"
-        parsed = urlparse(url)
-
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("Moonraker URL must use http/https.")
-
-        connection: http.client.HTTPConnection | http.client.HTTPSConnection
-        if parsed.scheme == "https":
-            connection = http.client.HTTPSConnection(parsed.netloc, timeout=timeout)
-        else:
-            connection = http.client.HTTPConnection(parsed.netloc, timeout=timeout)
-
-        try:
-            path = parsed.path or "/"
-            if parsed.query:
-                path = f"{path}?{parsed.query}"
-            connection.request("POST", path, body="", headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            raw_payload = response.read().decode("utf-8")
-        finally:
-            connection.close()
-
-        try:
-            payload = json.loads(raw_payload) if raw_payload else {}
-        except ValueError:
-            payload = {}
-
-        if response.status >= 400:
-            error_message = str(payload.get("error", {}).get("message") or raw_payload or response.reason).strip()
-            raise RuntimeError(error_message or f"Moonraker restart request failed with status {response.status}")
-
-        return {
-            "ok": True,
-            "status": response.status,
-            "payload": payload,
-        }
+        result = self._moonraker_post_command(
+            path="/printer/restart",
+            timeout=timeout,
+            json_body=None,
+            error_prefix="Moonraker restart request",
+        )
+        return result.as_dict()
 
     def reload_dynamic_macros(self, timeout: float = 3.0) -> dict[str, object]:
         """Execute DYNAMIC_MACRO command through Moonraker gcode API."""
-        url = f"{self._moonraker_base_url}/printer/gcode/script"
-        parsed = urlparse(url)
+        result = self._moonraker_post_command(
+            path="/printer/gcode/script",
+            timeout=timeout,
+            json_body={"script": "DYNAMIC_MACRO"},
+            error_prefix="Moonraker dynamic reload request",
+        )
+        return result.as_dict()
 
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("Moonraker URL must use http/https.")
+    def send_mainsail_notification(
+        self,
+        *,
+        message: str,
+        title: str = "KlipperVault",
+        timeout: float = 3.0,
+    ) -> dict[str, object]:
+        """Send a Mainsail frontend notification through Moonraker gcode script API."""
+        clean_title = " ".join(str(title or "KlipperVault").split()).strip() or "KlipperVault"
+        clean_message = " ".join(str(message or "").split()).strip()
+        notification_text = f"{clean_title}: {clean_message}" if clean_message else clean_title
+        escaped_notification = notification_text.replace("\\", "\\\\").replace('"', '\\"')
+        gcode = f'RESPOND TYPE=command MSG="action:notification {escaped_notification}"'
+        command_result = self._moonraker_post_command(
+            path="/printer/gcode/script",
+            timeout=timeout,
+            json_body={"script": gcode},
+            error_prefix="Moonraker notification request",
+        )
 
-        body = json.dumps({"script": "DYNAMIC_MACRO"})
-        connection: http.client.HTTPConnection | http.client.HTTPSConnection
-        if parsed.scheme == "https":
-            connection = http.client.HTTPSConnection(parsed.netloc, timeout=timeout)
-        else:
-            connection = http.client.HTTPConnection(parsed.netloc, timeout=timeout)
-
-        try:
-            path = parsed.path or "/"
-            if parsed.query:
-                path = f"{path}?{parsed.query}"
-            connection.request("POST", path, body=body, headers={"Content-Type": "application/json"})
-            response = connection.getresponse()
-            raw_payload = response.read().decode("utf-8")
-        finally:
-            connection.close()
-
-        try:
-            payload = json.loads(raw_payload) if raw_payload else {}
-        except ValueError:
-            payload = {}
-
-        if response.status >= 400:
-            error_message = str(payload.get("error", {}).get("message") or raw_payload or response.reason).strip()
-            raise RuntimeError(error_message or f"Moonraker dynamic reload request failed with status {response.status}")
-
-        return {
-            "ok": True,
-            "status": response.status,
-            "payload": payload,
-        }
+        return MoonrakerCommandResult(
+            ok=command_result.ok,
+            status=command_result.status,
+            payload=command_result.payload,
+            notification=notification_text,
+        ).as_dict()
 
     def index(self) -> dict[str, object]:
         """Run config indexing with configured retention settings."""
@@ -333,7 +546,58 @@ class MacroGuiService:
     @staticmethod
     def _normalize_printer_identity(vendor: str, model: str) -> tuple[str, str]:
         """Normalize printer identity values for compatibility checks."""
-        return str(vendor or "").strip().lower(), str(model or "").strip().lower()
+        return _as_text(vendor).lower(), _as_text(model).lower()
+
+    @staticmethod
+    def _require_non_empty(value: str, error_message: str) -> str:
+        """Normalize a required text value and raise when empty."""
+        normalized = _as_text(value)
+        if not normalized:
+            raise ValueError(error_message)
+        return normalized
+
+    @staticmethod
+    def _prepare_pr_artifacts(
+        *,
+        artifacts: dict[str, object],
+        manifest_path: str,
+    ) -> tuple[dict[str, str], list[str], int]:
+        """Normalize repository artifacts into commit-ready write/delete collections."""
+        files_to_write_raw = artifacts.get("files_to_write", {})
+        if not isinstance(files_to_write_raw, dict):
+            raise RuntimeError("invalid export payload generated for pull request")
+        files_to_write: dict[str, str] = {
+            str(path): str(content)
+            for path, content in files_to_write_raw.items()
+        }
+
+        files_to_delete_raw = artifacts.get("files_to_delete", [])
+        if not isinstance(files_to_delete_raw, list):
+            raise RuntimeError("invalid delete payload generated for pull request")
+        files_to_delete = [
+            _as_text(path).lstrip("/")
+            for path in files_to_delete_raw
+            if _as_text(path)
+        ]
+
+        manifest_payload = artifacts.get("manifest", {})
+        if not isinstance(manifest_payload, dict):
+            raise RuntimeError("invalid manifest payload generated for pull request")
+        files_to_write[manifest_path.lstrip("/")] = json.dumps(manifest_payload, indent=2, ensure_ascii=False)
+
+        macro_count = _as_int(artifacts.get("macro_count", 0))
+        return files_to_write, files_to_delete, macro_count
+
+    @staticmethod
+    def _parse_imported_update_item(item: object) -> ImportedUpdateItem | None:
+        """Normalize one imported update item; return None for malformed entries."""
+        if not isinstance(item, dict):
+            return None
+
+        try:
+            return ImportedUpdateItem(**item)
+        except Exception:
+            return None
 
     def export_macro_share_file(
         self,
@@ -378,8 +642,8 @@ class MacroGuiService:
             now_ts=int(time.time()),
         )
 
-        source_vendor = str(result.get("source_vendor", "")).strip()
-        source_model = str(result.get("source_model", "")).strip()
+        source_vendor = _as_text(result.get("source_vendor", ""))
+        source_model = _as_text(result.get("source_model", ""))
         src_vendor_norm, src_model_norm = self._normalize_printer_identity(source_vendor, source_model)
         tgt_vendor_norm, tgt_model_norm = self._normalize_printer_identity(target_vendor, target_model)
         printer_matches = bool(
@@ -390,8 +654,7 @@ class MacroGuiService:
             and src_vendor_norm == tgt_vendor_norm
             and src_model_norm == tgt_model_norm
         )
-        imported_raw = result.get("imported", 0)
-        imported_count = imported_raw if isinstance(imported_raw, int) else 0
+        imported_count = _as_int(result.get("imported", 0))
 
         return {
             "imported": imported_count,
@@ -440,37 +703,25 @@ class MacroGuiService:
             now_ts=int(time.time()),
         )
 
-        imported_items_raw = import_result.get("imported_items", [])
-        imported_items = imported_items_raw if isinstance(imported_items_raw, list) else []
-        activate_set = {str(identity) for identity in activate_identities}
+        imported_items = _as_list(import_result.get("imported_items", []))
+        activate_set = {_as_text(identity) for identity in activate_identities}
         activated_count = 0
 
         for item in imported_items:
-            if not isinstance(item, dict):
-                continue
-            identity = str(item.get("identity", ""))
-            if identity not in activate_set:
-                continue
-
-            file_path = str(item.get("file_path", ""))
-            macro_name = str(item.get("macro_name", ""))
-            try:
-                version = int(item.get("version", 0) or 0)
-            except (TypeError, ValueError):
-                version = 0
-            if not file_path or not macro_name or version <= 0:
+            parsed_item = self._parse_imported_update_item(item)
+            if parsed_item is None or parsed_item.identity not in activate_set:
                 continue
 
             restore_macro_version(
                 db_path=self._db_path,
                 config_dir=self._config_dir,
-                file_path=file_path,
-                macro_name=macro_name,
-                version=version,
+                file_path=parsed_item.file_path,
+                macro_name=parsed_item.macro_name,
+                version=parsed_item.version,
             )
             activated_count += 1
 
-        imported_count = int(cast(int, import_result.get("imported", 0)) or 0)
+        imported_count = _as_int(import_result.get("imported", 0))
         return {
             "imported": imported_count,
             "activated": activated_count,
@@ -514,24 +765,13 @@ class MacroGuiService:
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict[str, object]:
         """Create a GitHub pull request with exported active macro artifacts."""
-        clean_repo_url = str(repo_url or "").strip()
-        clean_base = str(base_branch or "").strip()
-        clean_head = str(head_branch or "").strip()
+        clean_repo_url = self._require_non_empty(repo_url, "online update repository URL is required")
+        clean_base = self._require_non_empty(base_branch, "base branch is required")
+        clean_head = self._require_non_empty(head_branch, "head branch is required")
         clean_manifest_path = str(manifest_path or "updates/manifest.json").strip() or "updates/manifest.json"
-        clean_token = str(github_token or "").strip()
-        clean_title = str(pull_request_title or "").strip()
+        clean_token = self._require_non_empty(github_token, "GitHub token is required")
+        clean_title = self._require_non_empty(pull_request_title, "pull request title is required")
         clean_body = str(pull_request_body or "").strip()
-
-        if not clean_repo_url:
-            raise ValueError("online update repository URL is required")
-        if not clean_base:
-            raise ValueError("base branch is required")
-        if not clean_head:
-            raise ValueError("head branch is required")
-        if not clean_token:
-            raise ValueError("GitHub token is required")
-        if not clean_title:
-            raise ValueError("pull request title is required")
 
         def _report(current: int, total: int) -> None:
             if progress_callback is not None:
@@ -542,17 +782,17 @@ class MacroGuiService:
         existing_pr = get_open_pull_request_for_head(clean_repo_url, clean_token, clean_head)
         _report(1, 6)
         if existing_pr is not None:
-            return {
-                "created": False,
-                "existing": True,
-                "pull_request_number": _as_int(existing_pr.get("number", 0)),
-                "pull_request_url": str(existing_pr.get("html_url", "")),
-                "head_branch": clean_head,
-                "updated_files": 0,
-                "macro_count": 0,
-                "no_changes": False,
-                "commit_count": 0,
-            }
+            return PullRequestCreationResult(
+                created=False,
+                existing=True,
+                pull_request_number=_as_int(existing_pr.get("number", 0)),
+                pull_request_url=str(existing_pr.get("html_url", "")),
+                head_branch=clean_head,
+                updated_files=0,
+                macro_count=0,
+                no_changes=False,
+                commit_count=0,
+            ).as_dict()
 
         remote_manifest = load_json_file_from_branch(
             repo_url=clean_repo_url,
@@ -571,26 +811,10 @@ class MacroGuiService:
             existing_manifest=remote_manifest,
         )
         _report(3, 6)
-        files_to_write_raw = artifacts.get("files_to_write", {})
-        if not isinstance(files_to_write_raw, dict):
-            raise RuntimeError("invalid export payload generated for pull request")
-        files_to_write: dict[str, str] = {
-            str(path): str(content)
-            for path, content in files_to_write_raw.items()
-        }
-        files_to_delete_raw = artifacts.get("files_to_delete", [])
-        if not isinstance(files_to_delete_raw, list):
-            raise RuntimeError("invalid delete payload generated for pull request")
-        files_to_delete = [
-            str(path).strip().lstrip("/")
-            for path in files_to_delete_raw
-            if str(path).strip()
-        ]
-
-        manifest_payload = artifacts.get("manifest", {})
-        if not isinstance(manifest_payload, dict):
-            raise RuntimeError("invalid manifest payload generated for pull request")
-        files_to_write[clean_manifest_path.lstrip("/")] = json.dumps(manifest_payload, indent=2, ensure_ascii=False)
+        files_to_write, files_to_delete, macro_count = self._prepare_pr_artifacts(
+            artifacts=artifacts,
+            manifest_path=clean_manifest_path,
+        )
 
         branch_result = create_branch(
             repo_url=clean_repo_url,
@@ -623,17 +847,17 @@ class MacroGuiService:
 
         if updated_files <= 0:
             _report(6, 6)
-            return {
-                "created": False,
-                "existing": False,
-                "pull_request_number": 0,
-                "pull_request_url": "",
-                "head_branch": clean_head,
-                "updated_files": 0,
-                "macro_count": _as_int(artifacts.get("macro_count", 0)),
-                "no_changes": True,
-                "commit_count": 0,
-            }
+            return PullRequestCreationResult(
+                created=False,
+                existing=False,
+                pull_request_number=0,
+                pull_request_url="",
+                head_branch=clean_head,
+                updated_files=0,
+                macro_count=macro_count,
+                no_changes=True,
+                commit_count=0,
+            ).as_dict()
 
         pull_request_result = create_pull_request(
             repo_url=clean_repo_url,
@@ -645,14 +869,14 @@ class MacroGuiService:
         )
         _report(6, 6)
 
-        return {
-            "created": True,
-            "existing": bool(pull_request_result.get("existing", False)),
-            "pull_request_number": _as_int(pull_request_result.get("number", 0)),
-            "pull_request_url": str(pull_request_result.get("url", "")),
-            "head_branch": clean_head,
-            "updated_files": updated_files,
-            "macro_count": _as_int(artifacts.get("macro_count", 0)),
-            "no_changes": False,
-            "commit_count": 1,
-        }
+        return PullRequestCreationResult(
+            created=True,
+            existing=bool(pull_request_result.get("existing", False)),
+            pull_request_number=_as_int(pull_request_result.get("number", 0)),
+            pull_request_url=str(pull_request_result.get("url", "")),
+            head_branch=clean_head,
+            updated_files=updated_files,
+            macro_count=macro_count,
+            no_changes=False,
+            commit_count=1,
+        ).as_dict()

@@ -7,14 +7,18 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import http.client
 import json
 from typing import Callable, Iterable, Mapping
 from urllib.parse import quote, urlencode, urlparse
 
+import httpx
+from pydantic import BaseModel, field_validator
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
 
 _API_HOST = "api.github.com"
 _USER_AGENT = "KlipperVault/github-pr"
+_API_BASE_URL = f"https://{_API_HOST}"
 
 
 def _as_int(value: object) -> int:
@@ -42,6 +46,127 @@ def _git_blob_sha(content_text: str) -> str:
     return hashlib.sha1(prefix + content_bytes, usedforsecurity=False).hexdigest()
 
 
+# Pydantic models for GitHub API responses
+
+
+class CommitResult(BaseModel):
+    """Typed result from commit_changed_text_files operation."""
+
+    changed_files: int
+    commit_sha: str
+    created: bool
+
+    @field_validator("changed_files", mode="before")
+    @classmethod
+    def validate_changed_files(cls, v: object) -> int:
+        """Ensure changed_files is a non-negative integer."""
+        if isinstance(v, bool):
+            value = int(v)
+        elif isinstance(v, int):
+            value = v
+        elif isinstance(v, float):
+            value = int(v)
+        elif isinstance(v, str):
+            try:
+                value = int(v)
+            except ValueError:
+                value = 0
+        else:
+            value = 0
+        if value < 0:
+            raise ValueError("changed_files must be non-negative")
+        return value
+
+    @field_validator("commit_sha", mode="before")
+    @classmethod
+    def validate_commit_sha(cls, v: object) -> str:
+        """Normalize commit SHA to string."""
+        return str(v or "").strip()
+
+    def as_dict(self) -> dict[str, object]:
+        """Convert to legacy dictionary contract."""
+        return {
+            "changed_files": self.changed_files,
+            "commit_sha": self.commit_sha,
+            "created": self.created,
+        }
+
+
+class BranchCreationResult(BaseModel):
+    """Typed result from create_branch operation."""
+
+    created: bool
+    already_exists: bool
+    base_sha: str
+    head_branch: str
+    ref: str = ""
+
+    @field_validator("base_sha", "head_branch", "ref", mode="before")
+    @classmethod
+    def normalize_text_fields(cls, v: object) -> str:
+        """Normalize text fields to string."""
+        return str(v or "").strip()
+
+    def as_dict(self) -> dict[str, object]:
+        """Convert to legacy dictionary contract."""
+        result = {
+            "created": self.created,
+            "already_exists": self.already_exists,
+            "base_sha": self.base_sha,
+            "head_branch": self.head_branch,
+        }
+        if self.ref:
+            result["ref"] = self.ref
+        return result
+
+
+class CreatePullRequestResult(BaseModel):
+    """Typed result from create_pull_request operation."""
+
+    ok: bool
+    existing: bool
+    number: int
+    url: str
+    head_branch: str
+
+    @field_validator("number", mode="before")
+    @classmethod
+    def validate_pr_number(cls, v: object) -> int:
+        """Ensure number is a non-negative integer."""
+        if isinstance(v, bool):
+            value = int(v)
+        elif isinstance(v, int):
+            value = v
+        elif isinstance(v, float):
+            value = int(v)
+        elif isinstance(v, str):
+            try:
+                value = int(v)
+            except ValueError:
+                value = 0
+        else:
+            value = 0
+        if value < 0:
+            raise ValueError("PR number must be non-negative")
+        return value
+
+    @field_validator("url", "head_branch", mode="before")
+    @classmethod
+    def normalize_url_and_branch(cls, v: object) -> str:
+        """Normalize URL and branch name to string."""
+        return str(v or "").strip()
+
+    def as_dict(self) -> dict[str, object]:
+        """Convert to legacy dictionary contract."""
+        return {
+            "ok": self.ok,
+            "existing": self.existing,
+            "number": self.number,
+            "url": self.url,
+            "head_branch": self.head_branch,
+        }
+
+
 def parse_github_repo(repo_url: str) -> tuple[str, str]:
     """Parse GitHub repository URL and return (owner, repo)."""
     parsed = urlparse(str(repo_url or "").strip())
@@ -55,6 +180,31 @@ def parse_github_repo(repo_url: str) -> tuple[str, str]:
         raise ValueError("online update repository URL must include owner/repo")
 
     return path_parts[0], path_parts[1]
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.2, min=0.2, max=1.5),
+    retry=retry_if_exception_type(httpx.RequestError),
+)
+def _perform_https_request(
+    *,
+    method: str,
+    path: str,
+    timeout: float,
+    headers: dict[str, str],
+    payload: str,
+) -> tuple[int, str, str]:
+    """Perform one HTTPS request with bounded retry for transient transport errors."""
+    response = httpx.request(
+        method=method.upper(),
+        url=f"{_API_BASE_URL}{path}",
+        content=payload,
+        headers=headers,
+        timeout=timeout,
+    )
+    return response.status_code, (response.reason_phrase or ""), response.text
 
 
 def _request_json(
@@ -82,13 +232,13 @@ def _request_json(
         payload = json.dumps(body)
         headers["Content-Type"] = "application/json"
 
-    connection = http.client.HTTPSConnection(_API_HOST, timeout=timeout)
-    try:
-        connection.request(method.upper(), path, body=payload, headers=headers)
-        response = connection.getresponse()
-        raw_payload = response.read().decode("utf-8")
-    finally:
-        connection.close()
+    status_code, _reason, raw_payload = _perform_https_request(
+        method=method,
+        path=path,
+        timeout=timeout,
+        headers=headers,
+        payload=payload,
+    )
 
     if raw_payload:
         try:
@@ -98,14 +248,14 @@ def _request_json(
     else:
         parsed_payload = {}
 
-    if response.status not in set(accepted_status):
+    if status_code not in set(accepted_status):
         if isinstance(parsed_payload, dict):
             message = str(parsed_payload.get("message", "")).strip()
         else:
             message = ""
-        raise RuntimeError(message or f"GitHub API request failed with status {response.status}")
+        raise RuntimeError(message or f"GitHub API request failed with status {status_code}")
 
-    return response.status, parsed_payload
+    return status_code, parsed_payload
 
 
 def get_branch_sha(repo_url: str, token: str, branch: str, timeout: float = 8.0) -> str:
@@ -306,7 +456,8 @@ def commit_changed_text_files(
         if str(path or "").strip()
     ]
     if not files and not clean_deleted_files:
-        return {"changed_files": 0, "commit_sha": "", "created": False}
+        result = CommitResult(changed_files=0, commit_sha="", created=False)
+        return result.as_dict()
 
     def _report(current: int, total: int) -> None:
         if progress_callback is not None:
@@ -354,11 +505,8 @@ def commit_changed_text_files(
 
     if not changed_items and not changed_deletes:
         _report(total_steps, total_steps)
-        return {
-            "changed_files": 0,
-            "commit_sha": "",
-            "created": False,
-        }
+        result = CommitResult(changed_files=0, commit_sha="", created=False)
+        return result.as_dict()
 
     tree_entries: list[dict[str, object]] = []
     for file_path, content_text in changed_items:
@@ -416,11 +564,12 @@ def commit_changed_text_files(
     )
     _report(total_steps, total_steps)
 
-    return {
-        "changed_files": len(changed_items) + len(changed_deletes),
-        "commit_sha": commit_sha,
-        "created": True,
-    }
+    result = CommitResult(
+        changed_files=len(changed_items) + len(changed_deletes),
+        commit_sha=commit_sha,
+        created=True,
+    )
+    return result.as_dict()
 
 
 def create_branch(repo_url: str, token: str, base_branch: str, head_branch: str, timeout: float = 8.0) -> dict[str, object]:
@@ -456,21 +605,23 @@ def create_branch(repo_url: str, token: str, base_branch: str, head_branch: str,
     except RuntimeError as exc:
         message = str(exc)
         if "Reference already exists" in message:
-            return {
-                "created": False,
-                "already_exists": True,
-                "base_sha": base_sha,
-                "head_branch": clean_head,
-            }
+            result = BranchCreationResult(
+                created=False,
+                already_exists=True,
+                base_sha=base_sha,
+                head_branch=clean_head,
+            )
+            return result.as_dict()
         raise
 
-    return {
-        "created": True,
-        "already_exists": False,
-        "base_sha": base_sha,
-        "head_branch": clean_head,
-        "ref": payload.get("ref", ""),
-    }
+    result = BranchCreationResult(
+        created=True,
+        already_exists=False,
+        base_sha=base_sha,
+        head_branch=clean_head,
+        ref=payload.get("ref", ""),
+    )
+    return result.as_dict()
 
 
 def get_open_pull_request_for_head(
@@ -660,22 +811,24 @@ def create_pull_request(
         if "A pull request already exists" in message:
             existing = get_open_pull_request_for_head(repo_url, token, clean_head, timeout=timeout)
             if existing is not None:
-                return {
-                    "ok": True,
-                    "existing": True,
-                    "number": _as_int(existing.get("number", 0)),
-                    "url": str(existing.get("html_url", "")),
-                    "head_branch": clean_head,
-                }
+                result = CreatePullRequestResult(
+                    ok=True,
+                    existing=True,
+                    number=_as_int(existing.get("number", 0)),
+                    url=str(existing.get("html_url", "")),
+                    head_branch=clean_head,
+                )
+                return result.as_dict()
         raise
 
     if not isinstance(payload, dict):
         raise RuntimeError("unexpected GitHub response while creating pull request")
 
-    return {
-        "ok": True,
-        "existing": False,
-        "number": _as_int(payload.get("number", 0)),
-        "url": str(payload.get("html_url", "")),
-        "head_branch": clean_head,
-    }
+    result = CreatePullRequestResult(
+        ok=True,
+        existing=False,
+        number=_as_int(payload.get("number", 0)),
+        url=str(payload.get("html_url", "")),
+        head_branch=clean_head,
+    )
+    return result.as_dict()

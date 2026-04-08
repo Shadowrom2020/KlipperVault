@@ -1,77 +1,56 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Jürgen Herrmann
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Minimal i18n helper for KlipperVault UI labels and messages."""
+"""gettext i18n helper for KlipperVault UI labels and messages."""
 
 from __future__ import annotations
 
-import importlib.util
+import gettext
 from pathlib import Path
 
 _DEFAULT_LANGUAGE = "en"
 _current_language = _DEFAULT_LANGUAGE
 
 _LOCALES_DIR = Path(__file__).resolve().parent / "locales"
-_translation_cache: dict[str, dict[str, str]] = {}
-
-
-def _is_valid_mapping(candidate: object) -> bool:
-    """Return True when candidate is a dict[str, str]."""
-    if not isinstance(candidate, dict):
-        return False
-    return all(isinstance(k, str) and isinstance(v, str) for k, v in candidate.items())
-
-
-def _load_language_translations(language: str) -> dict[str, str]:
-    """Load one language file from src/locales/<language>.py with safe fallback."""
-    if language == _DEFAULT_LANGUAGE:
-        return {}
-    if language in _translation_cache:
-        return _translation_cache[language]
-
-    locale_path = _LOCALES_DIR / f"{language}.py"
-    if not locale_path.exists():
-        _translation_cache[language] = {}
-        return {}
-
-    module_name = f"klippervault_locale_{language}"
-    spec = importlib.util.spec_from_file_location(module_name, locale_path)
-    if spec is None or spec.loader is None:
-        _translation_cache[language] = {}
-        return {}
-
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception:
-        _translation_cache[language] = {}
-        return {}
-
-    translations = getattr(module, "TRANSLATIONS", {})
-    if not _is_valid_mapping(translations):
-        _translation_cache[language] = {}
-        return {}
-
-    _translation_cache[language] = dict(translations)
-    return _translation_cache[language]
+_GETTEXT_DOMAIN = "klippervault"
+_active_gettext: gettext.NullTranslations = gettext.NullTranslations()
 
 
 def _language_is_available(language: str) -> bool:
-    """Return True when locale file exists for requested language."""
+    """Return True when gettext catalog exists for requested language."""
     if language == _DEFAULT_LANGUAGE:
         return True
-    return (_LOCALES_DIR / f"{language}.py").exists()
+    gettext_catalog = _LOCALES_DIR / language / "LC_MESSAGES" / f"{_GETTEXT_DOMAIN}.mo"
+    return gettext_catalog.exists()
+
+
+def _load_gettext_translations(language: str) -> gettext.NullTranslations:
+    """Load gettext translations for one language or return null translations."""
+    if language == _DEFAULT_LANGUAGE:
+        return gettext.NullTranslations()
+
+    catalog_path = _LOCALES_DIR / language / "LC_MESSAGES" / f"{_GETTEXT_DOMAIN}.mo"
+    if not catalog_path.exists():
+        return gettext.NullTranslations()
+
+    try:
+        with catalog_path.open("rb") as catalog_file:
+            return gettext.GNUTranslations(catalog_file)
+    except Exception:
+        return gettext.NullTranslations()
 
 
 def set_language(language: str | None) -> str:
     """Set active UI language and return normalized effective language."""
-    global _current_language
+    global _active_gettext, _current_language
     normalized = (language or _DEFAULT_LANGUAGE).strip().lower().replace("_", "-")
     short = normalized.split("-", maxsplit=1)[0]
     if _language_is_available(short):
         _current_language = short
     else:
         _current_language = _DEFAULT_LANGUAGE
+
+    _active_gettext = _load_gettext_translations(_current_language)
     return _current_language
 
 
@@ -82,7 +61,14 @@ def get_language() -> str:
 
 def t(message: str, **kwargs: object) -> str:
     """Translate one message template and apply optional format kwargs."""
-    translated = _load_language_translations(_current_language).get(message, message)
+    translated = _active_gettext.gettext(message)
+
     if kwargs:
-        return translated.format(**kwargs)
+        try:
+            return translated.format(**kwargs)
+        except (KeyError, IndexError, ValueError):
+            return translated
     return translated
+
+
+set_language(_DEFAULT_LANGUAGE)

@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,60 @@ def _service() -> MacroGuiService:
         config_dir=Path("/tmp/config"),
         version_history_size=5,
     )
+
+
+def _create_pr(service: MacroGuiService, **overrides: str) -> dict[str, object]:
+    payload = {
+        "source_vendor": "Voron",
+        "source_model": "Trident",
+        "repo_url": "https://github.com/example/repo",
+        "base_branch": "main",
+        "head_branch": "feature/macro-update",
+        "manifest_path": "updates/manifest.json",
+        "github_token": "token",
+        "pull_request_title": "Update macros",
+        "pull_request_body": "Body",
+    }
+    payload.update(overrides)
+    return service.create_online_update_pull_request(**payload)
+
+
+def _run_create_pr_with_common_patches(
+    service: MacroGuiService,
+    *,
+    artifacts: dict[str, object],
+    changed_files: int,
+) -> tuple[dict[str, object], object, object]:
+    with ExitStack() as stack:
+        stack.enter_context(patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None))
+        stack.enter_context(
+            patch(
+                "klipper_macro_gui_service.load_json_file_from_branch",
+                return_value={"manifest_version": "1", "macros": []},
+            )
+        )
+        stack.enter_context(
+            patch(
+                "klipper_macro_gui_service.build_online_update_repository_artifacts",
+                return_value=artifacts,
+            )
+        )
+        stack.enter_context(patch("klipper_macro_gui_service.create_branch", return_value={"already_exists": False}))
+        commit_mock = stack.enter_context(
+            patch(
+                "klipper_macro_gui_service.commit_changed_text_files",
+                return_value={"changed_files": changed_files, "commit_sha": "abc123", "created": changed_files > 0},
+            )
+        )
+        pr_mock = stack.enter_context(
+            patch(
+                "klipper_macro_gui_service.create_pull_request",
+                return_value={"existing": False, "number": 99, "url": "https://github.com/example/repo/pull/99"},
+            )
+        )
+
+        result = _create_pr(service)
+        return result, commit_mock, pr_mock
 
 
 def test_create_online_update_pull_request_returns_existing_open_pr() -> None:
@@ -49,29 +104,11 @@ def test_create_online_update_pull_request_happy_path() -> None:
         "source_model": "trident",
     }
 
-    with patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None):
-        with patch("klipper_macro_gui_service.load_json_file_from_branch", return_value={"manifest_version": "1", "macros": []}):
-            with patch("klipper_macro_gui_service.build_online_update_repository_artifacts", return_value=artifacts):
-                with patch("klipper_macro_gui_service.create_branch", return_value={"already_exists": False}):
-                    with patch(
-                        "klipper_macro_gui_service.commit_changed_text_files",
-                        return_value={"changed_files": 2, "commit_sha": "abc123", "created": True},
-                    ) as commit_mock:
-                        with patch(
-                            "klipper_macro_gui_service.create_pull_request",
-                            return_value={"existing": False, "number": 99, "url": "https://github.com/example/repo/pull/99"},
-                        ):
-                            result = service.create_online_update_pull_request(
-                                source_vendor="Voron",
-                                source_model="Trident",
-                                repo_url="https://github.com/example/repo",
-                                base_branch="main",
-                                head_branch="feature/macro-update",
-                                manifest_path="updates/manifest.json",
-                                github_token="token",
-                                pull_request_title="Update macros",
-                                pull_request_body="Body",
-                            )
+    result, commit_mock, _pr_mock = _run_create_pr_with_common_patches(
+        service,
+        artifacts=artifacts,
+        changed_files=2,
+    )
 
     assert commit_mock.call_count == 1
     assert commit_mock.call_args.kwargs.get("deleted_files") == ["voron/trident/OLD_MACRO.json"]
@@ -95,28 +132,241 @@ def test_create_online_update_pull_request_no_changes_skips_pr() -> None:
         "source_model": "trident",
     }
 
-    with patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None):
-        with patch("klipper_macro_gui_service.load_json_file_from_branch", return_value={"manifest_version": "1", "macros": []}):
-            with patch("klipper_macro_gui_service.build_online_update_repository_artifacts", return_value=artifacts):
-                with patch("klipper_macro_gui_service.create_branch", return_value={"already_exists": False}):
-                    with patch(
-                        "klipper_macro_gui_service.commit_changed_text_files",
-                        return_value={"changed_files": 0, "commit_sha": "", "created": False},
-                    ):
-                        with patch("klipper_macro_gui_service.create_pull_request") as pr_mock:
-                            result = service.create_online_update_pull_request(
-                                source_vendor="Voron",
-                                source_model="Trident",
-                                repo_url="https://github.com/example/repo",
-                                base_branch="main",
-                                head_branch="feature/macro-update",
-                                manifest_path="updates/manifest.json",
-                                github_token="token",
-                                pull_request_title="Update macros",
-                                pull_request_body="Body",
-                            )
+    result, _commit_mock, pr_mock = _run_create_pr_with_common_patches(
+        service,
+        artifacts=artifacts,
+        changed_files=0,
+    )
 
     assert pr_mock.call_count == 0
     assert result["created"] is False
     assert result["no_changes"] is True
     assert result["commit_count"] == 0
+
+
+def test_send_mainsail_notification_posts_action_notification() -> None:
+    service = _service()
+
+    class _Response:
+        status_code = 200
+        reason_phrase = "OK"
+        text = '{"result":"ok"}'
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"result": "ok"}
+
+    captured: dict[str, object] = {}
+
+    def _mock_post(url: str, *, json: dict[str, str], timeout: float) -> _Response:
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _Response()
+
+    with patch("klipper_macro_gui_service.httpx.post", side_effect=_mock_post):
+        result = service.send_mainsail_notification(message="2 updates available", title="KlipperVault")
+
+    assert str(captured["url"]).endswith("/printer/gcode/script")
+    assert 'action:notification KlipperVault: 2 updates available' in str(captured["json"])
+    assert result["ok"] is True
+    assert result["status"] == 200
+
+
+def test_send_mainsail_notification_rejects_invalid_moonraker_url() -> None:
+    service = MacroGuiService(
+        db_path=Path("/tmp/test.db"),
+        config_dir=Path("/tmp/config"),
+        version_history_size=5,
+        moonraker_base_url="ftp://127.0.0.1:7125",
+    )
+
+    try:
+        service.send_mainsail_notification(message="test")
+    except ValueError as exc:
+        assert "Moonraker URL must use http/https." in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for invalid Moonraker URL")
+
+
+def test_restart_klipper_posts_restart_endpoint() -> None:
+    service = _service()
+
+    class _Response:
+        status_code = 200
+        reason_phrase = "OK"
+        text = '{"result":"ok"}'
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"result": "ok"}
+
+    captured: dict[str, object] = {}
+
+    def _mock_post(url: str, *, timeout: float) -> _Response:
+        captured["url"] = url
+        captured["timeout"] = timeout
+        return _Response()
+
+    with patch("klipper_macro_gui_service.httpx.post", side_effect=_mock_post):
+        result = service.restart_klipper()
+
+    assert str(captured["url"]).endswith("/printer/restart")
+    assert result["ok"] is True
+    assert result["status"] == 200
+
+
+def test_reload_dynamic_macros_posts_dynamic_macro_script() -> None:
+    service = _service()
+
+    class _Response:
+        status_code = 200
+        reason_phrase = "OK"
+        text = '{"result":"ok"}'
+
+        @staticmethod
+        def json() -> dict[str, str]:
+            return {"result": "ok"}
+
+    captured: dict[str, object] = {}
+
+    def _mock_post(url: str, *, json: dict[str, str], timeout: float) -> _Response:
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _Response()
+
+    with patch("klipper_macro_gui_service.httpx.post", side_effect=_mock_post):
+        result = service.reload_dynamic_macros()
+
+    assert str(captured["url"]).endswith("/printer/gcode/script")
+    assert captured["json"] == {"script": "DYNAMIC_MACRO"}
+    assert result["ok"] is True
+    assert result["status"] == 200
+
+
+def test_create_online_update_pull_request_rejects_invalid_files_to_write_payload() -> None:
+    service = _service()
+
+    artifacts = {
+        "manifest": {"manifest_version": "1", "macros": []},
+        "manifest_path": "updates/manifest.json",
+        "files_to_write": [],
+        "files_to_delete": [],
+        "macro_count": 1,
+    }
+
+    with patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None):
+        with patch("klipper_macro_gui_service.load_json_file_from_branch", return_value={"manifest_version": "1", "macros": []}):
+            with patch("klipper_macro_gui_service.build_online_update_repository_artifacts", return_value=artifacts):
+                try:
+                    _create_pr(service)
+                except RuntimeError as exc:
+                    assert "invalid export payload generated for pull request" in str(exc)
+                else:
+                    raise AssertionError("Expected RuntimeError for invalid files_to_write payload")
+
+
+def test_create_online_update_pull_request_rejects_invalid_manifest_payload() -> None:
+    service = _service()
+
+    artifacts = {
+        "manifest": [],
+        "manifest_path": "updates/manifest.json",
+        "files_to_write": {"voron/trident/PRINT_START.json": "{}"},
+        "files_to_delete": [],
+        "macro_count": 1,
+    }
+
+    with patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None):
+        with patch("klipper_macro_gui_service.load_json_file_from_branch", return_value={"manifest_version": "1", "macros": []}):
+            with patch("klipper_macro_gui_service.build_online_update_repository_artifacts", return_value=artifacts):
+                try:
+                    _create_pr(service)
+                except RuntimeError as exc:
+                    assert "invalid manifest payload generated for pull request" in str(exc)
+                else:
+                    raise AssertionError("Expected RuntimeError for invalid manifest payload")
+
+
+def test_import_online_updates_activates_selected_identities() -> None:
+    service = _service()
+
+    import_result = {
+        "imported": 2,
+        "imported_items": [
+            {
+                "identity": "printer.cfg::PRINT_START",
+                "file_path": "printer.cfg",
+                "macro_name": "PRINT_START",
+                "version": 3,
+            },
+            {
+                "identity": "macros.cfg::PRINT_END",
+                "file_path": "macros.cfg",
+                "macro_name": "PRINT_END",
+                "version": 2,
+            },
+        ],
+    }
+
+    with patch("klipper_macro_gui_service.import_online_macro_updates", return_value=import_result):
+        with patch("klipper_macro_gui_service.restore_macro_version") as restore_mock:
+            result = service.import_online_updates(
+                updates=[],
+                activate_identities=["printer.cfg::PRINT_START"],
+                repo_url="https://github.com/example/repo",
+                repo_ref="main",
+            )
+
+    assert restore_mock.call_count == 1
+    assert restore_mock.call_args.kwargs["file_path"] == "printer.cfg"
+    assert restore_mock.call_args.kwargs["macro_name"] == "PRINT_START"
+    assert restore_mock.call_args.kwargs["version"] == 3
+    assert result["imported"] == 2
+    assert result["activated"] == 1
+
+
+def test_import_online_updates_skips_malformed_items() -> None:
+    service = _service()
+
+    import_result = {
+        "imported": 3,
+        "imported_items": [
+            {
+                "identity": "printer.cfg::PRINT_START",
+                "file_path": "",
+                "macro_name": "PRINT_START",
+                "version": 3,
+            },
+            {
+                "identity": "printer.cfg::PRINT_END",
+                "file_path": "printer.cfg",
+                "macro_name": "",
+                "version": 2,
+            },
+            {
+                "identity": "printer.cfg::PRIME_LINE",
+                "file_path": "printer.cfg",
+                "macro_name": "PRIME_LINE",
+                "version": 0,
+            },
+        ],
+    }
+
+    with patch("klipper_macro_gui_service.import_online_macro_updates", return_value=import_result):
+        with patch("klipper_macro_gui_service.restore_macro_version") as restore_mock:
+            result = service.import_online_updates(
+                updates=[],
+                activate_identities=[
+                    "printer.cfg::PRINT_START",
+                    "printer.cfg::PRINT_END",
+                    "printer.cfg::PRIME_LINE",
+                ],
+                repo_url="https://github.com/example/repo",
+                repo_ref="main",
+            )
+
+    assert restore_mock.call_count == 0
+    assert result["imported"] == 3
+    assert result["activated"] == 0
