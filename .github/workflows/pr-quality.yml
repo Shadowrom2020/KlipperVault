@@ -44,14 +44,38 @@ jobs:
 
       - name: i18n artifact parity
         run: |
-          make i18n
-          # --ignore-matching-lines skips hunks where all changed lines match the
-          # pattern, which handles the volatile POT-Creation-Date timestamp header.
-          git diff --ignore-matching-lines='"POT-Creation-Date:' --exit-code \
-            -- 'src/locales/*/LC_MESSAGES/klippervault.po' || {
-            echo "Translation catalogs are out of date. Run 'make i18n' and commit updated files.";
-            exit 1;
-          }
+          # Extract a fresh catalog to a temp file and compare msgids against the
+          # committed .pot.  This is timezone-independent, binary-safe, and immune
+          # to the volatile POT-Creation-Date header that pybabel stamps on every run.
+          pybabel extract -F babel.ini -o /tmp/fresh.pot src klipper_vault.py
+          python - <<'PY'
+          import sys
+          from babel.messages.pofile import read_po
+
+          def msgids(path):
+              with open(path, "rb") as f:
+                  return {m.id for m in read_po(f) if m.id}
+
+          committed = msgids("src/locales/klippervault.pot")
+          fresh     = msgids("/tmp/fresh.pot")
+
+          added   = fresh - committed
+          removed = committed - fresh
+
+          if added:
+              print("New translatable strings not in committed .pot:")
+              for s in sorted(added):
+                  print(f"  + {s!r}")
+          if removed:
+              print("Strings removed from source but still in committed .pot:")
+              for s in sorted(removed):
+                  print(f"  - {s!r}")
+          if added or removed:
+              print("Run 'make i18n' and commit the updated catalog files.")
+              sys.exit(1)
+
+          print("i18n catalog is up to date.")
+          PY
 
       - name: GPLv3 license compatibility check
         run: python scripts/check_gplv3_compatibility.py
