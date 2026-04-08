@@ -44,7 +44,33 @@ from klipper_macro_online_update import (
     check_online_macro_updates,
     import_online_macro_updates,
 )
-from klipper_macro_online_repo_export import export_online_update_repository_zip
+from klipper_macro_online_repo_export import (
+    build_online_update_repository_artifacts,
+    export_online_update_repository_zip,
+)
+from klipper_macro_github_api import (
+    commit_changed_text_files,
+    create_branch,
+    create_pull_request,
+    get_open_pull_request_for_head,
+    load_json_file_from_branch,
+)
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    """Convert dynamic values to int with a safe fallback."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
 
 
 class MacroGuiService:
@@ -472,3 +498,161 @@ class MacroGuiService:
             manifest_path=manifest_path,
             now_ts=int(time.time()),
         )
+
+    def create_online_update_pull_request(
+        self,
+        *,
+        source_vendor: str,
+        source_model: str,
+        repo_url: str,
+        base_branch: str,
+        head_branch: str,
+        manifest_path: str,
+        github_token: str,
+        pull_request_title: str,
+        pull_request_body: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> dict[str, object]:
+        """Create a GitHub pull request with exported active macro artifacts."""
+        clean_repo_url = str(repo_url or "").strip()
+        clean_base = str(base_branch or "").strip()
+        clean_head = str(head_branch or "").strip()
+        clean_manifest_path = str(manifest_path or "updates/manifest.json").strip() or "updates/manifest.json"
+        clean_token = str(github_token or "").strip()
+        clean_title = str(pull_request_title or "").strip()
+        clean_body = str(pull_request_body or "").strip()
+
+        if not clean_repo_url:
+            raise ValueError("online update repository URL is required")
+        if not clean_base:
+            raise ValueError("base branch is required")
+        if not clean_head:
+            raise ValueError("head branch is required")
+        if not clean_token:
+            raise ValueError("GitHub token is required")
+        if not clean_title:
+            raise ValueError("pull request title is required")
+
+        def _report(current: int, total: int) -> None:
+            if progress_callback is not None:
+                progress_callback(max(int(current), 0), max(int(total), 1))
+
+        _report(0, 6)
+
+        existing_pr = get_open_pull_request_for_head(clean_repo_url, clean_token, clean_head)
+        _report(1, 6)
+        if existing_pr is not None:
+            return {
+                "created": False,
+                "existing": True,
+                "pull_request_number": _as_int(existing_pr.get("number", 0)),
+                "pull_request_url": str(existing_pr.get("html_url", "")),
+                "head_branch": clean_head,
+                "updated_files": 0,
+                "macro_count": 0,
+                "no_changes": False,
+                "commit_count": 0,
+            }
+
+        remote_manifest = load_json_file_from_branch(
+            repo_url=clean_repo_url,
+            token=clean_token,
+            branch=clean_base,
+            file_path=clean_manifest_path,
+        )
+        _report(2, 6)
+
+        artifacts = build_online_update_repository_artifacts(
+            db_path=self._db_path,
+            source_vendor=source_vendor,
+            source_model=source_model,
+            manifest_path=clean_manifest_path,
+            now_ts=int(time.time()),
+            existing_manifest=remote_manifest,
+        )
+        _report(3, 6)
+        files_to_write_raw = artifacts.get("files_to_write", {})
+        if not isinstance(files_to_write_raw, dict):
+            raise RuntimeError("invalid export payload generated for pull request")
+        files_to_write: dict[str, str] = {
+            str(path): str(content)
+            for path, content in files_to_write_raw.items()
+        }
+        files_to_delete_raw = artifacts.get("files_to_delete", [])
+        if not isinstance(files_to_delete_raw, list):
+            raise RuntimeError("invalid delete payload generated for pull request")
+        files_to_delete = [
+            str(path).strip().lstrip("/")
+            for path in files_to_delete_raw
+            if str(path).strip()
+        ]
+
+        manifest_payload = artifacts.get("manifest", {})
+        if not isinstance(manifest_payload, dict):
+            raise RuntimeError("invalid manifest payload generated for pull request")
+        files_to_write[clean_manifest_path.lstrip("/")] = json.dumps(manifest_payload, indent=2, ensure_ascii=False)
+
+        branch_result = create_branch(
+            repo_url=clean_repo_url,
+            token=clean_token,
+            base_branch=clean_base,
+            head_branch=clean_head,
+        )
+        _report(4, 6)
+        if bool(branch_result.get("already_exists", False)):
+            raise RuntimeError(
+                "head branch already exists on remote repository; choose a different branch name"
+            )
+
+        def _map_commit_progress(current: int, total: int) -> None:
+            safe_total = max(int(total), 1)
+            safe_current = max(int(current), 0)
+            scaled_current = 4000 + int((safe_current / safe_total) * 1000)
+            _report(scaled_current, 6000)
+
+        commit_result = commit_changed_text_files(
+            repo_url=clean_repo_url,
+            token=clean_token,
+            branch=clean_head,
+            files=files_to_write,
+            deleted_files=files_to_delete,
+            commit_message=f"Update macros for {source_vendor} {source_model}",
+            progress_callback=_map_commit_progress,
+        )
+        updated_files = _as_int(commit_result.get("changed_files", 0))
+
+        if updated_files <= 0:
+            _report(6, 6)
+            return {
+                "created": False,
+                "existing": False,
+                "pull_request_number": 0,
+                "pull_request_url": "",
+                "head_branch": clean_head,
+                "updated_files": 0,
+                "macro_count": _as_int(artifacts.get("macro_count", 0)),
+                "no_changes": True,
+                "commit_count": 0,
+            }
+
+        pull_request_result = create_pull_request(
+            repo_url=clean_repo_url,
+            token=clean_token,
+            base_branch=clean_base,
+            head_branch=clean_head,
+            title=clean_title,
+            body=clean_body,
+        )
+        _report(6, 6)
+
+        return {
+            "created": True,
+            "existing": bool(pull_request_result.get("existing", False)),
+            "pull_request_number": _as_int(pull_request_result.get("number", 0)),
+            "pull_request_url": str(pull_request_result.get("url", "")),
+            "head_branch": clean_head,
+            "updated_files": updated_files,
+            "macro_count": _as_int(artifacts.get("macro_count", 0)),
+            "no_changes": False,
+            "commit_count": 1,
+        }

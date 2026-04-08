@@ -29,7 +29,8 @@ It is built for Klipper systems that keep configuration in `~/printer_data/confi
 - Online macro updates from GitHub repositories:
   - Check for updates from optional GitHub-hosted update repository.
   - Import updates as new inactive versions for selective activation.
-  - Export local macros as repository bundle (developer mode only).
+  - **Developer mode**: Create pull requests to publish macros to repositories, export local macros as repository bundles.
+    - See [**Macro Developer Guide**](Macro_Developer.md) for setup instructions.
 - Moonraker print-state safety gates for mutating actions.
 - Optional script explanation panel with macro-to-macro cross-links.
 
@@ -76,10 +77,10 @@ developer: false
 - `ui_language`: UI language (`en`, `de`)
 - `printer_vendor`: optional printer vendor shown in UI and exported share metadata
 - `printer_model`: optional printer model shown in UI and exported share metadata
-- `online_update_repo_url`: optional GitHub URL for macro update repository (e.g., `https://github.com/owner/macros`)
+- `online_update_repo_url`: optional GitHub URL for macro update repository
 - `online_update_manifest_path`: path to manifest file inside the update repository (default: `updates/manifest.json`)
 - `online_update_ref`: branch, tag, or commit SHA for update checks (default: `main`)
-- `developer`: enable developer features including export of local macros to ZIP bundles (default: `false`)
+- `developer`: enable developer features (default: `false`) — see [Macro Developer Guide](Macro_Developer.md)
 
 If vendor/model are missing, KlipperVault prompts for them and writes them back to config.
 
@@ -150,11 +151,13 @@ Online updates flow:
 4. Click `Import updates` to add new versions; activate selectively or defer.
 5. Updated macros appear as `NEW` inactive versions for review before enabling.
 
-Developer mode (export repository bundle):
+Developer mode (publish and export update artifacts):
 
 1. Set `developer: true` in `klippervault.cfg`.
-2. Click `Macro actions` → `Export Update Repo ZIP` to download an archive.
-3. The ZIP contains `updates/manifest.json` and `vendor/model/macro.json` structure ready for upload to your update repository.
+2. Use the top-level `Developer` toolbar menu.
+3. Click `Export Update Zip` to download an update ZIP for review or manual distribution.
+4. Click `Create Pull Request` to publish active macros directly to the configured GitHub repository.
+5. See [**Macro Developer Guide**](Macro_Developer.md) for repository setup, token creation, and publishing details.
 
 Compatibility behavior:
 
