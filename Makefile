@@ -1,5 +1,5 @@
 VENV ?= .venv
-PYBABEL := $(VENV)/bin/pybabel
+PYBABEL := $(shell test -x $(VENV)/bin/pybabel && echo $(VENV)/bin/pybabel || echo pybabel)
 I18N_DOMAIN := klippervault
 I18N_POT := src/locales/$(I18N_DOMAIN).pot
 
