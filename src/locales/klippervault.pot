@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-04-08 23:00+0200\n"
+"POT-Creation-Date: 2026-04-08 23:04+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1080,7 +1080,7 @@ msgstr ""
 msgid "Macro viewer"
 msgstr ""
 
-#: src/klipper_macro_viewer.py:39 src/klipper_macro_viewer.py:384
+#: src/klipper_macro_viewer.py:39 src/klipper_macro_viewer.py:394
 msgid "No macro selected"
 msgstr ""
 
@@ -1152,11 +1152,11 @@ msgid ""
 "definition."
 msgstr ""
 
-#: src/klipper_macro_viewer.py:337
+#: src/klipper_macro_viewer.py:334
 msgid "not_loaded"
 msgstr ""
 
-#: src/klipper_macro_viewer.py:350
+#: src/klipper_macro_viewer.py:360
 #, python-brace-format
 msgid "Description: {description}"
 msgstr ""

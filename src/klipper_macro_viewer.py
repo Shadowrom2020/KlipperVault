@@ -331,10 +331,20 @@ class MacroViewer:
         is_active = bool(macro.get("is_active", False))
         self._active_star_label.set_visibility(is_active)
 
+        not_loaded_label = t("not_loaded")
+        if bool(macro.get("is_deleted", False)):
+            status_text = "DELETED"
+        elif not bool(macro.get("is_loaded", True)):
+            status_text = not_loaded_label
+        elif is_active:
+            status_text = "★"
+        else:
+            status_text = "inactive"
+
         self._meta_label.set_text(
             f"{macro.get('file_path', '-')}, line {macro.get('line_number', '-')}, "
             f"indexed {format_ts(int(macro.get('indexed_at', 0)))}, "
-            f"{'DELETED' if bool(macro.get('is_deleted', False)) else (t('not_loaded') if not bool(macro.get('is_loaded', True)) else ('★' if is_active else 'inactive'))}"
+            f"{status_text}"
         )
         # Only allow purge when the macro identity is currently deleted (latest version is deleted).
         self._remove_deleted_button.set_visibility(self._is_macro_currently_deleted())
