@@ -45,7 +45,7 @@ jobs:
       - name: i18n artifact parity
         run: |
           make i18n
-          git diff --exit-code -- src/locales/klippervault.pot src/locales/*/LC_MESSAGES/klippervault.po src/locales/*/LC_MESSAGES/klippervault.mo || {
+          git diff --exit-code -- 'src/locales/*/LC_MESSAGES/klippervault.po' 'src/locales/*/LC_MESSAGES/klippervault.mo' || {
             echo "i18n catalogs are out of date. Run 'make i18n' and commit updated files.";
             exit 1;
           }
