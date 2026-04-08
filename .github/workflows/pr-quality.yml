@@ -45,8 +45,11 @@ jobs:
       - name: i18n artifact parity
         run: |
           make i18n
-          git diff --exit-code -- 'src/locales/*/LC_MESSAGES/klippervault.po' 'src/locales/*/LC_MESSAGES/klippervault.mo' || {
-            echo "i18n catalogs are out of date. Run 'make i18n' and commit updated files.";
+          # --ignore-matching-lines skips hunks where all changed lines match the
+          # pattern, which handles the volatile POT-Creation-Date timestamp header.
+          git diff --ignore-matching-lines='"POT-Creation-Date:' --exit-code \
+            -- 'src/locales/*/LC_MESSAGES/klippervault.po' || {
+            echo "Translation catalogs are out of date. Run 'make i18n' and commit updated files.";
             exit 1;
           }
 
