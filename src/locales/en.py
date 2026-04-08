@@ -11,4 +11,6 @@ TRANSLATIONS: dict[str, str] = {
 	"Reload Dynamic Macros": "Reload Dynamic Macros",
 	"dynamic": "dynamic",
 	"not_loaded": "not loaded",
+	"Developer": "Developer",
+	"Export Update Zip": "Export Update Zip",
 }

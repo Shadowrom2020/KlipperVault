@@ -103,6 +103,28 @@ Check for and import macro updates from GitHub-hosted repositories with selectiv
 - Support for printer-specific macro variants
 - Developer mode for exporting macro bundles
 
+## Publishing Macros via GitHub
+
+KlipperVault enables developers to maintain and distribute macro collections through GitHub repositories.
+
+![Pull Request Creation](assets/pull_request.png)
+
+**Publishing Features:**
+- **Create Pull Requests**: Publish local macros directly to GitHub repositories from the KlipperVault UI
+- **Secure Token Handling**: Use personal access tokens for authentication without storing credentials
+- **Version Tracking**: Automatic versioning and manifest updates for published macros
+- **Vendor/Model Organization**: Macros are organized by printer vendor and model for easy discovery
+- **Export Bundles**: Export local macros as ZIP files for distribution or testing
+
+**Key Capabilities:**
+- One-click publishing of active macros to remote repositories
+- Support for vendor and model-specific macro variants
+- Automatic conflict detection (prevents duplicate pull requests)
+- Secure token storage recommendations (KeePass, Bitwarden, 1Password, etc.)
+- Full documentation on repository setup and token management
+
+For detailed setup instructions including repository configuration, token generation, and secure storage best practices, see the [**Macro Developer Guide**](Macro_Developer.md).
+
 ### ⚡ Dynamic Macro Support
 - Full support for [DynamicMacros](https://github.com/3DCoded/DynamicMacros) plugin
 - Dedicated reload action for dynamically loaded macros

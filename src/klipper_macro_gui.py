@@ -97,6 +97,11 @@ def build_ui(app_version: str = "unknown") -> None:
         with ui.button(t("Macro actions"), icon="menu").props("flat color=white") as macro_actions_button:
             with ui.menu() as macro_actions_menu:
                 pass
+        developer_menu: ui.menu | None = None
+        if vault_cfg.developer:
+            with ui.button(t("Developer"), icon="developer_mode").props("flat color=white"):
+                with ui.menu() as developer_menu:
+                    pass
         reload_dynamic_macros_button = ui.button(t("Reload Dynamic Macros"), icon="autorenew").props("flat color=white")
         reload_dynamic_macros_button.classes("text-blue-4")
         reload_dynamic_macros_button.set_visibility(False)
@@ -143,6 +148,9 @@ def build_ui(app_version: str = "unknown") -> None:
     online_update_check_in_progress: bool = False
     online_update_progress_current: int = 0
     online_update_progress_total: int = 1
+    create_pr_in_progress: bool = False
+    create_pr_progress_current: int = 0
+    create_pr_progress_total: int = 1
 
     async def _on_import_upload(e) -> None:
         """Capture uploaded macro share file contents for import."""
@@ -389,12 +397,33 @@ def build_ui(app_version: str = "unknown") -> None:
             flat_dialog_button("Cancel", import_dialog.close)
             confirm_import_button = ui.button(t("Import")).props("color=primary no-caps")
 
+    with ui.dialog() as create_pr_dialog, ui.card().classes("w-[46rem] max-w-[98vw]"):
+        ui.label(t("Create Pull Request")).classes("text-lg font-semibold")
+        ui.label(t("Publish active macros directly to GitHub and open a pull request.")).classes("text-sm text-grey-5")
+        pr_repo_url_input = ui.input(label=t("Repository URL")).props("outlined").classes("w-full mt-2")
+        with ui.row().classes("w-full gap-2"):
+            pr_base_branch_input = ui.input(label=t("Base branch")).props("outlined").classes("w-full")
+            pr_head_branch_input = ui.input(label=t("Head branch")).props("outlined").classes("w-full")
+        pr_title_input = ui.input(label=t("Pull request title")).props("outlined").classes("w-full")
+        pr_body_input = ui.textarea(label=t("Pull request description")).props("outlined autogrow").classes("w-full")
+        pr_token_input = ui.input(label=t("GitHub API token")).props("outlined password password_toggle_button").classes("w-full")
+        ui.label(t("Token is used only for this request and is not stored.")).classes("text-xs text-grey-5")
+        ui.label(t("Required token permissions: Contents (write) and Pull requests (write)."))
+        create_pr_progress_label = ui.label("").classes("text-sm text-grey-5 mt-2")
+        create_pr_progress_bar = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
+        create_pr_progress_label.set_visibility(False)
+        create_pr_progress_bar.set_visibility(False)
+        create_pr_error_label = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            flat_dialog_button("Cancel", create_pr_dialog.close)
+            confirm_create_pr_button = ui.button(t("Create PR")).props("color=primary no-caps")
+
     online_update_activate_checkboxes: dict[str, object] = {}
     with ui.dialog() as online_update_dialog, ui.card().classes("w-[46rem] max-w-[98vw]"):
         ui.label(t("Online macro updates")).classes("text-lg font-semibold")
         ui.label(t("Changed macros are imported as new versions. Select which ones to activate now.")).classes("text-sm text-grey-5")
         online_update_progress_label = ui.label("").classes("text-sm text-grey-5 mt-2")
-        online_update_progress_bar = ui.linear_progress(value=0.0).classes("w-full mt-1")
+        online_update_progress_bar = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
         online_update_progress_label.set_visibility(False)
         online_update_progress_bar.set_visibility(False)
         online_update_summary_label = ui.label("").classes("text-sm text-grey-5 mt-1")
@@ -1451,6 +1480,161 @@ def build_ui(app_version: str = "unknown") -> None:
             )
         )
 
+    def _default_pr_head_branch() -> str:
+        """Build a unique default branch name for PR publishing."""
+        vendor = str(vault_cfg.printer_vendor or "").strip().lower().replace(" ", "-") or "printer"
+        model = str(vault_cfg.printer_model or "").strip().lower().replace(" ", "-") or "model"
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return f"klippervault/{vendor}-{model}/{stamp}"
+
+    def _refresh_create_pr_progress_ui() -> None:
+        """Sync pull-request progress widgets with current background state."""
+        if not create_pr_in_progress:
+            create_pr_progress_label.set_visibility(False)
+            create_pr_progress_bar.set_visibility(False)
+            return
+
+        display_total = max(create_pr_progress_total, 1)
+        progress_value = min(max(create_pr_progress_current / display_total, 0.0), 1.0)
+        percent = int(round(progress_value * 100.0))
+        create_pr_progress_label.set_text(
+            t(
+                "Creating pull request: {percent}%",
+                percent=percent,
+            )
+        )
+        create_pr_progress_bar.value = progress_value
+        create_pr_progress_bar.update()
+        create_pr_progress_label.set_visibility(True)
+        create_pr_progress_bar.set_visibility(True)
+
+    def open_create_pr_dialog() -> None:
+        """Open pull request creation dialog with convenience defaults."""
+        nonlocal create_pr_in_progress
+        nonlocal create_pr_progress_current
+        nonlocal create_pr_progress_total
+
+        pr_repo_url_input.set_value(str(vault_cfg.online_update_repo_url or "").strip())
+        pr_base_branch_input.set_value(str(vault_cfg.online_update_ref or "main").strip() or "main")
+        pr_head_branch_input.set_value(_default_pr_head_branch())
+        pr_title_input.set_value(
+            t(
+                "Update macros for {vendor} {model}",
+                vendor=str(vault_cfg.printer_vendor or "").strip() or "printer",
+                model=str(vault_cfg.printer_model or "").strip() or "model",
+            )
+        )
+        pr_body_input.set_value(
+            t(
+                "Automated KlipperVault update for {vendor} {model}.",
+                vendor=str(vault_cfg.printer_vendor or "").strip() or "printer",
+                model=str(vault_cfg.printer_model or "").strip() or "model",
+            )
+        )
+        pr_token_input.set_value("")
+        create_pr_error_label.set_text("")
+        create_pr_in_progress = False
+        create_pr_progress_current = 0
+        create_pr_progress_total = 1
+        _refresh_create_pr_progress_ui()
+        confirm_create_pr_button.set_enabled(True)
+        create_pr_dialog.open()
+
+    async def perform_create_pr() -> None:
+        """Create a pull request on GitHub for current active macro artifacts."""
+        nonlocal create_pr_in_progress
+        nonlocal create_pr_progress_current
+        nonlocal create_pr_progress_total
+
+        if _printer_profile_missing():
+            create_pr_error_label.set_text(t("Set printer vendor/model before creating a pull request."))
+            return
+
+        repo_url = str(pr_repo_url_input.value or "").strip()
+        base_branch = str(pr_base_branch_input.value or "").strip()
+        head_branch = str(pr_head_branch_input.value or "").strip()
+        title = str(pr_title_input.value or "").strip()
+        body = str(pr_body_input.value or "").strip()
+        token = str(pr_token_input.value or "").strip()
+
+        if not repo_url or not base_branch or not head_branch or not title or not token:
+            create_pr_error_label.set_text(t("Repository URL, branches, title, and token are required."))
+            return
+
+        create_pr_in_progress = True
+        create_pr_progress_current = 0
+        create_pr_progress_total = 1
+        confirm_create_pr_button.set_enabled(False)
+        create_pr_error_label.set_text("")
+        status_label.set_text(t("Creating GitHub pull request..."))
+        _refresh_create_pr_progress_ui()
+        await asyncio.sleep(0)
+
+        def report_progress(current: int, total: int) -> None:
+            nonlocal create_pr_progress_current
+            nonlocal create_pr_progress_total
+            create_pr_progress_current = max(int(current), 0)
+            create_pr_progress_total = max(int(total), 1)
+
+        try:
+            result = await asyncio.to_thread(
+                service.create_online_update_pull_request,
+                source_vendor=vault_cfg.printer_vendor,
+                source_model=vault_cfg.printer_model,
+                repo_url=repo_url,
+                base_branch=base_branch,
+                head_branch=head_branch,
+                manifest_path=vault_cfg.online_update_manifest_path,
+                github_token=token,
+                pull_request_title=title,
+                pull_request_body=body,
+                progress_callback=report_progress,
+            )
+        except Exception as exc:
+            create_pr_in_progress = False
+            _refresh_create_pr_progress_ui()
+            create_pr_error_label.set_text(t("Create PR failed: {error}", error=exc))
+            status_label.set_text(t("Create PR failed: {error}", error=exc))
+            confirm_create_pr_button.set_enabled(True)
+            return
+
+        create_pr_in_progress = False
+        _refresh_create_pr_progress_ui()
+        confirm_create_pr_button.set_enabled(True)
+        create_pr_dialog.close()
+        pr_number = _to_int(result.get("pull_request_number", 0))
+        pr_url = str(result.get("pull_request_url", "")).strip()
+        updated_files = _to_int(result.get("updated_files", 0))
+        macro_count = _to_int(result.get("macro_count", 0))
+        commit_count = _to_int(result.get("commit_count", 0))
+
+        if bool(result.get("no_changes", False)):
+            message = t("No macro changes detected for pull request. PR was not created.")
+            status_label.set_text(message)
+            ui.notify(message, type="warning")
+            return
+
+        if bool(result.get("existing", False)):
+            status_label.set_text(
+                t(
+                    "Open pull request already exists (#{number}): {url}",
+                    number=pr_number,
+                    url=pr_url or "-",
+                )
+            )
+            return
+
+        status_label.set_text(
+            t(
+                "Created pull request #{number} with {files} updated file(s), {commits} commit(s), for {count} macro(s): {url}",
+                number=pr_number,
+                files=updated_files,
+                commits=commit_count,
+                count=macro_count,
+                url=pr_url or "-",
+            )
+        )
+
     def _refresh_online_update_progress_ui() -> None:
         """Sync online update progress widgets with current background state."""
         if not online_update_check_in_progress:
@@ -1460,11 +1644,11 @@ def build_ui(app_version: str = "unknown") -> None:
 
         display_total = max(online_update_progress_total, 1)
         progress_value = min(max(online_update_progress_current / display_total, 0.0), 1.0)
+        percent = int(round(progress_value * 100.0))
         online_update_progress_label.set_text(
             t(
-                "Checking updates: {current}/{total}",
-                current=min(online_update_progress_current, display_total),
-                total=display_total,
+                "Checking updates: {percent}%",
+                percent=percent,
             )
         )
         online_update_progress_bar.value = progress_value
@@ -1696,6 +1880,7 @@ def build_ui(app_version: str = "unknown") -> None:
         create_backup_button.set_enabled(editing_enabled)
         confirm_export_button.set_enabled(editing_enabled)
         confirm_import_button.set_enabled(editing_enabled)
+        confirm_create_pr_button.set_enabled(editing_enabled)
         confirm_online_update_button.set_enabled(editing_enabled and bool(pending_online_updates))
         confirm_restore_button.set_enabled(editing_enabled)
         confirm_delete_button.set_enabled(editing_enabled)
@@ -1807,14 +1992,18 @@ def build_ui(app_version: str = "unknown") -> None:
     with macro_actions_menu:
         ui.menu_item(t("Export macros"), on_click=open_export_dialog)
         ui.menu_item(t("Import macros"), on_click=open_import_dialog)
-        if vault_cfg.developer:
-            ui.menu_item(t("Export Update Repo ZIP"), on_click=export_online_update_repo_zip)
         ui.menu_item(t("Check for updates"), on_click=open_online_update_dialog)
+
+    if developer_menu is not None:
+        with developer_menu:
+            ui.menu_item(t("Export Update Zip"), on_click=export_online_update_repo_zip)
+            ui.menu_item(t("Create Pull Request"), on_click=open_create_pr_dialog)
     reload_dynamic_macros_button.on_click(reload_dynamic_macros)
     restart_klipper_button.on_click(restart_klipper)
     create_backup_button.on_click(perform_backup)
     confirm_export_button.on_click(perform_export)
     confirm_import_button.on_click(perform_import)
+    confirm_create_pr_button.on_click(perform_create_pr)
     confirm_online_update_button.on_click(perform_online_update_import)
     purge_deleted_button.on_click(purge_deleted_macros)
     confirm_restore_button.on_click(perform_restore)
@@ -1834,6 +2023,7 @@ def build_ui(app_version: str = "unknown") -> None:
     else:
         refresh_data()
     watcher.reset()
+    ui.timer(0.1, _refresh_create_pr_progress_ui)
     ui.timer(0.1, _refresh_online_update_progress_ui)
     ui.timer(2.0, check_config_changes)
 

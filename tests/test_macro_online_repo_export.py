@@ -4,7 +4,11 @@ from unittest.mock import patch
 import zipfile
 
 from klipper_macro_indexer import run_indexing
-from klipper_macro_online_repo_export import export_online_update_repository_zip
+from klipper_macro_online_repo_export import (
+    build_online_update_repository_artifacts,
+    export_online_update_repository_zip,
+    _sha256,
+)
 
 
 class _FakeResponse:
@@ -163,3 +167,148 @@ gcode:
     )
     assert ratrig_entry["version"] == "keep"
     assert ratrig_entry["checksum_sha256"] == "keepsum"
+
+
+def test_build_artifacts_skips_unchanged_macros_in_files_to_write(tmp_path: Path) -> None:
+    """Macros whose section_text matches the existing manifest checksum must not appear
+    in files_to_write and must not advance generated_at."""
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+
+    section = "[gcode_macro PRINT_START]\ngcode:\n  G28\n"
+    _write(config_dir / "printer.cfg", section)
+    run_indexing(config_dir, db_path)
+
+    # Compute the same checksum the function would compute.
+    from klipper_macro_indexer import macro_row_to_section_text, load_macro_list
+    macros = load_macro_list(db_path, limit=1)
+    real_section_text = macro_row_to_section_text(macros[0])
+    real_checksum = _sha256(real_section_text)
+
+    existing_manifest: dict = {
+        "manifest_version": "1",
+        "generated_at": 999,
+        "macros": [
+            {
+                "vendor": "voron",
+                "model": "trident",
+                "macro_name": "PRINT_START",
+                "path": "voron/trident/PRINT_START.json",
+                "version": "2025-01-01",
+                "checksum_sha256": real_checksum,
+            }
+        ],
+    }
+
+    result = build_online_update_repository_artifacts(
+        db_path=db_path,
+        source_vendor="Voron",
+        source_model="Trident",
+        existing_manifest=existing_manifest,
+        now_ts=1_775_560_000,
+    )
+
+    # File must not be written because content is identical.
+    assert result["files_to_write"] == {}
+    # generated_at must not be advanced because nothing changed.
+    manifest = result["manifest"]
+    assert manifest.get("generated_at") == 999
+    # The manifest entry version should be preserved.
+    entries = manifest["macros"]
+    assert len(entries) == 1
+    assert entries[0]["version"] == "2025-01-01"
+
+
+def test_build_artifacts_includes_changed_macro_and_updates_generated_at(tmp_path: Path) -> None:
+    """A macro whose checksum differs from the manifest entry must appear in files_to_write
+    and generated_at must be updated to now_ts."""
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+
+    _write(config_dir / "printer.cfg", "[gcode_macro PRINT_START]\ngcode:\n  G28\n")
+    run_indexing(config_dir, db_path)
+
+    existing_manifest: dict = {
+        "manifest_version": "1",
+        "generated_at": 999,
+        "macros": [
+            {
+                "vendor": "voron",
+                "model": "trident",
+                "macro_name": "PRINT_START",
+                "path": "voron/trident/PRINT_START.json",
+                "version": "2025-01-01",
+                "checksum_sha256": "stale-checksum",  # intentionally wrong
+            }
+        ],
+    }
+
+    result = build_online_update_repository_artifacts(
+        db_path=db_path,
+        source_vendor="Voron",
+        source_model="Trident",
+        existing_manifest=existing_manifest,
+        now_ts=1_775_560_000,
+    )
+
+    # File must be included because content changed.
+    assert "voron/trident/PRINT_START.json" in result["files_to_write"]
+    # generated_at must be updated.
+    assert result["manifest"].get("generated_at") == 1_775_560_000
+    # Version must differ from the stale "old" value.
+    entries = result["manifest"]["macros"]
+    assert entries[0]["version"] != "2025-01-01"
+
+
+def test_build_artifacts_marks_deleted_macro_files_and_prunes_manifest(tmp_path: Path) -> None:
+    """When a macro is removed locally, artifacts must include a file deletion and
+    remove the entry from manifest for the selected vendor/model."""
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+
+    _write(
+        config_dir / "printer.cfg",
+        """
+[gcode_macro PRINT_END]
+gcode:
+  M84
+""".lstrip(),
+    )
+    run_indexing(config_dir, db_path)
+
+    existing_manifest: dict = {
+        "manifest_version": "1",
+        "generated_at": 111,
+        "macros": [
+            {
+                "vendor": "voron",
+                "model": "trident",
+                "macro_name": "PRINT_START",
+                "path": "voron/trident/PRINT_START.json",
+                "version": "2025-01-01",
+                "checksum_sha256": "old-start",
+            },
+            {
+                "vendor": "voron",
+                "model": "trident",
+                "macro_name": "PRINT_END",
+                "path": "voron/trident/PRINT_END.json",
+                "version": "2025-01-01",
+                "checksum_sha256": "old-end",
+            },
+        ],
+    }
+
+    result = build_online_update_repository_artifacts(
+        db_path=db_path,
+        source_vendor="Voron",
+        source_model="Trident",
+        existing_manifest=existing_manifest,
+        now_ts=1_775_560_000,
+    )
+
+    assert "voron/trident/PRINT_START.json" in result["files_to_delete"]
+    manifest_entries = result["manifest"]["macros"]
+    assert len(manifest_entries) == 1
+    assert manifest_entries[0]["macro_name"] == "PRINT_END"
+    assert result["manifest"].get("generated_at") == 1_775_560_000
