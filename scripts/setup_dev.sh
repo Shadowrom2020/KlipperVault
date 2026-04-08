@@ -139,16 +139,16 @@ JSON
 echo "==> KlipperVault dev environment setup"
 echo "    Repo root : $REPO_ROOT"
 echo "    Virtualenv: $VENV_DIR"
+if ! have_cmd "$PYTHON"; then
+    echo "Python executable not found: $PYTHON"
+    exit 1
+fi
+
 echo "    Python    : $($PYTHON --version)"
 echo ""
 
 if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
     echo "requirements.txt not found in $REPO_ROOT"
-    exit 1
-fi
-
-if ! have_cmd "$PYTHON"; then
-    echo "Python executable not found: $PYTHON"
     exit 1
 fi
 

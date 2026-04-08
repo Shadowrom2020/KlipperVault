@@ -25,7 +25,9 @@ The toolbar provides quick access to essential operations for managing your macr
   - **Export Macros**: Share macros with other users or import shared macros
   - **Import Macros**: Upload previously exported macro files
   - **Check for Updates**: Search for macro updates from configured GitHub repositories
-  - **Export Update Repo ZIP**: Export local macros as repository bundle (developer mode only)
+- **Developer Menu** (developer mode only):
+  - **Export Update Zip**: Export local macros as an update repository bundle
+  - **Create Pull Request**: Publish active macros directly to GitHub
 - **Scan Macros**: Re-index all macros from your config files
 - **Backup**: Create snapshots of your current macro state
 - **Reload Dynamic Macros**: Update macros loaded via DynamicMacros plugin
@@ -68,6 +70,8 @@ Check for and import macro updates from GitHub-hosted repositories with selectiv
 - Import updates as new inactive versions for review
 - Selectively activate imported updates
 - Support for printer vendor/model-specific macro updates
+- Automatic startup update check when a repository is configured
+- Mainsail notification when startup update checks detect updates
 - Export local macros as repository bundles (developer mode)
 
 ## Core Capabilities

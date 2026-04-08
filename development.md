@@ -2,6 +2,9 @@
 
 This guide collects developer-focused workflows so [README.md](README.md) stays user-oriented.
 
+Scope: this file covers extending and maintaining KlipperVault itself (code, architecture, tests, and tooling).
+For online update publishing workflows (Developer menu, Export Update Zip, Create Pull Request), use [Macro_Developer.md](Macro_Developer.md).
+
 ## Local Environment Setup
 
 Recommended setup from repository root:
@@ -84,6 +87,39 @@ Relevant backend APIs live in [src/klipper_macro_indexer.py](src/klipper_macro_i
 
 UI wiring for export/import dialogs and upload/download lives in [src/klipper_macro_gui.py](src/klipper_macro_gui.py).
 
+## UI Translation Workflow
+
+KlipperVault now uses a gettext-first translation workflow with Babel:
+
+- Catalog template: `src/locales/klippervault.pot`
+- Language catalogs: `src/locales/<lang>/LC_MESSAGES/klippervault.po`
+- Compiled runtime catalogs: `src/locales/<lang>/LC_MESSAGES/klippervault.mo`
+
+Refresh translation catalogs after adding or changing `t("...")` strings:
+
+```bash
+./.venv/bin/pybabel extract -F babel.ini -o src/locales/klippervault.pot src klipper_vault.py
+./.venv/bin/pybabel update -i src/locales/klippervault.pot -d src/locales -D klippervault
+./.venv/bin/pybabel compile -d src/locales -D klippervault
+```
+
+Convenience target:
+
+```bash
+make i18n
+```
+
+Additional targets in [Makefile](Makefile):
+
+- `make i18n-extract`
+- `make i18n-update`
+- `make i18n-compile`
+
+Migration status:
+
+- Runtime translations are now loaded from gettext catalogs (`.mo`) only.
+- Translation source of truth is now `src/locales/<lang>/LC_MESSAGES/klippervault.po`.
+
 ## Checks Before Commit
 
 Run syntax checks on changed Python files (minimum requirement):
@@ -106,6 +142,7 @@ Optional CI-like checks:
 ./.venv/bin/ruff check .
 PYTHONPATH=src ./.venv/bin/mypy src klipper_vault.py --ignore-missing-imports
 ./.venv/bin/python -m py_compile klipper_vault.py src/*.py
+make i18n && git diff --exit-code -- src/locales/klippervault.pot src/locales/*/LC_MESSAGES/klippervault.po src/locales/*/LC_MESSAGES/klippervault.mo
 PYTHONPATH=src ./.venv/bin/pytest -q
 ./.venv/bin/pip-audit
 ./.venv/bin/bandit -q -r src klipper_vault.py -s B608
@@ -126,6 +163,16 @@ PYTHONPATH=src ./.venv/bin/pytest -q
 3. Wire UI in [src/klipper_macro_gui.py](src/klipper_macro_gui.py).
 4. Guard mutating paths when printer is printing.
 5. Run compile checks and tests.
+
+## Docs Consistency Checklist
+
+When UI or behavior changes, update docs in the same PR and verify:
+
+- Menu/action names match current UI labels exactly.
+- Config keys and defaults match `klipper_vault_config.py` and `klippervault.cfg` examples.
+- Feature descriptions align across [README.md](README.md), [overview.md](overview.md), and [Macro_Developer.md](Macro_Developer.md).
+- Any startup/background behavior changes are described in user-facing docs.
+- Security/token handling text reflects implemented behavior only.
 
 ## Dev Troubleshooting
 

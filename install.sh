@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_NAME="klippervault.service"
+SERVICE_NAME="klipper-vault.service"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ -n "${SUDO_USER:-}" ]]; then

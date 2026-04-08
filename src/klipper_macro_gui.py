@@ -151,6 +151,7 @@ def build_ui(app_version: str = "unknown") -> None:
     create_pr_in_progress: bool = False
     create_pr_progress_current: int = 0
     create_pr_progress_total: int = 1
+    startup_online_update_check_in_progress: bool = False
 
     async def _on_import_upload(e) -> None:
         """Capture uploaded macro share file contents for import."""
@@ -1745,6 +1746,51 @@ def build_ui(app_version: str = "unknown") -> None:
             online_update_dialog.open()
         status_label.set_text(t("Online update check complete."))
 
+    async def _check_online_updates_on_startup() -> None:
+        """Run one background online update check on every app startup when repository is configured."""
+        nonlocal startup_online_update_check_in_progress
+
+        if startup_online_update_check_in_progress:
+            return
+
+        repo_url = str(vault_cfg.online_update_repo_url or "").strip()
+        if not repo_url:
+            return
+
+        startup_online_update_check_in_progress = True
+        try:
+            result = await asyncio.to_thread(
+                service.check_online_updates,
+                repo_url=repo_url,
+                manifest_path=vault_cfg.online_update_manifest_path,
+                repo_ref=vault_cfg.online_update_ref,
+                source_vendor=vault_cfg.printer_vendor,
+                source_model=vault_cfg.printer_model,
+            )
+        except Exception:
+            startup_online_update_check_in_progress = False
+            return
+
+        startup_online_update_check_in_progress = False
+
+        changed = _to_int(result.get("changed", 0))
+        if changed <= 0:
+            return
+
+        checked = _to_int(result.get("checked", 0))
+        message = t(
+            "Startup update check found {changed} update(s) out of {checked} macro(s).",
+            changed=changed,
+            checked=checked,
+        )
+        status_label.set_text(message)
+        ui.notify(message, type="info")
+        try:
+            await asyncio.to_thread(service.send_mainsail_notification, message=message)
+        except Exception as exc:
+            # Keep UI flow resilient if Moonraker notification delivery fails.
+            status_label.set_text(t("Mainsail notification failed: {error}", error=exc))
+
     def perform_online_update_import() -> None:
         """Import checked online updates and activate only selected macros."""
         if not pending_online_updates:
@@ -2022,6 +2068,7 @@ def build_ui(app_version: str = "unknown") -> None:
         perform_index("startup")
     else:
         refresh_data()
+    ui.timer(0.5, lambda: asyncio.create_task(_check_online_updates_on_startup()), once=True)
     watcher.reset()
     ui.timer(0.1, _refresh_create_pr_progress_ui)
     ui.timer(0.1, _refresh_online_update_progress_ui)

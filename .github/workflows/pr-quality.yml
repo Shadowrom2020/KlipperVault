@@ -29,7 +29,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff mypy pytest
+          pip install ruff mypy pytest packaging
 
       - name: Ruff lint
         run: ruff check .
@@ -41,6 +41,17 @@ jobs:
 
       - name: Python compile check
         run: python -m py_compile klipper_vault.py src/*.py
+
+      - name: i18n artifact parity
+        run: |
+          make i18n
+          git diff --exit-code -- src/locales/klippervault.pot src/locales/*/LC_MESSAGES/klippervault.po src/locales/*/LC_MESSAGES/klippervault.mo || {
+            echo "i18n catalogs are out of date. Run 'make i18n' and commit updated files.";
+            exit 1;
+          }
+
+      - name: GPLv3 license compatibility check
+        run: python scripts/check_gplv3_compatibility.py
 
       - name: Pytest
         env:

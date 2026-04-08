@@ -12,6 +12,14 @@ KlipperVault scans your Klipper config tree, indexes every `[gcode_macro ...]` s
 
 It is built for Klipper systems that keep configuration in `~/printer_data/config` and want safer macro maintenance than editing raw `.cfg` files alone.
 
+## What's New
+
+- Startup online update check now runs automatically when `online_update_repo_url` is configured.
+- When updates are found during startup checks, KlipperVault posts a Mainsail notification through Moonraker.
+- Developer publishing actions are available in a dedicated top-level `Developer` toolbar menu:
+  - `Export Update Zip`
+  - `Create Pull Request`
+
 ## Key Features
 
 - Automatic macro version history (changes are stored only when content differs).
@@ -28,6 +36,7 @@ It is built for Klipper systems that keep configuration in `~/printer_data/confi
   - Imported macros default to `macros.cfg`; include is ensured in `printer.cfg`.
 - Online macro updates from GitHub repositories:
   - Check for updates from optional GitHub-hosted update repository.
+  - Run an automatic startup update check when a repository is configured.
   - Import updates as new inactive versions for selective activation.
   - **Developer mode**: Create pull requests to publish macros to repositories, export local macros as repository bundles.
     - See [**Macro Developer Guide**](Macro_Developer.md) for setup instructions.

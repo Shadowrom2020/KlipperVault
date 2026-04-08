@@ -7,8 +7,6 @@ This guide is for developers who want to maintain and distribute macro collectio
 KlipperVault provides tools for:
 - **Exporting** local macros as update repository bundles (ZIP format)
 - **Publishing** macro updates to GitHub via pull requests
-- **Distributing** macros to other printers with version tracking
-- **Contributing** macros back to shared repositories
 
 ## Setting Up a Macro Repository
 
@@ -56,6 +54,14 @@ git push -u origin main
 ```
 
 ## Configuring KlipperVault
+
+### UI Menu Map
+
+Current toolbar/menu locations for developer workflows:
+
+- **Developer** menu (visible only when `developer: true`):
+   - `Export Update Zip`
+   - `Create Pull Request`
 
 ### 1. Enable Developer Mode
 
@@ -147,7 +153,7 @@ Once the PR is created:
 
 Your GitHub access token is sensitive — treat it like a password.
 
-### Option 1: Use a Password Manager (Recommended)
+### Option: Use a Password Manager (Recommended)
 
 #### KeePass (Windows/Linux)
 
@@ -196,9 +202,8 @@ The **Export Update Zip** feature packages your local macros for distribution.
 ### Use Cases
 
 1. **Test updates locally** before pushing to GitHub
-2. **Share macro bundles** with other printers via file download
-3. **Create backups** of macro repository state
-4. **Distribute** to team members without GitHub access
+2. **Create backups** of macro repository state
+3. **Review artifacts** before creating a pull request
 
 ### Steps
 
@@ -208,40 +213,7 @@ The **Export Update Zip** feature packages your local macros for distribution.
    - All active local macros
    - Manifest file with checksums and versions
    - Directory structure: `updates/[vendor]/[model]/`
-4. Share or test the ZIP on other printers
-
-## Importing Macro Updates on Other Printers
-
-To import macros from your repository on another printer:
-
-### 1. Configure Repository URL
-
-Edit **KlipperVault config** on the target printer:
-
-```ini
-[vault]
-printer_vendor: Artillery
-printer_model: X1
-online_update_repo_url: https://github.com/your-username/klipper-macros
-online_update_manifest_path: updates/manifest.json
-online_update_ref: main
-```
-
-### 2. Check for Updates
-
-1. Click **Macro actions** menu
-2. Select **Check for updates**
-3. KlipperVault compares local macros against remote versions
-4. Select macros to import
-5. Click **Import updates**
-
-### 3. Review & Activate
-
-Imported macros appear as **NEW** and are **inactive** by default:
-1. Review macro details in left panel
-2. Check for conflicts or unwanted changes
-3. Activate selected macros when ready
-4. Klipper restart or dynamic macro reload required
+4. Use the ZIP for manual review or repository-side validation
 
 ## Example: Setting Up a Community Macro Repository
 
@@ -290,8 +262,7 @@ online_update_ref: main
 
 1. Review PR on GitHub
 2. Merge to `main`
-3. Share repository URL with community
-4. Other printers configure with your repo URL and check for updates
+3. Confirm the repository now contains the updated manifest and macro files
 
 ## Troubleshooting
 
@@ -329,17 +300,6 @@ online_update_ref: main
 - Ensure macros are **active** in KlipperVault
 - Check `printer_vendor` and `printer_model` are set
 - Verify no duplicates are preventing activation
-
-## Contributing Guidelines
-
-When accepting community PRs:
-
-1. **Require vendor/model verification** in PR title or description
-2. **Run syntax checks** on macro content
-3. **Test on at least one printer** before merging
-4. **Update CHANGELOG** when merging
-5. **Tag releases** for stable macro versions
-6. **Communicate breaking changes** in release notes
 
 ## See Also
 
