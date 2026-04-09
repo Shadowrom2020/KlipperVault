@@ -1528,7 +1528,7 @@ def load_macro_list(
     if config_dir is not None:
         try:
             load_order_map = _build_macro_load_order_map(config_dir)
-        except Exception:
+        except (FileNotFoundError, OSError, ValueError):
             pass
 
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
