@@ -213,8 +213,8 @@ Editing is disabled:
 
 Developer setup, architecture, checks, and contribution guidance are in [development.md](development.md).
 
-## Honorable people that helped me building this;
-@triadterm - Thanks for beign an early adopter and testing this
+## Honorable people that helped me to build this:
+@[triadterm](https://github.com/triadterm) - Thanks for beign an early adopter and testing this
 
 ## License
 
