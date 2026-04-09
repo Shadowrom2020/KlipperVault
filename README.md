@@ -213,6 +213,9 @@ Editing is disabled:
 
 Developer setup, architecture, checks, and contribution guidance are in [development.md](development.md).
 
+## Honorable people that helped me building this;
+@triadterm - Thanks for beign an early adopter and testing this
+
 ## License
 
 KlipperVault is licensed under GPL-3.0-or-later. See [LICENSE](LICENSE).
