@@ -25,6 +25,7 @@ The toolbar provides quick access to essential operations for managing your macr
   - **Export Macros**: Share macros with other users or import shared macros
   - **Import Macros**: Upload previously exported macro files
   - **Check for Updates**: Search for macro updates from configured GitHub repositories
+  - **Loading order overview**: Inspect Klipper parse order for cfg files and macro sections
 - **Developer Menu** (developer mode only):
   - **Export Update Zip**: Export local macros as an update repository bundle
   - **Create Pull Request**: Publish active macros directly to GitHub
@@ -32,6 +33,17 @@ The toolbar provides quick access to essential operations for managing your macr
 - **Backup**: Create snapshots of your current macro state
 - **Reload Dynamic Macros**: Update macros loaded via DynamicMacros plugin
 - **Restart Klipper**: Update macros loaded by restarting Klipper
+
+## Loading Order Overview
+
+Visualize how Klipper processes your configuration and macro sections, including inline include behavior.
+
+![Loading Order Overview](assets/loading_order.png)
+
+**What it shows:**
+- File parse order from `printer.cfg` through `[include ...]` chains
+- Macro parse order at section level, including macros from included files spliced at include positions
+- Source file and line information for each macro entry to help debug override behavior
 
 ## In-Place Macro Editing
 
