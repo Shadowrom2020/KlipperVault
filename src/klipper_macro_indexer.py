@@ -11,6 +11,7 @@ Designed for constrained systems (e.g. SBCs running 3D printer stacks):
 from __future__ import annotations
 
 import argparse
+import configparser
 import glob
 import hashlib
 import json
@@ -167,6 +168,77 @@ def get_cfg_load_order(config_dir: Path) -> List[Path]:
     return ordered
 
 
+def _get_klipper_parse_order(config_dir: Path) -> List[Path]:
+    """Return cfg parse order using Klipper's include semantics from configfile.py."""
+    root_cfg = config_dir / "printer.cfg"
+    if not root_cfg.exists() or not root_cfg.is_file():
+        return []
+
+    order: List[Path] = []
+
+    def _parse_file(filename: str, visiting: set[str]) -> None:
+        path = os.path.abspath(filename)
+        if path in visiting:
+            raise ValueError(f"Recursive include of config file '{filename}'")
+        visiting.add(path)
+        order.append(Path(filename))
+
+        try:
+            data = Path(filename).read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            visiting.remove(path)
+            raise FileNotFoundError(f"Unable to open config file {filename}") from exc
+
+        for line in data.split("\n"):
+            # Klipper strips only trailing '#...' prior to header detection.
+            hash_pos = line.find("#")
+            if hash_pos >= 0:
+                line = line[:hash_pos]
+            section_match = configparser.RawConfigParser.SECTCRE.match(line)
+            header = section_match and section_match.group("header")
+            if header and header.startswith("include "):
+                include_spec = header[8:].strip()
+                for include_filename in _resolve_klipper_include(filename, include_spec):
+                    _parse_file(str(include_filename), visiting)
+
+        visiting.remove(path)
+
+    _parse_file(str(root_cfg), set())
+    return order
+
+
+def get_cfg_loading_overview(config_dir: Path) -> Dict[str, object]:
+    """Return a simple overview of cfg and macro parse order for Klipper."""
+    klipper_order = _get_klipper_parse_order(config_dir)
+    loaded_macro_records, _, _ = _collect_loaded_macro_records_in_order(config_dir)
+
+    rows: List[Dict[str, object]] = []
+    for idx, cfg_path in enumerate(klipper_order, start=1):
+        try:
+            display_path = str(cfg_path.relative_to(config_dir))
+        except ValueError:
+            display_path = str(cfg_path)
+        rows.append({"order": idx, "file_path": display_path})
+
+    macro_rows: List[Dict[str, object]] = []
+    for idx, record in enumerate(loaded_macro_records, start=1):
+        macro_rows.append(
+            {
+                "order": idx,
+                "macro_name": record.macro_name,
+                "file_path": record.file_path,
+                "line_number": record.line_number,
+            }
+        )
+
+    return {
+        "klipper_order": rows,
+        "klipper_count": len(rows),
+        "klipper_macro_order": macro_rows,
+        "klipper_macro_count": len(macro_rows),
+    }
+
+
 def _iter_cfg_files(config_dir: Path) -> Iterable[Path]:
     """Yield all cfg files under config_dir recursively."""
     visited_dirs: set[Path] = set()
@@ -277,6 +349,200 @@ def _is_trailing_gcode_comment_or_blank(line: str) -> bool:
     return not stripped or stripped.startswith("#") or stripped.startswith(";")
 
 
+def _relativize_cfg_path(file_path: Path, base_dir: Path) -> str:
+    """Return a stable stored path for one cfg file."""
+    rel_candidate = os.path.relpath(str(file_path), str(base_dir))
+    if rel_candidate == ".." or rel_candidate.startswith(f"..{os.sep}"):
+        return str(file_path.resolve())
+    return rel_candidate
+
+
+def _build_macro_record(
+    file_path: Path,
+    base_dir: Path,
+    section_name: str,
+    section_line: int,
+    body_lines: List[str],
+    *,
+    is_loaded: bool,
+    is_dynamic: bool,
+) -> Optional[MacroRecord]:
+    """Build one MacroRecord from a parsed cfg section body."""
+    section_type, section_arg = _section_parts(section_name)
+    if section_type != "gcode_macro" or not section_arg:
+        return None
+
+    description: Optional[str] = None
+    rename_existing: Optional[str] = None
+    variables: Dict[str, str] = {}
+    in_gcode_block = False
+    gcode_lines: List[str] = []
+
+    for line in body_lines[1:]:
+        if in_gcode_block:
+            gcode_lines.append(line.rstrip("\n"))
+            continue
+
+        pair = _parse_key_value(line)
+        if not pair:
+            continue
+
+        key, value = pair
+        if key == "gcode":
+            in_gcode_block = True
+            if value:
+                gcode_lines.append(value)
+        elif key == "description":
+            description = value or None
+        elif key == "rename_existing":
+            rename_existing = value or None
+        elif key.startswith("variable_"):
+            variables[key[len("variable_") :]] = value
+
+    while gcode_lines and _is_trailing_gcode_comment_or_blank(gcode_lines[-1]):
+        gcode_lines.pop()
+    gcode_text = "\n".join(gcode_lines).rstrip("\n") if gcode_lines else None
+
+    return MacroRecord(
+        file_path=_relativize_cfg_path(file_path, base_dir),
+        section_type=section_type,
+        macro_name=section_arg,
+        line_number=section_line,
+        description=description,
+        rename_existing=rename_existing,
+        gcode=gcode_text,
+        variables_json=json.dumps(variables, separators=(",", ":"), sort_keys=True),
+        body_checksum=_make_checksum("".join(body_lines)),
+        is_loaded=is_loaded,
+        is_dynamic=is_dynamic,
+    )
+
+
+def _iter_cfg_sections(file_path: Path) -> Iterable[tuple[str, int, List[str]]]:
+    """Yield cfg sections as ``(section_name, line_number, raw_lines)``."""
+    current_section: Optional[str] = None
+    current_section_line = 0
+    current_body: List[str] = []
+
+    with file_path.open("r", encoding="utf-8", errors="ignore") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if _is_section_header_line(line):
+                if current_section is not None:
+                    yield current_section, current_section_line, current_body
+
+                current_section = line.strip()[1:-1].strip()
+                current_section_line = line_number
+                current_body = [line]
+                continue
+
+            if current_section is not None:
+                current_body.append(line)
+
+    if current_section is not None:
+        yield current_section, current_section_line, current_body
+
+
+def _resolve_klipper_include(source_filename: str, include_spec: str) -> List[Path]:
+    """Resolve one Klipper include expression to sorted cfg paths."""
+    dirname = os.path.dirname(source_filename)
+    include_glob = os.path.join(dirname, include_spec.strip())
+    include_filenames = glob.glob(include_glob)
+    if not include_filenames and not glob.has_magic(include_glob):
+        raise FileNotFoundError(f"Include file '{include_glob}' does not exist")
+    return [Path(name) for name in sorted(include_filenames)]
+
+
+def _collect_loaded_macro_records_in_order(
+    config_dir: Path,
+) -> tuple[List[MacroRecord], set[Path], set[Path]]:
+    """Return loaded macro records in true Klipper parse order."""
+    root_cfg = config_dir / "printer.cfg"
+    if not root_cfg.exists() or not root_cfg.is_file():
+        return [], set(), set()
+
+    ordered_records: List[MacroRecord] = []
+    loaded_resolved: set[Path] = set()
+    dynamic_resolved: set[Path] = set()
+
+    def visit(file_path: Path, visiting: set[str], *, is_dynamic_source: bool = False) -> None:
+        absolute_path = os.path.abspath(str(file_path))
+        if absolute_path in visiting:
+            raise ValueError(f"Recursive include of config file '{file_path}'")
+
+        resolved_path = file_path.resolve()
+        loaded_resolved.add(resolved_path)
+        if is_dynamic_source:
+            dynamic_resolved.add(resolved_path)
+
+        visiting.add(absolute_path)
+        try:
+            for section_name, section_line, body_lines in _iter_cfg_sections(file_path):
+                section_type, section_arg = _section_parts(section_name)
+
+                if section_type == "include" and section_arg:
+                    for included_path in _resolve_klipper_include(str(file_path), section_arg):
+                        visit(included_path, visiting)
+                    continue
+
+                if section_type == "dynamicmacros":
+                    for raw_line in body_lines[1:]:
+                        pair = _parse_key_value(raw_line)
+                        if not pair:
+                            continue
+                        key, value = pair
+                        if key != "configs" or not value:
+                            continue
+                        for included_path in _iter_dynamicmacros_configs(value, file_path.parent):
+                            visit(included_path, visiting, is_dynamic_source=True)
+                    continue
+
+                record = _build_macro_record(
+                    file_path=file_path,
+                    base_dir=config_dir,
+                    section_name=section_name,
+                    section_line=section_line,
+                    body_lines=body_lines,
+                    is_loaded=True,
+                    is_dynamic=is_dynamic_source,
+                )
+                if record is not None:
+                    ordered_records.append(record)
+        finally:
+            visiting.remove(absolute_path)
+
+    visit(root_cfg, set())
+    return ordered_records, loaded_resolved, dynamic_resolved
+
+
+def _collect_macro_records_in_order(config_dir: Path) -> tuple[List[MacroRecord], set[Path], set[Path]]:
+    """Return all macro records with loaded macros in true parse order."""
+    loaded_records, loaded_resolved, dynamic_resolved = _collect_loaded_macro_records_in_order(config_dir)
+    ordered_records = list(loaded_records)
+
+    for cfg_path in sorted((p for p in _iter_cfg_files(config_dir)), key=lambda p: str(p)):
+        if cfg_path.resolve() in loaded_resolved:
+            continue
+        ordered_records.extend(
+            parse_macros_from_cfg(
+                cfg_path,
+                config_dir,
+                is_loaded=False,
+                is_dynamic=False,
+            )
+        )
+
+    return ordered_records, loaded_resolved, dynamic_resolved
+
+
+def _build_macro_load_order_map(config_dir: Path) -> Dict[tuple[str, str, int], int]:
+    """Return global macro parse-order indices keyed by latest macro identity."""
+    ordered_records, _, _ = _collect_macro_records_in_order(config_dir)
+    order_map: Dict[tuple[str, str, int], int] = {}
+    for idx, record in enumerate(ordered_records):
+        order_map[(os.path.normpath(record.file_path), record.macro_name, record.line_number)] = idx
+    return order_map
+
+
 def parse_macros_from_cfg(
     file_path: Path,
     base_dir: Path,
@@ -286,106 +552,18 @@ def parse_macros_from_cfg(
 ) -> List[MacroRecord]:
     """Parse all [gcode_macro ...] sections from one cfg file."""
     results: List[MacroRecord] = []
-    current_section: Optional[str] = None
-    current_section_line = 0
-    current_macro_name: Optional[str] = None
-    current_body: List[str] = []
-    current_description: Optional[str] = None
-    current_rename_existing: Optional[str] = None
-    current_variables: Dict[str, str] = {}
-    in_gcode_block = False
-    current_gcode_lines: List[str] = []
-
-    def finalize_section() -> None:
-        # Reads from enclosing-scope variables only; no assignment, so nonlocal is not needed.
-        if not current_section or not current_macro_name:
-            return
-
-        section_type, _ = _section_parts(current_section)
-        body_text = "".join(current_body)
-        gcode_lines = list(current_gcode_lines)
-        # Drop trailing comments/blank lines when there is no following gcode.
-        while gcode_lines and _is_trailing_gcode_comment_or_blank(gcode_lines[-1]):
-            gcode_lines.pop()
-        gcode_text = "\n".join(gcode_lines).rstrip("\n") if gcode_lines else None
-
-        # Use lexical relpath first (non-throwing) so symlinked cfg paths that
-        # are mounted under config_dir remain stable in the UI/database.
-        rel_candidate = os.path.relpath(str(file_path), str(base_dir))
-        if rel_candidate == ".." or rel_candidate.startswith(f"..{os.sep}"):
-            # Includes may point outside config_dir; keep indexing robust.
-            rel_path = str(file_path.resolve())
-        else:
-            rel_path = rel_candidate
-
-        results.append(
-            MacroRecord(
-                file_path=rel_path,
-                section_type=section_type,
-                macro_name=current_macro_name,
-                line_number=current_section_line,
-                description=current_description,
-                rename_existing=current_rename_existing,
-                gcode=gcode_text,
-                variables_json=json.dumps(current_variables, separators=(",", ":"), sort_keys=True),
-                body_checksum=_make_checksum(body_text),
-                is_loaded=is_loaded,
-                is_dynamic=is_dynamic,
-            )
+    for section_name, section_line, body_lines in _iter_cfg_sections(file_path):
+        record = _build_macro_record(
+            file_path=file_path,
+            base_dir=base_dir,
+            section_name=section_name,
+            section_line=section_line,
+            body_lines=body_lines,
+            is_loaded=is_loaded,
+            is_dynamic=is_dynamic,
         )
-
-    with file_path.open("r", encoding="utf-8", errors="ignore") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            stripped = line.strip()
-
-            if _is_section_header_line(line):
-                finalize_section()
-
-                current_section = stripped[1:-1].strip()
-                current_section_line = line_number
-                current_body = [line]
-                current_description = None
-                current_rename_existing = None
-                current_variables = {}
-                in_gcode_block = False
-                current_gcode_lines = []
-
-                section_type, section_arg = _section_parts(current_section)
-                if section_type == "gcode_macro" and section_arg:
-                    current_macro_name = section_arg
-                else:
-                    current_macro_name = None
-                continue
-
-            if current_section is None:
-                continue
-
-            current_body.append(line)
-
-            if in_gcode_block:
-                # In Klipper, gcode content runs until the next section header.
-                # Keep collecting raw lines to avoid truncating macros with
-                # blank/unindented template lines.
-                current_gcode_lines.append(line.rstrip("\n"))
-                continue
-
-            pair = _parse_key_value(line)
-            if not pair:
-                continue
-
-            key, value = pair
-            if key == "gcode":
-                in_gcode_block = True
-                if value:
-                    current_gcode_lines.append(value)
-            elif key == "description":
-                current_description = value or None
-            elif key == "rename_existing":
-                current_rename_existing = value or None
-            elif key.startswith("variable_"):
-                current_variables[key[len("variable_") :]] = value
-
-    finalize_section()
+        if record is not None:
+            results.append(record)
     return results
 
 
@@ -932,20 +1110,9 @@ def run_indexing(
     if not config_dir.exists() or not config_dir.is_dir():
         raise FileNotFoundError(f"config directory not found: {config_dir}")
 
-    all_records: List[MacroRecord] = []
-    cfg_count = 0
-    cfg_files, loaded_cfg_resolved, dynamic_cfg_resolved = _resolve_cfg_file_sets(config_dir)
-    for cfg_file in cfg_files:
-        cfg_count += 1
-        cfg_resolved = cfg_file.resolve()
-        all_records.extend(
-            parse_macros_from_cfg(
-                cfg_file,
-                config_dir,
-                is_loaded=cfg_resolved in loaded_cfg_resolved,
-                is_dynamic=cfg_resolved in dynamic_cfg_resolved,
-            )
-        )
+    cfg_files, _, _ = _resolve_cfg_file_sets(config_dir)
+    all_records, _, _ = _collect_macro_records_in_order(config_dir)
+    cfg_count = len(cfg_files)
 
     now_ts = int(time.time())
     with open_sqlite_connection(
@@ -1342,10 +1509,27 @@ def load_stats(db_path: Path) -> Dict[str, object]:
     }
 
 
-def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]:
-    """Return latest version row for each macro (list view payload)."""
+def load_macro_list(
+    db_path: Path,
+    limit: int = 1000,
+    config_dir: Path | None = None,
+) -> List[Dict[str, object]]:
+    """Return latest version row for each macro (list view payload).
+
+    When *config_dir* is given, each row is enriched with a
+    ``load_order_index`` reflecting the true macro-level parse order Klipper
+    would use, including nested includes spliced inline. Macros not present in
+    the current config traversal receive index 999999 and sort to the end.
+    """
     if not db_path.exists():
         return []
+
+    load_order_map: Dict[tuple[str, str, int], int] = {}
+    if config_dir is not None:
+        try:
+            load_order_map = _build_macro_load_order_map(config_dir)
+        except Exception:
+            pass
 
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         rows = conn.execute(
@@ -1407,6 +1591,10 @@ def load_macro_list(db_path: Path, limit: int = 1000) -> List[Dict[str, object]]
             "is_dynamic": bool(is_dynamic),
             "is_new": bool(has_new_version),
             "version_count": int(version_count),
+            "load_order_index": load_order_map.get(
+                (os.path.normpath(str(file_path)), str(macro_name), int(line_number)),
+                999999,
+            ),
         }
         for (
             macro_name,

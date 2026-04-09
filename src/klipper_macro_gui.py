@@ -361,6 +361,23 @@ def build_ui(app_version: str = "unknown") -> None:
         with ui.row().classes("w-full justify-end mt-3"):
             flat_dialog_button("Close", backup_view_dialog.close)
 
+    with ui.dialog() as load_order_dialog, ui.card().classes(
+        "w-[56rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col overflow-hidden"
+    ):
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.button(icon="close", on_click=load_order_dialog.close).props("flat dense round")
+            ui.label(t("Klipper loading order overview")).classes("text-lg font-semibold")
+            ui.space()
+        load_order_summary_label = ui.label("").classes("text-sm text-grey-5")
+        ui.label(t("Klipper parse order")).classes("text-sm font-semibold mt-2")
+        load_order_text = ui.label("").classes(
+            "w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words border border-grey-8 rounded p-3 font-mono text-sm mt-2"
+        )
+
+        with ui.row().classes("w-full items-center mt-3"):
+            ui.space()
+            flat_dialog_button("Close", load_order_dialog.close)
+
     restore_target_id: int | None = None
     restore_target_name = ""
     with ui.dialog() as restore_dialog, ui.card().classes("w-[30rem] max-w-[96vw]"):
@@ -1014,6 +1031,7 @@ def build_ui(app_version: str = "unknown") -> None:
             duplicate_names=duplicate_names,
             show_new_only=show_new_only,
         )
+        
         visible_macros = sort_macros(visible_macros, sort_order)
         query = search_query.strip().lower()
         filter_active = bool(query) or show_duplicates_only or show_new_only or active_filter != "all"
@@ -1301,10 +1319,45 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def open_backup_dialog() -> None:
         """Open backup creation dialog with generated default name."""
-        backup_error_label.set_text("")
         backup_name_input.value = datetime.now().strftime("backup-%Y%m%d-%H%M%S")
         backup_name_input.update()
         backup_dialog.open()
+
+    def open_load_order_overview_dialog() -> None:
+        """Open a simple overview of cfg and macro parsing order for Klipper."""
+        try:
+            overview = service.load_cfg_loading_overview()
+        except Exception as exc:
+            status_label.set_text(t("Failed to load cfg parsing overview: {error}", error=exc))
+            return
+
+        file_rows_raw = overview.get("klipper_order", [])
+        file_rows = [row for row in file_rows_raw if isinstance(row, dict)] if isinstance(file_rows_raw, list) else []
+        macro_rows_raw = overview.get("klipper_macro_order", [])
+        macro_rows = [row for row in macro_rows_raw if isinstance(row, dict)] if isinstance(macro_rows_raw, list) else []
+
+        load_order_summary_label.set_text(
+            t(
+                "Klipper parses {klipper_count} cfg file(s) and {klipper_macro_count} macro section(s).",
+                klipper_count=overview.get("klipper_count", len(file_rows)),
+                klipper_macro_count=overview.get("klipper_macro_count", len(macro_rows)),
+            )
+        )
+
+        lines = [t("Files"), "=" * 80]
+        for row in file_rows:
+            lines.append(f"{int(row.get('order', 0)):>4}  {str(row.get('file_path', ''))}")
+
+        lines.extend(["", t("Macros"), "=" * 80])
+        for row in macro_rows:
+            lines.append(
+                f"{int(row.get('order', 0)):>4}  "
+                f"{str(row.get('macro_name', ''))}  "
+                f"[{str(row.get('file_path', ''))}:{int(row.get('line_number', 0))}]"
+            )
+
+        load_order_text.set_text("\n".join(lines))
+        load_order_dialog.open()
 
     def perform_backup() -> None:
         """Create named backup snapshot and update status/list output."""
@@ -2051,6 +2104,7 @@ def build_ui(app_version: str = "unknown") -> None:
     with macro_actions_menu:
         ui.menu_item(t("Export macros"), on_click=open_export_dialog)
         ui.menu_item(t("Import macros"), on_click=open_import_dialog)
+        ui.menu_item(t("Loading order overview"), on_click=open_load_order_overview_dialog)
         ui.menu_item(t("Check for updates"), on_click=open_online_update_dialog)
 
     if developer_menu is not None:

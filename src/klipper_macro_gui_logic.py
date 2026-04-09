@@ -143,12 +143,12 @@ def sort_macros(macros: list[dict[str, object]], order: str) -> list[dict[str, o
 
     ``alpha_asc``  – A→Z by display name (case-insensitive).
     ``alpha_desc`` – Z→A by display name (case-insensitive).
-    ``load_order`` – file path then line number (Klipper's parse order).
+    ``load_order`` – Klipper's true macro parse order using ``load_order_index``.
     """
     if order == "alpha_asc":
         return sorted(macros, key=lambda m: _display_macro_name(m).lower())
     if order == "alpha_desc":
         return sorted(macros, key=lambda m: _display_macro_name(m).lower(), reverse=True)
     if order == "load_order":
-        return sorted(macros, key=lambda m: (str(m.get("file_path", "")), _to_int(m.get("line_number", 0))))
+        return sorted(macros, key=lambda m: _to_int(m.get("load_order_index", 999999), default=999999))
     return list(macros)
