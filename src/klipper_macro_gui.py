@@ -6,15 +6,19 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import ctypes
 from datetime import datetime
 import os
 from pathlib import Path
 import tempfile
+import time
 
-from nicegui import ui
+from nicegui import app, ui
 
 from klipper_macro_compare import MacroCompareView
 from klipper_macro_gui_logic import (
+    duplicate_count_from_stats,
     duplicate_names_for_macros,
     filter_macros,
     find_active_override,
@@ -74,6 +78,31 @@ def _to_optional_int(value: object) -> int | None:
     return _to_int(value)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Return bool environment toggle with common truthy/falsey strings."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _env_float(name: str, default: float, minimum: float) -> float:
+    """Return float environment value clamped to a minimum bound."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        parsed = float(raw.strip())
+    except ValueError:
+        return default
+    return max(minimum, parsed)
+
+
 def build_ui(app_version: str = "unknown") -> None:
     """Build the full NiceGUI interface and wire all callbacks."""
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
@@ -129,14 +158,112 @@ def build_ui(app_version: str = "unknown") -> None:
     sort_order: str = "load_order"
     is_indexing: bool = False
     deleted_macro_count: int = 0
+    list_page_size: int = max(50, _to_int(os.environ.get("KLIPPERVAULT_LIST_PAGE_SIZE", "200"), default=200))
+    list_page_index: int = 0
+    total_macro_rows: int = 0
     printer_is_printing: bool = False
     printer_is_busy: bool = True
     printer_state: str = "unknown"
     print_lock_popup_open: bool = False
     restart_required: bool = False
     dynamic_reload_required: bool = False
+    memory_trim_enabled: bool = _env_bool("KLIPPERVAULT_MEMORY_TRIM", True)
+    memory_trim_idle_seconds: float = _env_float("KLIPPERVAULT_MEMORY_TRIM_IDLE_SECONDS", 180.0, 15.0)
+    memory_trim_cooldown_seconds: float = _env_float("KLIPPERVAULT_MEMORY_TRIM_COOLDOWN_SECONDS", 60.0, 5.0)
+    memory_trim_no_clients_enabled: bool = _env_bool("KLIPPERVAULT_MEMORY_TRIM_NO_CLIENTS", True)
+    memory_trim_no_clients_grace_seconds: float = _env_float(
+        "KLIPPERVAULT_MEMORY_TRIM_NO_CLIENTS_GRACE_SECONDS", 120.0, 10.0
+    )
+    last_activity_monotonic: float = time.monotonic()
+    last_trim_monotonic: float = 0.0
+    connected_client_ids: set[str] = set()
+    no_clients_since: float | None = None
+    no_client_cache_released: bool = False
+    cached_duplicate_names: set[str] = set()
+    _cached_versions_key: str | None = None
+    _cached_versions: list[dict[str, object]] = []
+    _search_dirty: bool = False
     watcher = ConfigWatcher(config_dir)
     duplicate_compare_view = MacroCompareView()
+
+    def _note_activity() -> None:
+        """Record runtime activity to detect idle windows for memory trim."""
+        nonlocal last_activity_monotonic
+        last_activity_monotonic = time.monotonic()
+
+    def _trim_process_memory(reason: str, *, force: bool = False) -> None:
+        """Run conservative memory cleanup with cooldown safeguards."""
+        nonlocal last_trim_monotonic
+        if not memory_trim_enabled:
+            return
+
+        now = time.monotonic()
+        if (not force) and (now - last_trim_monotonic) < memory_trim_cooldown_seconds:
+            return
+
+        collected = gc.collect()
+        malloc_trim_result = "unavailable"
+        try:
+            libc = ctypes.CDLL("libc.so.6")
+            malloc_trim = getattr(libc, "malloc_trim", None)
+            if malloc_trim is not None:
+                malloc_trim.argtypes = [ctypes.c_size_t]
+                malloc_trim.restype = ctypes.c_int
+                malloc_trim_result = str(int(malloc_trim(0)))
+        except Exception:
+            malloc_trim_result = "error"
+
+        last_trim_monotonic = now
+        print(
+            f"[KlipperVault] memory-trim: reason={reason} gc_collected={collected} malloc_trim={malloc_trim_result}",
+            flush=True,
+        )
+
+    def _is_any_client_connected() -> bool:
+        """Return True when at least one browser client is currently connected."""
+        return bool(connected_client_ids)
+
+    def _release_ui_caches_for_no_clients() -> None:
+        """Drop large UI caches when no browser is connected."""
+        nonlocal cached_macros
+        nonlocal cached_duplicate_names
+        nonlocal _cached_versions
+        nonlocal _cached_versions_key
+        nonlocal selected_key
+
+        cached_macros = []
+        cached_duplicate_names = set()
+        _cached_versions = []
+        _cached_versions_key = None
+        selected_key = None
+        viewer.set_macro(None, [])
+
+    def _on_client_connect(client=None) -> None:
+        """Track connected clients and restore normal active behavior."""
+        nonlocal no_clients_since
+        nonlocal no_client_cache_released
+        client_id = getattr(client, "id", None)
+        if client_id is not None:
+            connected_client_ids.add(str(client_id))
+        no_clients_since = None
+        no_client_cache_released = False
+
+    def _on_client_disconnect(client=None) -> None:
+        """Track disconnected clients and start no-client idle window."""
+        nonlocal no_clients_since
+        nonlocal no_client_cache_released
+        client_id = getattr(client, "id", None)
+        if client_id is not None:
+            connected_client_ids.discard(str(client_id))
+        if not connected_client_ids and no_clients_since is None:
+            no_clients_since = time.monotonic()
+            if memory_trim_no_clients_enabled:
+                _release_ui_caches_for_no_clients()
+                no_client_cache_released = True
+                _trim_process_memory("disconnect", force=True)
+
+    app.on_connect(_on_client_connect)
+    app.on_disconnect(_on_client_disconnect)
 
     def flat_dialog_button(label_key: str, on_click) -> None:
         """Render a standard flat no-caps dialog action button."""
@@ -152,10 +279,6 @@ def build_ui(app_version: str = "unknown") -> None:
     create_pr_progress_current: int = 0
     create_pr_progress_total: int = 1
     startup_online_update_check_in_progress: bool = False
-    cached_duplicate_names: set[str] = set()
-    _cached_versions_key: str | None = None
-    _cached_versions: list[dict[str, object]] = []
-    _search_dirty: bool = False
 
     async def _on_import_upload(e) -> None:
         """Capture uploaded macro share file contents for import."""
@@ -309,6 +432,12 @@ def build_ui(app_version: str = "unknown") -> None:
                     .classes("text-xs")
                 )
             macro_count_label = ui.label(t("Items: {visible}", visible=0)).classes("text-sm text-grey-4 shrink-0")
+            with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
+                prev_page_button = ui.button(t("Prev"))
+                prev_page_button.props("flat dense no-caps")
+                next_page_button = ui.button(t("Next"))
+                next_page_button.props("flat dense no-caps")
+                page_label = ui.label(t("Page {current} / {total}", current=1, total=1)).classes("text-xs text-grey-5")
             macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
 
         viewer = MacroViewer()
@@ -1036,10 +1165,15 @@ def build_ui(app_version: str = "unknown") -> None:
         query = search_query.strip().lower()
         filter_active = bool(query) or show_duplicates_only or show_new_only or active_filter != "all"
         macro_count_label.set_text(
-            t("Items: {visible} / {total}", visible=len(visible_macros), total=len(cached_macros))
+            t("Items: {visible} / {total}", visible=len(visible_macros), total=total_macro_rows)
             if filter_active
             else t("Items: {visible}", visible=len(visible_macros))
         )
+
+        total_pages = max(1, (max(total_macro_rows, 1) + list_page_size - 1) // list_page_size)
+        page_label.set_text(t("Page {current} / {total}", current=list_page_index + 1, total=total_pages))
+        prev_page_button.set_enabled(list_page_index > 0)
+        next_page_button.set_enabled((list_page_index + 1) < total_pages)
 
         if not visible_macros:
             with macro_list:
@@ -1270,12 +1404,23 @@ def build_ui(app_version: str = "unknown") -> None:
         """Reload all list/stats data from SQLite and rerender UI sections."""
         nonlocal cached_macros
         nonlocal deleted_macro_count
+        nonlocal list_page_index
+        nonlocal total_macro_rows
         nonlocal cached_duplicate_names, _cached_versions_key, _cached_versions
-        stats, cached_macros = service.load_dashboard()
+        _note_activity()
+        stats, cached_macros = service.load_dashboard(limit=list_page_size, offset=list_page_index * list_page_size)
+        total_macro_rows = _to_int(stats.get("total_macros", len(cached_macros)), default=len(cached_macros))
+
+        total_pages = max(1, (max(total_macro_rows, 1) + list_page_size - 1) // list_page_size)
+        if list_page_index >= total_pages:
+            list_page_index = max(0, total_pages - 1)
+            stats, cached_macros = service.load_dashboard(limit=list_page_size, offset=list_page_index * list_page_size)
+            total_macro_rows = _to_int(stats.get("total_macros", len(cached_macros)), default=len(cached_macros))
+
         deleted_macros = _to_int(stats.get("deleted_macros", 0))
         deleted_macro_count = deleted_macros
         cached_duplicate_names = duplicate_names_for_macros(cached_macros)
-        duplicate_macros = len(cached_duplicate_names)
+        duplicate_macros = duplicate_count_from_stats(stats)
         _cached_versions_key = None
         _cached_versions = []
         duplicate_warning_button.set_visibility(duplicate_macros > 0)
@@ -1294,6 +1439,7 @@ def build_ui(app_version: str = "unknown") -> None:
         nonlocal is_indexing
         if is_indexing:
             return
+        _note_activity()
         is_indexing = True
         try:
             status_label.set_text(t("Scanning macros ({trigger})...", trigger=trigger))
@@ -2045,13 +2191,36 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def check_config_changes() -> None:
         """Timer callback: auto-rescan when cfg files change."""
+        nonlocal no_clients_since
+        nonlocal no_client_cache_released
+
+        if memory_trim_no_clients_enabled and not _is_any_client_connected():
+            if no_clients_since is None:
+                no_clients_since = time.monotonic()
+            if not no_client_cache_released:
+                _release_ui_caches_for_no_clients()
+                no_client_cache_released = True
+            if (time.monotonic() - no_clients_since) >= memory_trim_no_clients_grace_seconds:
+                _trim_process_memory("no-clients")
+            return
+
+        no_clients_since = None
+        no_client_cache_released = False
         refresh_print_state()
         if printer_is_printing:
+            _trim_process_memory("printing")
             return
         if is_indexing:
             return
-        if watcher.poll_changed():
+        changed = watcher.poll_changed()
+        if changed:
+            _note_activity()
             perform_index("watcher")
+            return
+
+        # Treat printer standby/ready/complete/cancelled as idle-capable state.
+        if (not printer_is_busy) and ((time.monotonic() - last_activity_monotonic) >= memory_trim_idle_seconds):
+            _trim_process_memory("idle")
 
     def toggle_duplicates_filter() -> None:
         """Toggle duplicate-only filter and rerender list."""
@@ -2059,6 +2228,23 @@ def build_ui(app_version: str = "unknown") -> None:
         show_duplicates_only = not show_duplicates_only
         update_duplicates_button_label()
         render_macro_list()
+
+    def _go_prev_page() -> None:
+        """Navigate one macro-list page backward and refresh data."""
+        nonlocal list_page_index
+        if list_page_index <= 0:
+            return
+        list_page_index -= 1
+        refresh_data()
+
+    def _go_next_page() -> None:
+        """Navigate one macro-list page forward and refresh data."""
+        nonlocal list_page_index
+        total_pages = max(1, (max(total_macro_rows, 1) + list_page_size - 1) // list_page_size)
+        if (list_page_index + 1) >= total_pages:
+            return
+        list_page_index += 1
+        refresh_data()
 
     def toggle_new_filter() -> None:
         """Toggle new-only filter and rerender list."""
@@ -2124,6 +2310,8 @@ def build_ui(app_version: str = "unknown") -> None:
     confirm_macro_delete_button.on_click(confirm_macro_delete)
 
     index_button.on_click(run_index)
+    prev_page_button.on_click(_go_prev_page)
+    next_page_button.on_click(_go_next_page)
 
     if _printer_profile_missing():
         printer_vendor_input.set_value(str(vault_cfg.printer_vendor or "").strip())

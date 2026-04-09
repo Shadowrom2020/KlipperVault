@@ -194,7 +194,7 @@ import sys
 conf_path = pathlib.Path(sys.argv[1])
 update_name = sys.argv[2]
 app_dir = sys.argv[3]
-service_name = pathlib.Path(sys.argv[4]).stem
+_ = sys.argv[4]
 repo_origin = sys.argv[5].strip()
 repo_branch = sys.argv[6].strip() or "main"
 
@@ -209,7 +209,7 @@ if repo_origin:
 
 section_lines.extend([
     f"primary_branch: {repo_branch}",
-    f"managed_services: {service_name}",
+    "managed_services: klippervault",
 ])
 
 section_text = "\n".join(section_lines) + "\n"
@@ -291,6 +291,7 @@ ExecStart=$VENV_DIR/bin/python $APP_DIR/klipper_vault.py
 Restart=on-failure
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
+Environment=KLIPPERVAULT_AUTO_UPDATE_VENV=1
 
 [Install]
 WantedBy=multi-user.target

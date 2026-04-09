@@ -4,9 +4,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="$REPO_ROOT/.venv"
-PYTHON="${PYTHON:-python3}"
+PYENV_ROOT="${PYENV_ROOT:-$HOME/.pyenv}"
+PYENV_PYTHON_MINOR="${PYENV_PYTHON_MINOR:-3.13}"
+PYENV_PYTHON_VERSION="${PYENV_PYTHON_VERSION:-}"
 INSTALL_SYSTEM_DEPS="${INSTALL_SYSTEM_DEPS:-1}"
 INSTALL_DEV_TOOLS="${INSTALL_DEV_TOOLS:-1}"
+INSTALL_PYENV="${INSTALL_PYENV:-1}"
+TARGET_PYTHON_VERSION=""
 
 have_cmd() {
     command -v "$1" >/dev/null 2>&1
@@ -28,31 +32,122 @@ install_system_dependencies() {
 
     if have_cmd apt-get; then
         as_root apt-get update
-        as_root apt-get install -y python3-venv python3-pip python3-dev build-essential git
+        as_root apt-get install -y \
+            build-essential curl git \
+            libbz2-dev libffi-dev liblzma-dev libncursesw5-dev libreadline-dev \
+            libsqlite3-dev libssl-dev tk-dev xz-utils zlib1g-dev
         return
     fi
 
     if have_cmd dnf; then
-        as_root dnf install -y python3-pip python3-devel gcc gcc-c++ make git
+        as_root dnf install -y \
+            gcc gcc-c++ make git curl patch \
+            bzip2-devel libffi-devel openssl-devel readline-devel sqlite-devel xz-devel zlib-devel
         return
     fi
 
     if have_cmd pacman; then
-        as_root pacman -Sy --noconfirm python python-pip base-devel git
+        as_root pacman -Sy --noconfirm \
+            base-devel git curl openssl zlib xz tk bzip2 libffi readline sqlite
         return
     fi
 
     if have_cmd zypper; then
-        as_root zypper --non-interactive install python3-pip python3-devel gcc gcc-c++ make git
+        as_root zypper --non-interactive install \
+            gcc gcc-c++ make git curl \
+            libopenssl-devel readline-devel sqlite3-devel xz-devel zlib-devel libffi-devel
         return
     fi
 
     if have_cmd apk; then
-        as_root apk add --no-cache python3 py3-pip python3-dev build-base git
+        as_root apk add --no-cache \
+            build-base bash curl git openssl-dev bzip2-dev zlib-dev xz-dev readline-dev sqlite-dev libffi-dev
         return
     fi
 
     echo "==> No supported package manager detected. Skipping system dependency installation."
+}
+
+ensure_pyenv_installed() {
+    if have_cmd pyenv; then
+        return
+    fi
+
+    if [[ "$INSTALL_PYENV" != "1" ]]; then
+        echo "==> pyenv is required but missing (INSTALL_PYENV=$INSTALL_PYENV)."
+        echo "    Install pyenv manually and re-run setup."
+        exit 1
+    fi
+
+    echo "==> Installing pyenv into $PYENV_ROOT..."
+    if [[ -d "$PYENV_ROOT/.git" ]]; then
+        git -C "$PYENV_ROOT" pull --ff-only
+    else
+        rm -rf "$PYENV_ROOT"
+        git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
+    fi
+
+    export PATH="$PYENV_ROOT/bin:$PATH"
+}
+
+activate_pyenv() {
+    export PYENV_ROOT
+    export PATH="$PYENV_ROOT/bin:$PATH"
+
+    if ! have_cmd pyenv; then
+        echo "==> pyenv command not found after installation attempt."
+        exit 1
+    fi
+
+    # shellcheck disable=SC1091
+    eval "$(pyenv init -)"
+}
+
+ensure_pyenv_python() {
+    echo "==> Resolving latest Python ${PYENV_PYTHON_MINOR}.x via pyenv..."
+
+    if [[ -n "$PYENV_PYTHON_VERSION" ]]; then
+        TARGET_PYTHON_VERSION="$PYENV_PYTHON_VERSION"
+    else
+        TARGET_PYTHON_VERSION="$(
+            pyenv install --list \
+                | sed 's/^[[:space:]]*//' \
+                | awk '/^3\.13\.[0-9]+$/ {print $0}' \
+                | sort -V \
+                | tail -n 1
+        )"
+    fi
+
+    if [[ -z "$TARGET_PYTHON_VERSION" ]]; then
+        echo "==> Could not resolve a Python ${PYENV_PYTHON_MINOR}.x version from pyenv."
+        exit 1
+    fi
+
+    echo "==> Ensuring pyenv Python $TARGET_PYTHON_VERSION is installed..."
+    pyenv install -s "$TARGET_PYTHON_VERSION"
+}
+
+venv_python_matches_target() {
+    if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+        return 1
+    fi
+
+    local venv_version
+    venv_version="$($VENV_DIR/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
+    [[ "$venv_version" == "$TARGET_PYTHON_VERSION" ]]
+}
+
+recreate_venv_if_needed() {
+    if [[ ! -d "$VENV_DIR" ]]; then
+        return
+    fi
+
+    if venv_python_matches_target; then
+        return
+    fi
+
+    echo "==> Existing .venv is not Python $TARGET_PYTHON_VERSION; recreating..."
+    rm -rf "$VENV_DIR"
 }
 
 setup_vscode_workspace_files() {
@@ -139,12 +234,12 @@ JSON
 echo "==> KlipperVault dev environment setup"
 echo "    Repo root : $REPO_ROOT"
 echo "    Virtualenv: $VENV_DIR"
-if ! have_cmd "$PYTHON"; then
-    echo "Python executable not found: $PYTHON"
-    exit 1
+echo "    pyenv root: $PYENV_ROOT"
+if [[ -n "$PYENV_PYTHON_VERSION" ]]; then
+    echo "    Python    : pyenv $PYENV_PYTHON_VERSION (manual override)"
+else
+    echo "    Python    : pyenv latest ${PYENV_PYTHON_MINOR}.x"
 fi
-
-echo "    Python    : $($PYTHON --version)"
 echo ""
 
 if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
@@ -158,15 +253,24 @@ else
     echo "==> Skipping system dependency installation (INSTALL_SYSTEM_DEPS=$INSTALL_SYSTEM_DEPS)."
 fi
 
-if ! "$PYTHON" -m venv --help >/dev/null 2>&1; then
-    echo "Python venv support is missing. Install your distro's python venv package and retry."
+ensure_pyenv_installed
+activate_pyenv
+ensure_pyenv_python
+
+TARGET_PYTHON="$PYENV_ROOT/versions/$TARGET_PYTHON_VERSION/bin/python"
+if [[ ! -x "$TARGET_PYTHON" ]]; then
+    echo "==> Expected pyenv Python not found: $TARGET_PYTHON"
     exit 1
 fi
+
+echo "    Using interpreter: $($TARGET_PYTHON --version)"
+
+recreate_venv_if_needed
 
 # --- Create virtualenv if missing ---
 if [[ ! -d "$VENV_DIR" ]]; then
     echo "==> Creating virtual environment..."
-    "$PYTHON" -m venv "$VENV_DIR"
+    "$TARGET_PYTHON" -m venv "$VENV_DIR"
 else
     echo "==> Virtual environment already exists, skipping creation."
 fi

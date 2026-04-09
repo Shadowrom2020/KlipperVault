@@ -1512,7 +1512,9 @@ def load_stats(db_path: Path) -> Dict[str, object]:
 def load_macro_list(
     db_path: Path,
     limit: int = 1000,
+    offset: int = 0,
     config_dir: Path | None = None,
+    include_macro_body: bool = True,
 ) -> List[Dict[str, object]]:
     """Return latest version row for each macro (list view payload).
 
@@ -1532,6 +1534,11 @@ def load_macro_list(
             pass
 
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
+        if include_macro_body:
+            body_columns = "m.gcode, m.variables_json"
+        else:
+            body_columns = "NULL AS gcode, '{}' AS variables_json"
+
         rows = conn.execute(
             f"""
             SELECT
@@ -1542,8 +1549,7 @@ def load_macro_list(
                 m.line_number,
                 m.description,
                 m.rename_existing,
-                m.gcode,
-                m.variables_json,
+                {body_columns},
                 m.is_active,
                 m.runtime_macro_name,
                 m.renamed_from,
@@ -1567,8 +1573,9 @@ def load_macro_list(
                AND m.version = cnt.max_version
             ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
             LIMIT ?
+            OFFSET ?
             """,
-            (limit,),
+            (limit, offset),
         ).fetchall()
 
     return [

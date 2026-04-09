@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PROJECT VERSION\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-04-09 13:15+0200\n"
+"POT-Creation-Date: 2026-04-09 22:34+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: en\n"
@@ -55,7 +55,7 @@ msgstr "Close"
 msgid "Choose two entries to compare."
 msgstr "Choose two entries to compare."
 
-#: src/klipper_macro_compare_core.py:182 src/klipper_macro_gui.py:744
+#: src/klipper_macro_compare_core.py:182 src/klipper_macro_gui.py:873
 msgid "Selected entry data is not available."
 msgstr "Selected entry data is not available."
 
@@ -81,7 +81,7 @@ msgstr "Explain this macro"
 msgid "Restore deleted macro"
 msgstr "Restore deleted macro"
 
-#: src/klipper_macro_editor.py:41 src/klipper_macro_gui.py:462
+#: src/klipper_macro_editor.py:41 src/klipper_macro_gui.py:591
 msgid "Delete macro from cfg file"
 msgstr "Delete macro from cfg file"
 
@@ -150,7 +150,7 @@ msgstr "Open macro"
 msgid "No elevated effects detected."
 msgstr "No elevated effects detected."
 
-#: src/klipper_macro_explainer_view.py:223 src/klipper_macro_gui.py:1802
+#: src/klipper_macro_explainer_view.py:223 src/klipper_macro_gui.py:1948
 msgid "Unnamed macro"
 msgstr "Unnamed macro"
 
@@ -186,47 +186,48 @@ msgstr ""
 msgid "Open macro jumps the main viewer to that macro."
 msgstr "Open macro jumps the main viewer to that macro."
 
-#: klipper_vault.py:44 src/klipper_macro_gui.py:85 src/klipper_macro_gui.py:95
+#: klipper_vault.py:113 src/klipper_macro_gui.py:114
+#: src/klipper_macro_gui.py:124
 msgid "Klipper Vault"
 msgstr "Klipper Vault"
 
-#: src/klipper_macro_gui.py:97
+#: src/klipper_macro_gui.py:126
 msgid "Macro actions"
 msgstr "Macro actions"
 
-#: src/klipper_macro_gui.py:102
+#: src/klipper_macro_gui.py:131
 msgid "Developer"
 msgstr "Developer"
 
-#: src/klipper_macro_gui.py:105
+#: src/klipper_macro_gui.py:134
 msgid "Reload Dynamic Macros"
 msgstr "Reload Dynamic Macros"
 
-#: src/klipper_macro_gui.py:108
+#: src/klipper_macro_gui.py:137
 msgid "Restart Klipper"
 msgstr "Restart Klipper"
 
-#: src/klipper_macro_gui.py:111
+#: src/klipper_macro_gui.py:140
 msgid "Duplicates found"
 msgstr "Duplicates found"
 
-#: src/klipper_macro_gui.py:114
+#: src/klipper_macro_gui.py:143
 msgid "Backup"
 msgstr "Backup"
 
-#: src/klipper_macro_gui.py:115
+#: src/klipper_macro_gui.py:144
 msgid "Scan macros"
 msgstr "Scan macros"
 
-#: src/klipper_macro_gui.py:168 src/klipper_macro_gui.py:1467
+#: src/klipper_macro_gui.py:291 src/klipper_macro_gui.py:1613
 msgid "Please upload a macro share file."
 msgstr "Please upload a macro share file."
 
-#: src/klipper_macro_gui.py:247
+#: src/klipper_macro_gui.py:370
 msgid "Printer is currently printing"
 msgstr "Printer is currently printing"
 
-#: src/klipper_macro_gui.py:249 src/klipper_macro_gui.py:2017
+#: src/klipper_macro_gui.py:372 src/klipper_macro_gui.py:2163
 msgid ""
 "Macro editing and auto file watching are disabled until the print job is "
 "finished."
@@ -234,255 +235,269 @@ msgstr ""
 "Macro editing and auto file watching are disabled until the print job is "
 "finished."
 
-#: src/klipper_macro_gui.py:252
+#: src/klipper_macro_gui.py:375
 msgid "OK"
 msgstr "OK"
 
-#: src/klipper_macro_gui.py:255
+#: src/klipper_macro_gui.py:378
 msgid "Printer profile setup"
 msgstr "Printer profile setup"
 
-#: src/klipper_macro_gui.py:256
+#: src/klipper_macro_gui.py:379
 msgid "Please provide your printer vendor and model for first-time setup."
 msgstr "Please provide your printer vendor and model for first-time setup."
 
-#: src/klipper_macro_gui.py:257
+#: src/klipper_macro_gui.py:380
 msgid "Printer vendor"
 msgstr "Printer vendor"
 
-#: src/klipper_macro_gui.py:258
+#: src/klipper_macro_gui.py:381
 msgid "Printer model"
 msgstr "Printer model"
 
-#: src/klipper_macro_gui.py:261
+#: src/klipper_macro_gui.py:384
 msgid "Save"
 msgstr "Save"
 
-#: src/klipper_macro_gui.py:272
+#: src/klipper_macro_gui.py:395
 #, python-brace-format
 msgid "Printer profile: {vendor} {model}"
 msgstr "Printer profile: {vendor} {model}"
 
-#: src/klipper_macro_gui.py:273
+#: src/klipper_macro_gui.py:396
 msgid "Printer profile: not set"
 msgstr "Printer profile: not set"
 
-#: src/klipper_macro_gui.py:280
+#: src/klipper_macro_gui.py:403
 msgid "Vendor and model are required."
 msgstr "Vendor and model are required."
 
-#: src/klipper_macro_gui.py:295
+#: src/klipper_macro_gui.py:418
 msgid "Indexed macros"
 msgstr "Indexed macros"
 
-#: src/klipper_macro_gui.py:296
+#: src/klipper_macro_gui.py:419
 msgid "Search macros…"
 msgstr "Search macros…"
 
-#: src/klipper_macro_gui.py:298 src/klipper_macro_gui.py:760
+#: src/klipper_macro_gui.py:421 src/klipper_macro_gui.py:889
 msgid "Show duplicates"
 msgstr "Show duplicates"
 
-#: src/klipper_macro_gui.py:299 src/klipper_macro_gui.py:764
+#: src/klipper_macro_gui.py:422 src/klipper_macro_gui.py:893
 msgid "Show new"
 msgstr "Show new"
 
-#: src/klipper_macro_gui.py:300 src/klipper_macro_gui.py:768
+#: src/klipper_macro_gui.py:423 src/klipper_macro_gui.py:897
 #, python-brace-format
 msgid "Filter: {state}"
 msgstr "Filter: {state}"
 
-#: src/klipper_macro_gui.py:302
+#: src/klipper_macro_gui.py:425
 msgid "Sort:"
 msgstr "Sort:"
 
-#: src/klipper_macro_gui.py:305
+#: src/klipper_macro_gui.py:428
 msgid "Load order"
 msgstr "Load order"
 
-#: src/klipper_macro_gui.py:311 src/klipper_macro_gui.py:1041
+#: src/klipper_macro_gui.py:434 src/klipper_macro_gui.py:1170
 #, python-brace-format
 msgid "Items: {visible}"
 msgstr "Items: {visible}"
 
-#: src/klipper_macro_gui.py:317
+#: src/klipper_macro_gui.py:436
+#, fuzzy
+msgid "Prev"
+msgstr "Previous"
+
+#: src/klipper_macro_gui.py:438 src/klipper_macro_gui.py:620
+msgid "Next"
+msgstr "Next"
+
+#: src/klipper_macro_gui.py:440 src/klipper_macro_gui.py:1174
+#, fuzzy, python-brace-format
+msgid "Page {current} / {total}"
+msgstr "Items: {visible} / {total}"
+
+#: src/klipper_macro_gui.py:446
 msgid "Stored macro statistics"
 msgstr "Stored macro statistics"
 
-#: src/klipper_macro_gui.py:319 src/klipper_macro_gui.py:1282
+#: src/klipper_macro_gui.py:448 src/klipper_macro_gui.py:1427
 #, python-brace-format
 msgid "Total macros: {count}"
 msgstr "Total macros: {count}"
 
-#: src/klipper_macro_gui.py:320 src/klipper_macro_gui.py:1283
+#: src/klipper_macro_gui.py:449 src/klipper_macro_gui.py:1428
 #, python-brace-format
 msgid "Duplicate macros: {count}"
 msgstr "Duplicate macros: {count}"
 
-#: src/klipper_macro_gui.py:321 src/klipper_macro_gui.py:1284
+#: src/klipper_macro_gui.py:450 src/klipper_macro_gui.py:1429
 #, python-brace-format
 msgid "Deleted macros: {count}"
 msgstr "Deleted macros: {count}"
 
-#: src/klipper_macro_gui.py:322 src/klipper_macro_gui.py:1286
+#: src/klipper_macro_gui.py:451 src/klipper_macro_gui.py:1431
 #, python-brace-format
 msgid "Config files: {count}"
 msgstr "Config files: {count}"
 
-#: src/klipper_macro_gui.py:323
+#: src/klipper_macro_gui.py:452
 msgid "Last update: never"
 msgstr "Last update: never"
 
-#: src/klipper_macro_gui.py:324
+#: src/klipper_macro_gui.py:453
 msgid "Remove all deleted macros"
 msgstr "Remove all deleted macros"
 
-#: src/klipper_macro_gui.py:330 src/klipper_macro_gui.py:355
+#: src/klipper_macro_gui.py:459 src/klipper_macro_gui.py:484
 msgid "Status"
 msgstr "Status"
 
-#: src/klipper_macro_gui.py:331
+#: src/klipper_macro_gui.py:460
 msgid "Ready"
 msgstr "Ready"
 
-#: src/klipper_macro_gui.py:335
+#: src/klipper_macro_gui.py:464
 msgid "Backups"
 msgstr "Backups"
 
-#: src/klipper_macro_gui.py:339
+#: src/klipper_macro_gui.py:468
 msgid "Create macro backup"
 msgstr "Create macro backup"
 
-#: src/klipper_macro_gui.py:340
+#: src/klipper_macro_gui.py:469
 msgid "Store a named snapshot of the latest state of all macros."
 msgstr "Store a named snapshot of the latest state of all macros."
 
-#: src/klipper_macro_gui.py:341
+#: src/klipper_macro_gui.py:470
 msgid "Backup name"
 msgstr "Backup name"
 
-#: src/klipper_macro_gui.py:345
+#: src/klipper_macro_gui.py:474
 msgid "Create backup"
 msgstr "Create backup"
 
-#: src/klipper_macro_gui.py:348
+#: src/klipper_macro_gui.py:477
 msgid "Backup contents"
 msgstr "Backup contents"
 
-#: src/klipper_macro_gui.py:352
+#: src/klipper_macro_gui.py:481
 msgid "Macro"
 msgstr "Macro"
 
-#: src/klipper_macro_gui.py:353
+#: src/klipper_macro_gui.py:482
 msgid "Config file"
 msgstr "Config file"
 
-#: src/klipper_macro_gui.py:354 src/klipper_macro_viewer.py:45
+#: src/klipper_macro_gui.py:483 src/klipper_macro_viewer.py:45
 msgid "Version"
 msgstr "Version"
 
-#: src/klipper_macro_gui.py:369
+#: src/klipper_macro_gui.py:498
 msgid "Klipper loading order overview"
 msgstr ""
 
-#: src/klipper_macro_gui.py:372
+#: src/klipper_macro_gui.py:501
 msgid "Klipper parse order"
 msgstr ""
 
-#: src/klipper_macro_gui.py:384
+#: src/klipper_macro_gui.py:513
 msgid "Restore backup"
 msgstr "Restore backup"
 
-#: src/klipper_macro_gui.py:389
+#: src/klipper_macro_gui.py:518
 msgid "Restore"
 msgstr "Restore"
 
-#: src/klipper_macro_gui.py:394
+#: src/klipper_macro_gui.py:523
 msgid "Delete backup"
 msgstr "Delete backup"
 
-#: src/klipper_macro_gui.py:399 src/klipper_macro_gui.py:467
+#: src/klipper_macro_gui.py:528 src/klipper_macro_gui.py:596
 msgid "Delete"
 msgstr "Delete"
 
-#: src/klipper_macro_gui.py:402 src/klipper_macro_gui.py:2105
+#: src/klipper_macro_gui.py:531 src/klipper_macro_gui.py:2291
 msgid "Export macros"
 msgstr "Export macros"
 
-#: src/klipper_macro_gui.py:403
+#: src/klipper_macro_gui.py:532
 msgid "Select one or more macros to export into a share file."
 msgstr "Select one or more macros to export into a share file."
 
-#: src/klipper_macro_gui.py:404 src/klipper_macro_gui.py:452
-#: src/klipper_macro_gui.py:1351
+#: src/klipper_macro_gui.py:533 src/klipper_macro_gui.py:581
+#: src/klipper_macro_gui.py:1497
 msgid "Macros"
 msgstr "Macros"
 
-#: src/klipper_macro_gui.py:409
+#: src/klipper_macro_gui.py:538
 msgid "Export"
 msgstr "Export"
 
-#: src/klipper_macro_gui.py:414 src/klipper_macro_gui.py:2106
+#: src/klipper_macro_gui.py:543 src/klipper_macro_gui.py:2292
 msgid "Import macros"
 msgstr "Import macros"
 
-#: src/klipper_macro_gui.py:415
+#: src/klipper_macro_gui.py:544
 msgid "Import a shared macro file into inactive new versions."
 msgstr "Import a shared macro file into inactive new versions."
 
-#: src/klipper_macro_gui.py:420
+#: src/klipper_macro_gui.py:549
 msgid "Import"
 msgstr "Import"
 
-#: src/klipper_macro_gui.py:423 src/klipper_macro_gui.py:2113
+#: src/klipper_macro_gui.py:552 src/klipper_macro_gui.py:2299
 msgid "Create Pull Request"
 msgstr "Create Pull Request"
 
-#: src/klipper_macro_gui.py:424
+#: src/klipper_macro_gui.py:553
 msgid "Publish active macros directly to GitHub and open a pull request."
 msgstr "Publish active macros directly to GitHub and open a pull request."
 
-#: src/klipper_macro_gui.py:425
+#: src/klipper_macro_gui.py:554
 msgid "Repository URL"
 msgstr "Repository URL"
 
-#: src/klipper_macro_gui.py:427
+#: src/klipper_macro_gui.py:556
 msgid "Base branch"
 msgstr "Base branch"
 
-#: src/klipper_macro_gui.py:428
+#: src/klipper_macro_gui.py:557
 msgid "Head branch"
 msgstr "Head branch"
 
-#: src/klipper_macro_gui.py:429
+#: src/klipper_macro_gui.py:558
 msgid "Pull request title"
 msgstr "Pull request title"
 
-#: src/klipper_macro_gui.py:430
+#: src/klipper_macro_gui.py:559
 msgid "Pull request description"
 msgstr "Pull request description"
 
-#: src/klipper_macro_gui.py:431
+#: src/klipper_macro_gui.py:560
 msgid "GitHub API token"
 msgstr "GitHub API token"
 
-#: src/klipper_macro_gui.py:432
+#: src/klipper_macro_gui.py:561
 msgid "Token is used only for this request and is not stored."
 msgstr "Token is used only for this request and is not stored."
 
-#: src/klipper_macro_gui.py:433
+#: src/klipper_macro_gui.py:562
 msgid "Required token permissions: Contents (write) and Pull requests (write)."
 msgstr "Required token permissions: Contents (write) and Pull requests (write)."
 
-#: src/klipper_macro_gui.py:441
+#: src/klipper_macro_gui.py:570
 msgid "Create PR"
 msgstr "Create PR"
 
-#: src/klipper_macro_gui.py:445
+#: src/klipper_macro_gui.py:574
 msgid "Online macro updates"
 msgstr "Online macro updates"
 
-#: src/klipper_macro_gui.py:446
+#: src/klipper_macro_gui.py:575
 msgid ""
 "Changed macros are imported as new versions. Select which ones to "
 "activate now."
@@ -490,79 +505,75 @@ msgstr ""
 "Changed macros are imported as new versions. Select which ones to "
 "activate now."
 
-#: src/klipper_macro_gui.py:457
+#: src/klipper_macro_gui.py:586
 msgid "Import updates"
 msgstr "Import updates"
 
-#: src/klipper_macro_gui.py:470
+#: src/klipper_macro_gui.py:599
 msgid "Resolve duplicate macros"
 msgstr "Resolve duplicate macros"
 
-#: src/klipper_macro_gui.py:475
+#: src/klipper_macro_gui.py:604
 msgid "Keep definition from"
 msgstr "Keep definition from"
 
-#: src/klipper_macro_gui.py:481
+#: src/klipper_macro_gui.py:610
 msgid "Compare keep with"
 msgstr "Compare keep with"
 
-#: src/klipper_macro_gui.py:485 src/klipper_macro_viewer.py:51
+#: src/klipper_macro_gui.py:614 src/klipper_macro_viewer.py:51
 msgid "Compare"
 msgstr "Compare"
 
-#: src/klipper_macro_gui.py:488
+#: src/klipper_macro_gui.py:617
 msgid "Previous"
 msgstr "Previous"
 
-#: src/klipper_macro_gui.py:491
-msgid "Next"
-msgstr "Next"
-
-#: src/klipper_macro_gui.py:492
+#: src/klipper_macro_gui.py:621
 msgid "Apply"
 msgstr "Apply"
 
-#: src/klipper_macro_gui.py:531 src/klipper_macro_gui.py:978
-#: src/klipper_macro_gui.py:1365
+#: src/klipper_macro_gui.py:660 src/klipper_macro_gui.py:1107
+#: src/klipper_macro_gui.py:1511
 msgid "Blocked while printer is printing."
 msgstr "Blocked while printer is printing."
 
-#: src/klipper_macro_gui.py:540
+#: src/klipper_macro_gui.py:669
 msgid "Cannot remove deleted macro: missing identity."
 msgstr "Cannot remove deleted macro: missing identity."
 
-#: src/klipper_macro_gui.py:546
+#: src/klipper_macro_gui.py:675
 #, python-brace-format
 msgid "Failed to remove deleted macro: {error}"
 msgstr "Failed to remove deleted macro: {error}"
 
-#: src/klipper_macro_gui.py:553
+#: src/klipper_macro_gui.py:682
 #, python-brace-format
 msgid "Removed deleted macro '{macro_name}' from {file_path} ({removed} row(s))."
 msgstr "Removed deleted macro '{macro_name}' from {file_path} ({removed} row(s))."
 
-#: src/klipper_macro_gui.py:559
+#: src/klipper_macro_gui.py:688
 msgid "Selected macro is not marked deleted; nothing removed."
 msgstr "Selected macro is not marked deleted; nothing removed."
 
-#: src/klipper_macro_gui.py:561 src/klipper_macro_gui.py:603
+#: src/klipper_macro_gui.py:690 src/klipper_macro_gui.py:732
 msgid "Macro not found in database."
 msgstr "Macro not found in database."
 
-#: src/klipper_macro_gui.py:563 src/klipper_macro_gui.py:605
+#: src/klipper_macro_gui.py:692 src/klipper_macro_gui.py:734
 msgid "No rows removed."
 msgstr "No rows removed."
 
-#: src/klipper_macro_gui.py:578
+#: src/klipper_macro_gui.py:707
 msgid "Cannot remove inactive macro version: missing identity."
 msgstr "Cannot remove inactive macro version: missing identity."
 
-#: src/klipper_macro_gui.py:584
+#: src/klipper_macro_gui.py:713
 #, python-brace-format
 msgid "Failed to remove inactive macro version: {error}"
 msgstr "Failed to remove inactive macro version: {error}"
 
-#: src/klipper_macro_gui.py:591
+#: src/klipper_macro_gui.py:720
 #, python-brace-format
 msgid ""
 "Removed inactive macro version v{version} of '{macro_name}' from "
@@ -571,11 +582,11 @@ msgstr ""
 "Removed inactive macro version v{version} of '{macro_name}' from "
 "{file_path} ({removed} row(s))."
 
-#: src/klipper_macro_gui.py:599
+#: src/klipper_macro_gui.py:728
 msgid "Selected macro version is not inactive; nothing removed."
 msgstr "Selected macro version is not inactive; nothing removed."
 
-#: src/klipper_macro_gui.py:601
+#: src/klipper_macro_gui.py:730
 msgid ""
 "Selected macro version is deleted; use the deleted-macro removal action "
 "instead."
@@ -583,63 +594,63 @@ msgstr ""
 "Selected macro version is deleted; use the deleted-macro removal action "
 "instead."
 
-#: src/klipper_macro_gui.py:615 src/klipper_macro_gui.py:686
+#: src/klipper_macro_gui.py:744 src/klipper_macro_gui.py:815
 msgid "Blocked: printer is currently printing. Editing is disabled."
 msgstr "Blocked: printer is currently printing. Editing is disabled."
 
-#: src/klipper_macro_gui.py:623
+#: src/klipper_macro_gui.py:752
 msgid "Cannot restore macro version: missing or invalid version data."
 msgstr "Cannot restore macro version: missing or invalid version data."
 
-#: src/klipper_macro_gui.py:629
+#: src/klipper_macro_gui.py:758
 #, python-brace-format
 msgid "Failed to restore macro version: {error}"
 msgstr "Failed to restore macro version: {error}"
 
-#: src/klipper_macro_gui.py:632
+#: src/klipper_macro_gui.py:761
 msgid "Restored deleted macro"
 msgstr "Restored deleted macro"
 
-#: src/klipper_macro_gui.py:632
+#: src/klipper_macro_gui.py:761
 msgid "Reverted macro"
 msgstr "Reverted macro"
 
-#: src/klipper_macro_gui.py:634
+#: src/klipper_macro_gui.py:763
 #, python-brace-format
 msgid "{action} '{macro_name}' from {file_path} to v{version}. Re-indexing..."
 msgstr "{action} '{macro_name}' from {file_path} to v{version}. Re-indexing..."
 
-#: src/klipper_macro_gui.py:670
+#: src/klipper_macro_gui.py:799
 #, python-brace-format
 msgid "Saved macro '{macro_name}' in {file_path} ({operation}). Re-indexing..."
 msgstr "Saved macro '{macro_name}' in {file_path} ({operation}). Re-indexing..."
 
-#: src/klipper_macro_gui.py:693
+#: src/klipper_macro_gui.py:822
 msgid "Cannot delete macro from cfg: missing identity."
 msgstr "Cannot delete macro from cfg: missing identity."
 
-#: src/klipper_macro_gui.py:695
+#: src/klipper_macro_gui.py:824
 msgid "Cannot delete a deleted macro version."
 msgstr "Cannot delete a deleted macro version."
 
-#: src/klipper_macro_gui.py:699
+#: src/klipper_macro_gui.py:828
 msgid "Cannot delete macro from cfg: latest version not found."
 msgstr "Cannot delete macro from cfg: latest version not found."
 
-#: src/klipper_macro_gui.py:703
+#: src/klipper_macro_gui.py:832
 msgid "Only the latest macro version can be deleted from cfg."
 msgstr "Only the latest macro version can be deleted from cfg."
 
-#: src/klipper_macro_gui.py:708
+#: src/klipper_macro_gui.py:837
 #, python-brace-format
 msgid "Failed to delete macro from cfg: {error}"
 msgstr "Failed to delete macro from cfg: {error}"
 
-#: src/klipper_macro_gui.py:712
+#: src/klipper_macro_gui.py:841
 msgid "Macro section not found in cfg file."
 msgstr "Macro section not found in cfg file."
 
-#: src/klipper_macro_gui.py:715
+#: src/klipper_macro_gui.py:844
 #, python-brace-format
 msgid ""
 "Deleted macro '{macro_name}' from {file_path} ({removed} section(s)). Re-"
@@ -648,7 +659,7 @@ msgstr ""
 "Deleted macro '{macro_name}' from {file_path} ({removed} section(s)). Re-"
 "indexing..."
 
-#: src/klipper_macro_gui.py:733
+#: src/klipper_macro_gui.py:862
 #, python-brace-format
 msgid ""
 "Delete macro '{macro_name}' from {file_path}? This removes it from the "
@@ -659,64 +670,64 @@ msgstr ""
 "cfg file. It can still be restored from the vault until it is permanently"
 " removed."
 
-#: src/klipper_macro_gui.py:760 src/klipper_macro_gui.py:764
+#: src/klipper_macro_gui.py:889 src/klipper_macro_gui.py:893
 msgid "Show all macros"
 msgstr "Show all macros"
 
-#: src/klipper_macro_gui.py:835
+#: src/klipper_macro_gui.py:964
 #, python-brace-format
 msgid "Resolve duplicates: {macro_name}"
 msgstr "Resolve duplicates: {macro_name}"
 
-#: src/klipper_macro_gui.py:837
+#: src/klipper_macro_gui.py:966
 #, python-brace-format
 msgid "Step {index} of {total}"
 msgstr "Step {index} of {total}"
 
-#: src/klipper_macro_gui.py:889 src/klipper_macro_gui.py:981
+#: src/klipper_macro_gui.py:1018 src/klipper_macro_gui.py:1110
 msgid "No duplicates loaded."
 msgstr "No duplicates loaded."
 
-#: src/klipper_macro_gui.py:897
+#: src/klipper_macro_gui.py:1026
 msgid "Select two definitions to compare."
 msgstr "Select two definitions to compare."
 
-#: src/klipper_macro_gui.py:900
+#: src/klipper_macro_gui.py:1029
 msgid "Choose a different definition for comparison."
 msgstr "Choose a different definition for comparison."
 
-#: src/klipper_macro_gui.py:906
+#: src/klipper_macro_gui.py:1035
 msgid "Could not load one or both macro definitions."
 msgstr "Could not load one or both macro definitions."
 
-#: src/klipper_macro_gui.py:932
+#: src/klipper_macro_gui.py:1061
 msgid "Blocked: printer is currently printing. Duplicate resolution is disabled."
 msgstr "Blocked: printer is currently printing. Duplicate resolution is disabled."
 
-#: src/klipper_macro_gui.py:937
+#: src/klipper_macro_gui.py:1066
 msgid "No duplicates found."
 msgstr "No duplicates found."
 
-#: src/klipper_macro_gui.py:944
+#: src/klipper_macro_gui.py:1073
 #, python-brace-format
 msgid "Failed to create pre-resolve backup: {error}"
 msgstr "Failed to create pre-resolve backup: {error}"
 
-#: src/klipper_macro_gui.py:953
+#: src/klipper_macro_gui.py:1082
 #, python-brace-format
 msgid "Created pre-resolve backup '{backup_name}' with {macro_count} macro(s)."
 msgstr "Created pre-resolve backup '{backup_name}' with {macro_count} macro(s)."
 
-#: src/klipper_macro_gui.py:990
+#: src/klipper_macro_gui.py:1119
 msgid "Select a keep target for every macro before applying."
 msgstr "Select a keep target for every macro before applying."
 
-#: src/klipper_macro_gui.py:1001
+#: src/klipper_macro_gui.py:1130
 #, python-brace-format
 msgid "Failed to resolve duplicates: {error}"
 msgstr "Failed to resolve duplicates: {error}"
 
-#: src/klipper_macro_gui.py:1008
+#: src/klipper_macro_gui.py:1137
 #, python-brace-format
 msgid ""
 "Removed {removed_sections} duplicate section(s) in {file_count} file(s). "
@@ -725,42 +736,42 @@ msgstr ""
 "Removed {removed_sections} duplicate section(s) in {file_count} file(s). "
 "Re-indexing..."
 
-#: src/klipper_macro_gui.py:1039
+#: src/klipper_macro_gui.py:1168
 #, python-brace-format
 msgid "Items: {visible} / {total}"
 msgstr "Items: {visible} / {total}"
 
-#: src/klipper_macro_gui.py:1046
+#: src/klipper_macro_gui.py:1180
 msgid "No macros indexed yet."
 msgstr "No macros indexed yet."
 
-#: src/klipper_macro_gui.py:1046
+#: src/klipper_macro_gui.py:1180
 msgid "No matches."
 msgstr "No matches."
 
-#: src/klipper_macro_gui.py:1128
+#: src/klipper_macro_gui.py:1262
 msgid "No backups created yet."
 msgstr "No backups created yet."
 
-#: src/klipper_macro_gui.py:1135
+#: src/klipper_macro_gui.py:1269
 #, python-brace-format
 msgid "Backup: {backup_name}"
 msgstr "Backup: {backup_name}"
 
-#: src/klipper_macro_gui.py:1138
+#: src/klipper_macro_gui.py:1272
 #, python-brace-format
 msgid "Created {created_at} - {macro_count} macro(s)"
 msgstr "Created {created_at} - {macro_count} macro(s)"
 
-#: src/klipper_macro_gui.py:1150
+#: src/klipper_macro_gui.py:1284
 msgid "active"
 msgstr "active"
 
-#: src/klipper_macro_gui.py:1150 src/klipper_macro_viewer.py:243
+#: src/klipper_macro_gui.py:1284 src/klipper_macro_viewer.py:243
 msgid "inactive"
 msgstr "inactive"
 
-#: src/klipper_macro_gui.py:1166
+#: src/klipper_macro_gui.py:1300
 #, python-brace-format
 msgid ""
 "Restore backup '{backup_name}'? This replaces the current indexed macro "
@@ -769,21 +780,21 @@ msgstr ""
 "Restore backup '{backup_name}'? This replaces the current indexed macro "
 "state."
 
-#: src/klipper_macro_gui.py:1180
+#: src/klipper_macro_gui.py:1314
 #, python-brace-format
 msgid "Delete backup '{backup_name}'? This cannot be undone."
 msgstr "Delete backup '{backup_name}'? This cannot be undone."
 
-#: src/klipper_macro_gui.py:1211 src/klipper_macro_gui.py:1255
+#: src/klipper_macro_gui.py:1345 src/klipper_macro_gui.py:1389
 msgid "No backup selected."
 msgstr "No backup selected."
 
-#: src/klipper_macro_gui.py:1217 src/klipper_macro_gui.py:1218
+#: src/klipper_macro_gui.py:1351 src/klipper_macro_gui.py:1352
 #, python-brace-format
 msgid "Restore failed: {error}"
 msgstr "Restore failed: {error}"
 
-#: src/klipper_macro_gui.py:1227
+#: src/klipper_macro_gui.py:1361
 #, python-brace-format
 msgid ""
 "Restored backup '{backup_name}' at {restored_at} with {macro_count} "
@@ -792,7 +803,7 @@ msgstr ""
 "Restored backup '{backup_name}' at {restored_at} with {macro_count} "
 "macro(s); rewrote {cfg_file_count} cfg file(s). Re-indexing..."
 
-#: src/klipper_macro_gui.py:1237
+#: src/klipper_macro_gui.py:1371
 #, python-brace-format
 msgid ""
 "Restored backup '{backup_name}' at {restored_at} with {macro_count} "
@@ -803,27 +814,27 @@ msgstr ""
 "macro(s). No cfg snapshot was stored in this backup; only DB state was "
 "restored. Re-indexing..."
 
-#: src/klipper_macro_gui.py:1261 src/klipper_macro_gui.py:1262
+#: src/klipper_macro_gui.py:1395 src/klipper_macro_gui.py:1396
 #, python-brace-format
 msgid "Delete failed: {error}"
 msgstr "Delete failed: {error}"
 
-#: src/klipper_macro_gui.py:1266
+#: src/klipper_macro_gui.py:1400
 #, python-brace-format
 msgid "Deleted backup '{backup_name}'."
 msgstr "Deleted backup '{backup_name}'."
 
-#: src/klipper_macro_gui.py:1287
+#: src/klipper_macro_gui.py:1432
 #, python-brace-format
 msgid "Last update: {value}"
 msgstr "Last update: {value}"
 
-#: src/klipper_macro_gui.py:1299
+#: src/klipper_macro_gui.py:1445
 #, python-brace-format
 msgid "Scanning macros ({trigger})..."
 msgstr "Scanning macros ({trigger})..."
 
-#: src/klipper_macro_gui.py:1303
+#: src/klipper_macro_gui.py:1449
 #, python-brace-format
 msgid ""
 "Stored {inserted} new version(s), {unchanged} unchanged - {scanned} .cfg "
@@ -832,41 +843,41 @@ msgstr ""
 "Stored {inserted} new version(s), {unchanged} unchanged - {scanned} .cfg "
 "files scanned"
 
-#: src/klipper_macro_gui.py:1316
+#: src/klipper_macro_gui.py:1462
 #, python-brace-format
 msgid "Error: {error}"
 msgstr "Error: {error}"
 
-#: src/klipper_macro_gui.py:1331
+#: src/klipper_macro_gui.py:1477
 #, fuzzy, python-brace-format
 msgid "Failed to load cfg parsing overview: {error}"
 msgstr "Failed to resolve duplicates: {error}"
 
-#: src/klipper_macro_gui.py:1341
+#: src/klipper_macro_gui.py:1487
 #, python-brace-format
 msgid ""
 "Klipper parses {klipper_count} cfg file(s) and {klipper_macro_count} "
 "macro section(s)."
 msgstr ""
 
-#: src/klipper_macro_gui.py:1347
+#: src/klipper_macro_gui.py:1493
 msgid "Files"
 msgstr ""
 
-#: src/klipper_macro_gui.py:1366
+#: src/klipper_macro_gui.py:1512
 msgid "Blocked: printer is currently printing. Backup is disabled."
 msgstr "Blocked: printer is currently printing. Backup is disabled."
 
-#: src/klipper_macro_gui.py:1370
+#: src/klipper_macro_gui.py:1516
 msgid "Please enter a backup name."
 msgstr "Please enter a backup name."
 
-#: src/klipper_macro_gui.py:1376 src/klipper_macro_gui.py:1377
+#: src/klipper_macro_gui.py:1522 src/klipper_macro_gui.py:1523
 #, python-brace-format
 msgid "Backup failed: {error}"
 msgstr "Backup failed: {error}"
 
-#: src/klipper_macro_gui.py:1384
+#: src/klipper_macro_gui.py:1530
 #, python-brace-format
 msgid ""
 "Backup '{backup_name}' created at {created_at} with {macro_count} "
@@ -875,35 +886,35 @@ msgstr ""
 "Backup '{backup_name}' created at {created_at} with {macro_count} "
 "macro(s) from {cfg_file_count} cfg file(s)."
 
-#: src/klipper_macro_gui.py:1414 src/klipper_macro_gui.py:1425
+#: src/klipper_macro_gui.py:1560 src/klipper_macro_gui.py:1571
 msgid "Select at least one macro to export."
 msgstr "Select at least one macro to export."
 
-#: src/klipper_macro_gui.py:1439 src/klipper_macro_gui.py:1440
+#: src/klipper_macro_gui.py:1585 src/klipper_macro_gui.py:1586
 #, python-brace-format
 msgid "Export failed: {error}"
 msgstr "Export failed: {error}"
 
-#: src/klipper_macro_gui.py:1448
+#: src/klipper_macro_gui.py:1594
 #, python-brace-format
 msgid "Exported {count} macro(s) to {path}."
 msgstr "Exported {count} macro(s) to {path}."
 
-#: src/klipper_macro_gui.py:1483 src/klipper_macro_gui.py:1484
+#: src/klipper_macro_gui.py:1629 src/klipper_macro_gui.py:1630
 #, python-brace-format
 msgid "Import failed: {error}"
 msgstr "Import failed: {error}"
 
-#: src/klipper_macro_gui.py:1494
+#: src/klipper_macro_gui.py:1640
 msgid "No macros were imported."
 msgstr "No macros were imported."
 
-#: src/klipper_macro_gui.py:1498
+#: src/klipper_macro_gui.py:1644
 #, python-brace-format
 msgid "Imported {count} macro(s) as new inactive entries."
 msgstr "Imported {count} macro(s) as new inactive entries."
 
-#: src/klipper_macro_gui.py:1502
+#: src/klipper_macro_gui.py:1648
 #, python-brace-format
 msgid ""
 "Imported {count} macro(s) for printer {vendor} {model}. Review before "
@@ -912,7 +923,7 @@ msgstr ""
 "Imported {count} macro(s) for printer {vendor} {model}. Review before "
 "enabling."
 
-#: src/klipper_macro_gui.py:1511
+#: src/klipper_macro_gui.py:1657
 #, python-brace-format
 msgid ""
 "Imported {count} macro(s) with unknown source printer. Review before "
@@ -921,62 +932,62 @@ msgstr ""
 "Imported {count} macro(s) with unknown source printer. Review before "
 "enabling."
 
-#: src/klipper_macro_gui.py:1521
+#: src/klipper_macro_gui.py:1667
 msgid "Set printer vendor/model before exporting update repository zip."
 msgstr "Set printer vendor/model before exporting update repository zip."
 
-#: src/klipper_macro_gui.py:1537
+#: src/klipper_macro_gui.py:1683
 #, python-brace-format
 msgid "Update repository export failed: {error}"
 msgstr "Update repository export failed: {error}"
 
-#: src/klipper_macro_gui.py:1544
+#: src/klipper_macro_gui.py:1690
 #, python-brace-format
 msgid "Exported {count} active macro(s) as update repository ZIP: {path}"
 msgstr "Exported {count} active macro(s) as update repository ZIP: {path}"
 
-#: src/klipper_macro_gui.py:1569
+#: src/klipper_macro_gui.py:1715
 #, python-brace-format
 msgid "Creating pull request: {percent}%"
 msgstr "Creating pull request: {percent}%"
 
-#: src/klipper_macro_gui.py:1589
+#: src/klipper_macro_gui.py:1735
 #, python-brace-format
 msgid "Update macros for {vendor} {model}"
 msgstr "Update macros for {vendor} {model}"
 
-#: src/klipper_macro_gui.py:1596
+#: src/klipper_macro_gui.py:1742
 #, python-brace-format
 msgid "Automated KlipperVault update for {vendor} {model}."
 msgstr "Automated KlipperVault update for {vendor} {model}."
 
-#: src/klipper_macro_gui.py:1617
+#: src/klipper_macro_gui.py:1763
 msgid "Set printer vendor/model before creating a pull request."
 msgstr "Set printer vendor/model before creating a pull request."
 
-#: src/klipper_macro_gui.py:1628
+#: src/klipper_macro_gui.py:1774
 msgid "Repository URL, branches, title, and token are required."
 msgstr "Repository URL, branches, title, and token are required."
 
-#: src/klipper_macro_gui.py:1636
+#: src/klipper_macro_gui.py:1782
 msgid "Creating GitHub pull request..."
 msgstr "Creating GitHub pull request..."
 
-#: src/klipper_macro_gui.py:1663 src/klipper_macro_gui.py:1664
+#: src/klipper_macro_gui.py:1809 src/klipper_macro_gui.py:1810
 #, python-brace-format
 msgid "Create PR failed: {error}"
 msgstr "Create PR failed: {error}"
 
-#: src/klipper_macro_gui.py:1679
+#: src/klipper_macro_gui.py:1825
 msgid "No macro changes detected for pull request. PR was not created."
 msgstr "No macro changes detected for pull request. PR was not created."
 
-#: src/klipper_macro_gui.py:1687
+#: src/klipper_macro_gui.py:1833
 #, python-brace-format
 msgid "Open pull request already exists (#{number}): {url}"
 msgstr "Open pull request already exists (#{number}): {url}"
 
-#: src/klipper_macro_gui.py:1696
+#: src/klipper_macro_gui.py:1842
 #, python-brace-format
 msgid ""
 "Created pull request #{number} with {files} updated file(s), {commits} "
@@ -985,110 +996,110 @@ msgstr ""
 "Created pull request #{number} with {files} updated file(s), {commits} "
 "commit(s), for {count} macro(s): {url}"
 
-#: src/klipper_macro_gui.py:1717
+#: src/klipper_macro_gui.py:1863
 #, python-brace-format
 msgid "Checking updates: {percent}%"
 msgstr "Checking updates: {percent}%"
 
-#: src/klipper_macro_gui.py:1742
+#: src/klipper_macro_gui.py:1888
 msgid "Set printer vendor/model before checking updates."
 msgstr "Set printer vendor/model before checking updates."
 
-#: src/klipper_macro_gui.py:1747
+#: src/klipper_macro_gui.py:1893
 msgid "Online updater repository URL is not configured."
 msgstr "Online updater repository URL is not configured."
 
-#: src/klipper_macro_gui.py:1753
+#: src/klipper_macro_gui.py:1899
 msgid "Checking for updates..."
 msgstr "Checking for updates..."
 
-#: src/klipper_macro_gui.py:1777
+#: src/klipper_macro_gui.py:1923
 #, python-brace-format
 msgid "Update check failed: {error}"
 msgstr "Update check failed: {error}"
 
-#: src/klipper_macro_gui.py:1790
+#: src/klipper_macro_gui.py:1936
 #, python-brace-format
 msgid "Checked {checked} macro(s): {changed} update(s), {unchanged} unchanged."
 msgstr "Checked {checked} macro(s): {changed} update(s), {unchanged} unchanged."
 
-#: src/klipper_macro_gui.py:1799
+#: src/klipper_macro_gui.py:1945
 msgid "No online updates available."
 msgstr "No online updates available."
 
-#: src/klipper_macro_gui.py:1805
+#: src/klipper_macro_gui.py:1951
 #, python-brace-format
 msgid "local v{local} -> remote {remote}"
 msgstr "local v{local} -> remote {remote}"
 
-#: src/klipper_macro_gui.py:1813
+#: src/klipper_macro_gui.py:1959
 msgid "Online update check complete."
 msgstr "Online update check complete."
 
-#: src/klipper_macro_gui.py:1848
+#: src/klipper_macro_gui.py:1994
 #, python-brace-format
 msgid "Startup update check found {changed} update(s) out of {checked} macro(s)."
 msgstr "Startup update check found {changed} update(s) out of {checked} macro(s)."
 
-#: src/klipper_macro_gui.py:1858
+#: src/klipper_macro_gui.py:2004
 #, python-brace-format
 msgid "Mainsail notification failed: {error}"
 msgstr "Mainsail notification failed: {error}"
 
-#: src/klipper_macro_gui.py:1863
+#: src/klipper_macro_gui.py:2009
 msgid "No online updates to import."
 msgstr "No online updates to import."
 
-#: src/klipper_macro_gui.py:1880 src/klipper_macro_gui.py:1881
+#: src/klipper_macro_gui.py:2026 src/klipper_macro_gui.py:2027
 #, python-brace-format
 msgid "Import updates failed: {error}"
 msgstr "Import updates failed: {error}"
 
-#: src/klipper_macro_gui.py:1887 src/klipper_macro_gui.py:1888
+#: src/klipper_macro_gui.py:2033 src/klipper_macro_gui.py:2034
 msgid "No online updates were imported."
 msgstr "No online updates were imported."
 
-#: src/klipper_macro_gui.py:1894
+#: src/klipper_macro_gui.py:2040
 #, python-brace-format
 msgid "Imported {imported} online update(s); activated {activated}."
 msgstr "Imported {imported} online update(s); activated {activated}."
 
-#: src/klipper_macro_gui.py:1912
+#: src/klipper_macro_gui.py:2058
 msgid "Blocked: printer is currently printing. Purge is disabled."
 msgstr "Blocked: printer is currently printing. Purge is disabled."
 
-#: src/klipper_macro_gui.py:1917
+#: src/klipper_macro_gui.py:2063
 #, python-brace-format
 msgid "Failed to purge deleted macros: {error}"
 msgstr "Failed to purge deleted macros: {error}"
 
-#: src/klipper_macro_gui.py:1922
+#: src/klipper_macro_gui.py:2068
 #, python-brace-format
 msgid "Purged {removed} deleted macro row(s) from database."
 msgstr "Purged {removed} deleted macro row(s) from database."
 
-#: src/klipper_macro_gui.py:1924
+#: src/klipper_macro_gui.py:2070
 msgid "No deleted macros to purge."
 msgstr "No deleted macros to purge."
 
-#: src/klipper_macro_gui.py:1930
+#: src/klipper_macro_gui.py:2076
 msgid "Blocked: printer is currently printing. Manual scan is disabled."
 msgstr "Blocked: printer is currently printing. Manual scan is disabled."
 
-#: src/klipper_macro_gui.py:1937
+#: src/klipper_macro_gui.py:2083
 msgid "No pending macro changes require a Klipper restart."
 msgstr "No pending macro changes require a Klipper restart."
 
-#: src/klipper_macro_gui.py:1940
+#: src/klipper_macro_gui.py:2086
 msgid "Blocked: printer is busy or printing. Klipper restart is disabled."
 msgstr "Blocked: printer is busy or printing. Klipper restart is disabled."
 
-#: src/klipper_macro_gui.py:1946
+#: src/klipper_macro_gui.py:2092
 #, python-brace-format
 msgid "Failed to restart Klipper: {error}"
 msgstr "Failed to restart Klipper: {error}"
 
-#: src/klipper_macro_gui.py:1950
+#: src/klipper_macro_gui.py:2096
 msgid ""
 "Klipper restart requested. The restart button will reappear after another"
 " macro change."
@@ -1096,16 +1107,16 @@ msgstr ""
 "Klipper restart requested. The restart button will reappear after another"
 " macro change."
 
-#: src/klipper_macro_gui.py:1955
+#: src/klipper_macro_gui.py:2101
 msgid "No pending dynamic macro changes require a dynamic macro reload."
 msgstr "No pending dynamic macro changes require a dynamic macro reload."
 
-#: src/klipper_macro_gui.py:1961
+#: src/klipper_macro_gui.py:2107
 #, python-brace-format
 msgid "Failed to reload dynamic macros: {error}"
 msgstr "Failed to reload dynamic macros: {error}"
 
-#: src/klipper_macro_gui.py:1966
+#: src/klipper_macro_gui.py:2112
 msgid ""
 "Dynamic macro reload requested. The reload button will reappear after "
 "another dynamic macro change."
@@ -1113,7 +1124,7 @@ msgstr ""
 "Dynamic macro reload requested. The reload button will reappear after "
 "another dynamic macro change."
 
-#: src/klipper_macro_gui.py:2010
+#: src/klipper_macro_gui.py:2156
 #, python-brace-format
 msgid ""
 "Macro editing and auto file watching are disabled until the print job is "
@@ -1122,30 +1133,30 @@ msgstr ""
 "Macro editing and auto file watching are disabled until the print job is "
 "finished. Moonraker message: {moonraker_message}"
 
-#: src/klipper_macro_gui.py:2024
+#: src/klipper_macro_gui.py:2170
 #, python-brace-format
 msgid "Printing in progress ({state}). File watcher paused and editing disabled."
 msgstr "Printing in progress ({state}). File watcher paused and editing disabled."
 
-#: src/klipper_macro_gui.py:2033
+#: src/klipper_macro_gui.py:2179
 msgid "Ready (Moonraker status unknown)."
 msgstr "Ready (Moonraker status unknown)."
 
-#: src/klipper_macro_gui.py:2035
+#: src/klipper_macro_gui.py:2181
 #, python-brace-format
 msgid "Ready (printer state: {state})."
 msgstr "Ready (printer state: {state})."
 
-#: src/klipper_macro_gui.py:2107
+#: src/klipper_macro_gui.py:2293
 #, fuzzy
 msgid "Loading order overview"
 msgstr "Load order"
 
-#: src/klipper_macro_gui.py:2108
+#: src/klipper_macro_gui.py:2294
 msgid "Check for updates"
 msgstr "Check for updates"
 
-#: src/klipper_macro_gui.py:2112
+#: src/klipper_macro_gui.py:2298
 msgid "Export Update Zip"
 msgstr "Export Update Zip"
 

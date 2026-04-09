@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# ci_parity.sh — Run local checks equivalent to GitHub CI workflows.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
+RUN_QUALITY=1
+RUN_SECURITY=1
+
+have_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/ci_parity.sh [--quality|--security|--all]
+
+Runs CI-parity checks locally using the project virtualenv.
+Defaults to --all.
+EOF
+}
+
+for arg in "$@"; do
+    case "$arg" in
+        --quality)
+            RUN_QUALITY=1
+            RUN_SECURITY=0
+            ;;
+        --security)
+            RUN_QUALITY=0
+            RUN_SECURITY=1
+            ;;
+        --all)
+            RUN_QUALITY=1
+            RUN_SECURITY=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+    echo "Python interpreter not found: $PYTHON_BIN"
+    echo "Run ./scripts/setup_dev.sh first."
+    exit 1
+fi
+
+if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
+    echo "requirements.txt not found in $REPO_ROOT"
+    exit 1
+fi
+
+cd "$REPO_ROOT"
+
+echo "==> Using Python: $($PYTHON_BIN --version)"
+
+echo "==> Synchronizing tool dependencies"
+"$PYTHON_BIN" -m pip install --upgrade pip
+"$PYTHON_BIN" -m pip install -r requirements.txt
+"$PYTHON_BIN" -m pip install ruff mypy pytest packaging pip-audit bandit
+
+if [[ "$RUN_QUALITY" == "1" ]]; then
+    echo "==> Running PR quality parity checks"
+    "$PYTHON_BIN" -m ruff check .
+    PYTHONPATH=src "$PYTHON_BIN" -m mypy src klipper_vault.py --ignore-missing-imports
+    "$PYTHON_BIN" -m py_compile klipper_vault.py src/*.py
+
+    "$PYTHON_BIN" -m babel.messages.frontend extract -F babel.ini -o /tmp/fresh.pot src klipper_vault.py
+    "$PYTHON_BIN" - <<'PY'
+import sys
+from babel.messages.pofile import read_po
+
+def msgids(path):
+    with open(path, "rb") as f:
+        return {m.id for m in read_po(f) if m.id}
+
+committed = msgids("src/locales/klippervault.pot")
+fresh = msgids("/tmp/fresh.pot")
+
+added = fresh - committed
+removed = committed - fresh
+
+if added:
+    print("New translatable strings not in committed .pot:")
+    for s in sorted(added):
+        print(f"  + {s!r}")
+if removed:
+    print("Strings removed from source but still in committed .pot:")
+    for s in sorted(removed):
+        print(f"  - {s!r}")
+if added or removed:
+    print("Run 'make i18n' and commit the updated catalog files.")
+    sys.exit(1)
+
+print("i18n catalog is up to date.")
+PY
+
+    "$PYTHON_BIN" scripts/check_gplv3_compatibility.py
+    PYTHONPATH=src "$PYTHON_BIN" -m pytest -q
+fi
+
+if [[ "$RUN_SECURITY" == "1" ]]; then
+    echo "==> Running security parity checks"
+    "$PYTHON_BIN" -m pip_audit
+    "$PYTHON_BIN" -m bandit -q -r src klipper_vault.py -s B608
+fi
+
+echo "==> CI parity checks completed successfully"

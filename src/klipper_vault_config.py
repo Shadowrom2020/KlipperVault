@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import configparser
+import re
 from dataclasses import dataclass, fields as dataclass_fields
 from pathlib import Path
 
@@ -14,6 +15,9 @@ _FREEDI_CFG_FILENAME = "freedi.cfg"
 _DEFAULT_ONLINE_UPDATE_REPO_URL = "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
 _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
 _DEFAULT_ONLINE_UPDATE_REF = "main"
+_MOONRAKER_CONF_FILENAME = "moonraker.conf"
+_UPDATE_MANAGER_NAME = "klippervault"
+_MANAGED_SERVICE_NAME = "klippervault"
 
 _DEFAULT_CONTENT = """\
 # KlipperVault configuration
@@ -118,6 +122,57 @@ def _detect_printer_identity(config_dir: Path) -> tuple[str, str] | None:
         return "freedi", printer_model
 
     return None
+
+
+def ensure_moonraker_update_manager_managed_services(config_dir: Path) -> bool:
+    """Ensure Moonraker update_manager uses managed_services: klippervault.
+
+    Returns True when moonraker.conf was modified.
+    """
+    moonraker_conf_path = config_dir / _MOONRAKER_CONF_FILENAME
+    if not moonraker_conf_path.exists() or not moonraker_conf_path.is_file():
+        return False
+
+    original_text = moonraker_conf_path.read_text(encoding="utf-8", errors="ignore")
+    section_pattern = re.compile(
+        rf"(?ms)^\[update_manager\s+{re.escape(_UPDATE_MANAGER_NAME)}\]\n(?:.*?)(?=^\[|\Z)"
+    )
+    section_match = section_pattern.search(original_text)
+    if section_match is None:
+        return False
+
+    section_text = section_match.group(0)
+    managed_services_pattern = re.compile(r"(?mi)^\s*managed_services\s*:\s*(.*?)\s*$")
+    managed_services_match = managed_services_pattern.search(section_text)
+
+    if managed_services_match is None:
+        updated_section = section_text.rstrip("\n") + f"\nmanaged_services: {_MANAGED_SERVICE_NAME}\n"
+    else:
+        raw_services = managed_services_match.group(1)
+        parsed_services = [
+            service.strip()
+            for service in str(raw_services).split(",")
+            if service.strip()
+        ]
+        normalized_services: list[str] = []
+        for service in parsed_services:
+            if service == "klipper-vault":
+                service = _MANAGED_SERVICE_NAME
+            if service not in normalized_services:
+                normalized_services.append(service)
+
+        if _MANAGED_SERVICE_NAME not in normalized_services:
+            normalized_services.append(_MANAGED_SERVICE_NAME)
+
+        replacement_line = f"managed_services: {', '.join(normalized_services)}"
+        updated_section = managed_services_pattern.sub(replacement_line, section_text, count=1)
+
+    if updated_section == section_text:
+        return False
+
+    updated_text = original_text[: section_match.start()] + updated_section + original_text[section_match.end() :]
+    moonraker_conf_path.write_text(updated_text, encoding="utf-8")
+    return True
 
 
 def save(config_dir: Path, config: VaultConfig) -> None:

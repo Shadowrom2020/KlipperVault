@@ -13,6 +13,12 @@ Recommended setup from repository root:
 bash scripts/setup_dev.sh
 ```
 
+Default toolchain target:
+
+- Python runtime is managed via `pyenv`.
+- Setup script resolves and installs the latest available `3.13.x` on each run.
+- Pin an exact patch only when needed: `PYENV_PYTHON_VERSION=<version> ./scripts/setup_dev.sh`.
+
 What it does:
 
 1. Optionally installs distro system dependencies (apt/dnf/pacman/zypper/apk).
@@ -28,7 +34,8 @@ VS Code debug configs use `${workspaceFolder}/.venv/bin/python` so launch runs w
 Manual setup alternative:
 
 ```bash
-python3 -m venv .venv
+pyenv install -s 3.13.3
+~/.pyenv/versions/3.13.3/bin/python -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
@@ -139,13 +146,14 @@ Run tests:
 Optional CI-like checks:
 
 ```bash
-./.venv/bin/ruff check .
-PYTHONPATH=src ./.venv/bin/mypy src klipper_vault.py --ignore-missing-imports
-./.venv/bin/python -m py_compile klipper_vault.py src/*.py
-make i18n && git diff --exit-code -- src/locales/klippervault.pot src/locales/*/LC_MESSAGES/klippervault.po src/locales/*/LC_MESSAGES/klippervault.mo
-PYTHONPATH=src ./.venv/bin/pytest -q
-./.venv/bin/pip-audit
-./.venv/bin/bandit -q -r src klipper_vault.py -s B608
+./scripts/ci_parity.sh
+```
+
+Modes:
+
+```bash
+./scripts/ci_parity.sh --quality
+./scripts/ci_parity.sh --security
 ```
 
 ## Coding Conventions

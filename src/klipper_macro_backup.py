@@ -11,7 +11,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from klipper_vault_db import open_sqlite_connection
 
@@ -21,6 +21,17 @@ SELECT file_path, macro_name, MAX(version) AS max_version
 FROM macros
 GROUP BY file_path, macro_name
 """.strip()
+
+_DB_BATCH_SIZE = 500
+
+
+def _iter_cursor_batches(cursor: sqlite3.Cursor, batch_size: int = _DB_BATCH_SIZE) -> Iterable[list[tuple]]:
+    """Yield cursor rows in fixed-size batches."""
+    while True:
+        rows = cursor.fetchmany(batch_size)
+        if not rows:
+            return
+        yield rows
 
 
 def ensure_backup_schema(conn: sqlite3.Connection) -> None:
@@ -140,9 +151,9 @@ def create_macro_backup(
             ).fetchone()
         )
 
-        rows = []
+        macro_count = 0
         if has_macros_table:
-            rows = conn.execute(
+            select_cursor = conn.execute(
                 f"""
                 SELECT
                     m.section_type,
@@ -165,53 +176,63 @@ def create_macro_backup(
                    AND m.version = latest.max_version
                 ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
                 """
-            ).fetchall()
-
-        if rows:
-            conn.executemany(
-                """
-                INSERT INTO macro_backup_items (
-                    backup_id,
-                    section_type,
-                    macro_name,
-                    file_path,
-                    version,
-                    indexed_at,
-                    line_number,
-                    description,
-                    gcode,
-                    variables_json,
-                    body_checksum,
-                    is_active
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
+            )
+            for chunk in _iter_cursor_batches(select_cursor):
+                conn.executemany(
+                    """
+                    INSERT INTO macro_backup_items (
                         backup_id,
-                        str(section_type),
-                        str(macro_name),
-                        str(file_path),
-                        int(version),
-                        int(indexed_at),
-                        int(line_number),
+                        section_type,
+                        macro_name,
+                        file_path,
+                        version,
+                        indexed_at,
+                        line_number,
                         description,
                         gcode,
-                        str(variables_json),
-                        str(body_checksum),
-                        int(is_active),
+                        variables_json,
+                        body_checksum,
+                        is_active
                     )
-                    for section_type, macro_name, file_path, version, indexed_at, line_number, description, gcode, variables_json, body_checksum, is_active in rows
-                ],
-            )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            backup_id,
+                            str(section_type),
+                            str(macro_name),
+                            str(file_path),
+                            int(version),
+                            int(indexed_at),
+                            int(line_number),
+                            description,
+                            gcode,
+                            str(variables_json),
+                            str(body_checksum),
+                            int(is_active),
+                        )
+                        for section_type, macro_name, file_path, version, indexed_at, line_number, description, gcode, variables_json, body_checksum, is_active in chunk
+                    ],
+                )
+                macro_count += len(chunk)
 
         cfg_files_count = 0
         if config_dir.exists() and config_dir.is_dir():
-            cfg_rows = []
+            cfg_rows: List[tuple[int, str, str]] = []
             for cfg_file in _iter_cfg_files(config_dir):
                 rel_path = str(cfg_file.relative_to(config_dir))
                 file_content = cfg_file.read_text(encoding="utf-8", errors="ignore")
                 cfg_rows.append((backup_id, rel_path, file_content))
+                cfg_files_count += 1
+                if len(cfg_rows) >= _DB_BATCH_SIZE:
+                    conn.executemany(
+                        """
+                        INSERT INTO macro_backup_files (backup_id, file_path, file_content)
+                        VALUES (?, ?, ?)
+                        """,
+                        cfg_rows,
+                    )
+                    cfg_rows.clear()
             if cfg_rows:
                 conn.executemany(
                     """
@@ -220,7 +241,6 @@ def create_macro_backup(
                     """,
                     cfg_rows,
                 )
-            cfg_files_count = len(cfg_rows)
             if cfg_files_count == 0:
                 raise ValueError("backup aborted: no .cfg files found to snapshot")
         else:
@@ -232,7 +252,7 @@ def create_macro_backup(
         "backup_id": backup_id,
         "backup_name": name,
         "created_at": ts,
-        "macro_count": len(rows),
+        "macro_count": macro_count,
         "cfg_file_count": cfg_files_count,
     }
 
@@ -429,6 +449,9 @@ def restore_macro_backup(
 ) -> Dict[str, object]:
     """Restore one backup snapshot into the active macros table."""
     ts = int(now_ts) if now_ts is not None else int(time.time())
+    macro_count = 0
+    restored_cfg_files = 0
+    removed_cfg_files = 0
 
     with open_sqlite_connection(
         db_path,
@@ -444,8 +467,7 @@ def restore_macro_backup(
         if not backup_meta:
             raise ValueError("backup not found")
 
-        rows = conn.execute(
-            """
+        rows_query = """
             SELECT
                 section_type,
                 macro_name,
@@ -460,45 +482,50 @@ def restore_macro_backup(
             FROM macro_backup_items
             WHERE backup_id = ?
             ORDER BY macro_name COLLATE NOCASE ASC, file_path ASC
-            """,
-            (int(backup_id),),
-        ).fetchall()
-
-        file_rows = conn.execute(
             """
-            SELECT file_path, file_content
-            FROM macro_backup_files
-            WHERE backup_id = ?
-            ORDER BY file_path ASC
-            """,
-            (int(backup_id),),
-        ).fetchall()
+        has_file_snapshot = bool(
+            conn.execute(
+                "SELECT 1 FROM macro_backup_files WHERE backup_id = ? LIMIT 1",
+                (int(backup_id),),
+            ).fetchone()
+        )
 
-        if config_dir is not None and not file_rows:
-            # Legacy backups created before cfg snapshots existed: reconstruct
-            # a deterministic cfg state from backed-up macro rows.
-            file_rows = _reconstruct_cfg_files_from_backup_items(rows)
+        # Legacy backups created before cfg snapshots existed require
+        # reconstructing cfg state from all backup macro items.
+        legacy_rows: List[tuple] = []
+        legacy_file_rows: List[tuple[str, str]] = []
+        if config_dir is not None and not has_file_snapshot:
+            legacy_rows = conn.execute(rows_query, (int(backup_id),)).fetchall()
+            legacy_file_rows = _reconstruct_cfg_files_from_backup_items(legacy_rows)
 
         conn.execute("DELETE FROM macros")
 
-        if rows:
+        insert_sql = """
+            INSERT INTO macros (
+                file_path,
+                section_type,
+                macro_name,
+                line_number,
+                description,
+                gcode,
+                variables_json,
+                body_checksum,
+                is_active,
+                version,
+                indexed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+
+        rows_iter: Iterable[list[tuple]]
+        if legacy_rows:
+            rows_iter = (legacy_rows[idx:idx + _DB_BATCH_SIZE] for idx in range(0, len(legacy_rows), _DB_BATCH_SIZE))
+        else:
+            rows_iter = _iter_cursor_batches(conn.execute(rows_query, (int(backup_id),)))
+
+        for chunk in rows_iter:
             conn.executemany(
-                """
-                INSERT INTO macros (
-                    file_path,
-                    section_type,
-                    macro_name,
-                    line_number,
-                    description,
-                    gcode,
-                    variables_json,
-                    body_checksum,
-                    is_active,
-                    version,
-                    indexed_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                insert_sql,
                 [
                     (
                         str(file_path),
@@ -523,39 +550,58 @@ def restore_macro_backup(
                         max(1, int(version)),
                         ts,
                     )
-                    for section_type, macro_name, file_path, version, line_number, description, gcode, variables_json, body_checksum, is_active in rows
+                    for section_type, macro_name, file_path, version, line_number, description, gcode, variables_json, body_checksum, is_active in chunk
                 ],
             )
+            macro_count += len(chunk)
 
         conn.commit()
 
-    restored_cfg_files = 0
-    removed_cfg_files = 0
-    if config_dir is not None and file_rows:
-        config_dir = config_dir.expanduser().resolve()
-        config_dir.mkdir(parents=True, exist_ok=True)
+        if config_dir is not None:
+            config_dir = config_dir.expanduser().resolve()
+            config_dir.mkdir(parents=True, exist_ok=True)
 
-        snapshot_paths: set[str] = set()
-        for rel_path, content in file_rows:
-            rel = str(rel_path)
-            snapshot_paths.add(rel)
-            target = _safe_cfg_path(config_dir, rel)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(str(content), encoding="utf-8")
-            restored_cfg_files += 1
+            snapshot_paths: set[str] = set()
+            if has_file_snapshot:
+                file_cursor = conn.execute(
+                    """
+                    SELECT file_path, file_content
+                    FROM macro_backup_files
+                    WHERE backup_id = ?
+                    ORDER BY file_path ASC
+                    """,
+                    (int(backup_id),),
+                )
+                for chunk in _iter_cursor_batches(file_cursor):
+                    for rel_path, content in chunk:
+                        rel = str(rel_path)
+                        snapshot_paths.add(rel)
+                        target = _safe_cfg_path(config_dir, rel)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_text(str(content), encoding="utf-8")
+                        restored_cfg_files += 1
+            elif legacy_file_rows:
+                for rel_path, content in legacy_file_rows:
+                    rel = str(rel_path)
+                    snapshot_paths.add(rel)
+                    target = _safe_cfg_path(config_dir, rel)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(str(content), encoding="utf-8")
+                    restored_cfg_files += 1
 
-        existing_cfg = [p for p in _iter_cfg_files(config_dir)]
-        for cfg_file in existing_cfg:
-            rel = str(cfg_file.relative_to(config_dir))
-            if rel not in snapshot_paths:
-                cfg_file.unlink(missing_ok=True)
-                removed_cfg_files += 1
+            if snapshot_paths:
+                existing_cfg = [p for p in _iter_cfg_files(config_dir)]
+                for cfg_file in existing_cfg:
+                    rel = str(cfg_file.relative_to(config_dir))
+                    if rel not in snapshot_paths:
+                        cfg_file.unlink(missing_ok=True)
+                        removed_cfg_files += 1
 
     return {
         "backup_id": int(backup_meta[0]),
         "backup_name": str(backup_meta[1]),
         "restored_at": ts,
-        "macro_count": len(rows),
+        "macro_count": macro_count,
         "restored_cfg_files": restored_cfg_files,
         "removed_cfg_files": removed_cfg_files,
     }

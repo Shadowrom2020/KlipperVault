@@ -175,7 +175,7 @@ def build_online_update_repository_artifacts(
     model = _normalize_component(source_model)
     timestamp = int(now_ts) if now_ts is not None else int(datetime.now(tz=timezone.utc).timestamp())
 
-    macros = load_macro_list(db_path, limit=100000)
+    macros = load_macro_list(db_path, limit=100000, include_macro_body=True)
     active_macros = [
         macro
         for macro in macros
@@ -309,7 +309,7 @@ def export_online_update_repository_zip(
     model = _normalize_component(source_model)
     timestamp = int(now_ts) if now_ts is not None else int(datetime.now(tz=timezone.utc).timestamp())
 
-    macros = load_macro_list(db_path, limit=100000)
+    macros = load_macro_list(db_path, limit=100000, include_macro_body=True)
     active_macros = [
         macro
         for macro in macros

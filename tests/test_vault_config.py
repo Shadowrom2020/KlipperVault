@@ -1,6 +1,11 @@
 from pathlib import Path
 
-from klipper_vault_config import VaultConfig, load_or_create, save
+from klipper_vault_config import (
+    VaultConfig,
+    ensure_moonraker_update_manager_managed_services,
+    load_or_create,
+    save,
+)
 
 
 def test_load_or_create_writes_defaults_when_missing(tmp_path: Path) -> None:
@@ -182,3 +187,62 @@ def test_load_or_create_backfills_all_persisted_config_keys(tmp_path: Path) -> N
     assert "online_update_manifest_path: updates/manifest.json" in cfg_text
     assert "online_update_ref: main" in cfg_text
     assert "developer: false" in cfg_text
+
+
+def test_ensure_moonraker_update_manager_managed_services_migrates_legacy_value(tmp_path: Path) -> None:
+    moonraker_conf_path = tmp_path / "moonraker.conf"
+    moonraker_conf_path.write_text(
+        """
+[server]
+some_key: true
+
+[update_manager klippervault]
+type: git_repo
+managed_services: klipper-vault
+
+[other]
+value: 1
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    changed = ensure_moonraker_update_manager_managed_services(tmp_path)
+
+    assert changed is True
+    cfg_text = moonraker_conf_path.read_text(encoding="utf-8")
+    assert "managed_services: klippervault" in cfg_text
+    assert "managed_services: klipper-vault" not in cfg_text
+
+
+def test_ensure_moonraker_update_manager_managed_services_adds_missing_line(tmp_path: Path) -> None:
+    moonraker_conf_path = tmp_path / "moonraker.conf"
+    moonraker_conf_path.write_text(
+        """
+[update_manager klippervault]
+type: git_repo
+path: /opt/klippervault
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    changed = ensure_moonraker_update_manager_managed_services(tmp_path)
+
+    assert changed is True
+    cfg_text = moonraker_conf_path.read_text(encoding="utf-8")
+    assert "managed_services: klippervault" in cfg_text
+
+
+def test_ensure_moonraker_update_manager_managed_services_no_change_when_absent(tmp_path: Path) -> None:
+    moonraker_conf_path = tmp_path / "moonraker.conf"
+    moonraker_conf_path.write_text(
+        """
+[update_manager some_other]
+managed_services: something
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    changed = ensure_moonraker_update_manager_managed_services(tmp_path)
+
+    assert changed is False
+    assert moonraker_conf_path.read_text(encoding="utf-8") == "[update_manager some_other]\nmanaged_services: something\n"

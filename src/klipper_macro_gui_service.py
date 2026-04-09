@@ -448,9 +448,18 @@ class MacroGuiService:
         """Load cfg parse-order overview for Klipper and KlipperVault."""
         return get_cfg_loading_overview(self._config_dir)
 
-    def load_dashboard(self) -> tuple[dict[str, object], list[dict[str, object]]]:
-        """Load aggregate stats and latest macro list for dashboard refresh."""
-        return load_stats(self._db_path), load_macro_list(self._db_path, config_dir=self._config_dir)
+    def load_dashboard(self, *, limit: int = 500, offset: int = 0) -> tuple[dict[str, object], list[dict[str, object]]]:
+        """Load aggregate stats and paged latest macro list for dashboard refresh."""
+        return (
+            load_stats(self._db_path),
+            load_macro_list(
+                self._db_path,
+                limit=limit,
+                offset=offset,
+                config_dir=self._config_dir,
+                include_macro_body=False,
+            ),
+        )
 
     def load_versions(self, file_path: str, macro_name: str) -> list[dict[str, object]]:
         """Load version history for a specific macro identity."""
