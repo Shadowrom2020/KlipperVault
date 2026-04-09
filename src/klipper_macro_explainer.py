@@ -21,8 +21,8 @@ _RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _RE_AXIS_LETTER = re.compile(r"([A-Za-z])(.*)")
 _RE_VALUE_START = re.compile(r"^[+\-0-9.{]")
 _RE_UPPER_COMMAND = re.compile(r"[A-Z0-9_.]+")
-_RE_SET_CLAUSE = re.compile(r"set\s+(.+?)\s*=\s*(.+)", re.IGNORECASE)
-_RE_FOR_CLAUSE = re.compile(r"for\s+(.+?)\s+in\s+(.+)", re.IGNORECASE)
+_RE_SET_CLAUSE = re.compile(r"set\s+(.+?)\s*=\s*(.+)", re.IGNORECASE | re.DOTALL)
+_RE_FOR_CLAUSE = re.compile(r"for\s+(.+?)\s+in\s+(.+)", re.IGNORECASE | re.DOTALL)
 _RE_FILTER_EXPR = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$")
 _RE_PARAMS = re.compile(r"\bparams\.([A-Za-z_][A-Za-z0-9_]*)")
 _RE_PRINTER_OBJECTS = re.compile(r"\bprinter\.([A-Za-z_][A-Za-z0-9_\.]*)")
@@ -125,6 +125,7 @@ def explain_macro_script(
 
     gcode_text = str(macro.get("gcode") or "")
     body_lines = gcode_text.splitlines()
+    explainable_lines = _collapse_multiline_jinja_blocks(body_lines)
 
     current_macro_names = {
         str(macro.get("macro_name", "")).strip().lower(),
@@ -167,7 +168,7 @@ def explain_macro_script(
             key = (str(reference["macro_name"]), str(reference["file_path"]))
             references[key] = reference
 
-    for line_number, raw_line in enumerate(body_lines, start=1):
+    for line_number, raw_line in explainable_lines:
         entry = _explain_line(
             raw_line,
             line_number,
@@ -434,7 +435,7 @@ def _explain_line(
             line_number=line_number,
             text=raw_line,
             kind="control",
-            confidence="medium",
+            confidence="high",
             effects=["template_control"],
             summary="Template expression inside g-code.",
             details="This line injects values computed from macro parameters or live printer state before the command runs.",
@@ -553,6 +554,52 @@ def _strip_inline_comment(line: str) -> str:
         if char == "#" and not in_single and not in_double:
             return line[:idx]
     return line
+
+
+def _collapse_multiline_jinja_blocks(body_lines: Sequence[str]) -> list[tuple[int, str]]:
+    """Merge multiline Jinja blocks into single logical explainer lines.
+
+    Macros often split ``{% ... %}`` or ``{{ ... }}`` blocks across lines.
+    Explaining those lines independently can misclassify continuation lines.
+    """
+    collapsed: list[tuple[int, str]] = []
+    idx = 0
+    total = len(body_lines)
+
+    while idx < total:
+        raw_line = body_lines[idx]
+        stripped = _strip_inline_comment(raw_line.strip()).strip()
+
+        if stripped.startswith("{%") and not stripped.endswith("%}"):
+            start_line = idx + 1
+            parts = [raw_line]
+            idx += 1
+            while idx < total:
+                parts.append(body_lines[idx])
+                candidate = _strip_inline_comment(body_lines[idx].strip()).strip()
+                idx += 1
+                if candidate.endswith("%}"):
+                    break
+            collapsed.append((start_line, "\n".join(parts)))
+            continue
+
+        if stripped.startswith("{{") and not stripped.endswith("}}"):
+            start_line = idx + 1
+            parts = [raw_line]
+            idx += 1
+            while idx < total:
+                parts.append(body_lines[idx])
+                candidate = _strip_inline_comment(body_lines[idx].strip()).strip()
+                idx += 1
+                if candidate.endswith("}}"):
+                    break
+            collapsed.append((start_line, "\n".join(parts)))
+            continue
+
+        collapsed.append((idx + 1, raw_line))
+        idx += 1
+
+    return collapsed
 
 
 def _resolve_macro_references(
@@ -749,6 +796,7 @@ def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
     else:
         stripped = raw_line.strip()[2:-2].strip()
     normalized = stripped.lower()
+    confidence = "high"
 
     if normalized.startswith("if "):
         condition = stripped[3:].strip()
@@ -800,7 +848,7 @@ def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
         line_number=line_number,
         text=raw_line,
         kind="control",
-        confidence="medium",
+        confidence=confidence,
         effects=["template_control"],
         summary=summary,
         details=details,
