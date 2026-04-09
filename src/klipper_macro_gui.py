@@ -152,6 +152,10 @@ def build_ui(app_version: str = "unknown") -> None:
     create_pr_progress_current: int = 0
     create_pr_progress_total: int = 1
     startup_online_update_check_in_progress: bool = False
+    cached_duplicate_names: set[str] = set()
+    _cached_versions_key: str | None = None
+    _cached_versions: list[dict[str, object]] = []
+    _search_dirty: bool = False
 
     async def _on_import_upload(e) -> None:
         """Capture uploaded macro share file contents for import."""
@@ -997,10 +1001,11 @@ def build_ui(app_version: str = "unknown") -> None:
         nonlocal selected_key
         nonlocal force_latest_for_key
         nonlocal force_active_for_key
+        nonlocal _cached_versions_key, _cached_versions
         macro_list.clear()
         viewer.set_available_macros(cached_macros)
 
-        duplicate_names = duplicate_names_for_macros(cached_macros)
+        duplicate_names = cached_duplicate_names
         visible_macros = filter_macros(
             macros=cached_macros,
             search_query=search_query,
@@ -1030,10 +1035,14 @@ def build_ui(app_version: str = "unknown") -> None:
             return
         selected_key = macro_key(selected_macro)
 
-        versions = service.load_versions(
-            str(selected_macro["file_path"]),
-            str(selected_macro["macro_name"]),
-        )
+        _ver_key = f"{selected_macro['file_path']}::{selected_macro['macro_name']}"
+        if _ver_key != _cached_versions_key:
+            _cached_versions_key = _ver_key
+            _cached_versions = service.load_versions(
+                str(selected_macro["file_path"]),
+                str(selected_macro["macro_name"]),
+            )
+        versions = _cached_versions
 
         def choose_macro(macro: dict[str, object]) -> None:
             nonlocal selected_key
@@ -1243,10 +1252,14 @@ def build_ui(app_version: str = "unknown") -> None:
         """Reload all list/stats data from SQLite and rerender UI sections."""
         nonlocal cached_macros
         nonlocal deleted_macro_count
+        nonlocal cached_duplicate_names, _cached_versions_key, _cached_versions
         stats, cached_macros = service.load_dashboard()
         deleted_macros = _to_int(stats.get("deleted_macros", 0))
         deleted_macro_count = deleted_macros
-        duplicate_macros = len(duplicate_names_for_macros(cached_macros))
+        cached_duplicate_names = duplicate_names_for_macros(cached_macros)
+        duplicate_macros = len(cached_duplicate_names)
+        _cached_versions_key = None
+        _cached_versions = []
         duplicate_warning_button.set_visibility(duplicate_macros > 0)
         total_macros_label.set_text(t("Total macros: {count}", count=stats["total_macros"]))
         duplicate_macros_label.set_text(t("Duplicate macros: {count}", count=duplicate_macros))
@@ -2014,10 +2027,10 @@ def build_ui(app_version: str = "unknown") -> None:
         render_macro_list()
 
     def on_search_change(e) -> None:
-        """Search input change handler."""
-        nonlocal search_query
+        """Search input change handler — updates query and marks list as dirty."""
+        nonlocal search_query, _search_dirty
         search_query = e.value or ""
-        render_macro_list()
+        _search_dirty = True
 
     update_duplicates_button_label()
     update_new_button_label()
@@ -2070,9 +2083,17 @@ def build_ui(app_version: str = "unknown") -> None:
         refresh_data()
     ui.timer(0.5, lambda: asyncio.create_task(_check_online_updates_on_startup()), once=True)
     watcher.reset()
-    ui.timer(0.1, _refresh_create_pr_progress_ui)
-    ui.timer(0.1, _refresh_online_update_progress_ui)
+    ui.timer(0.5, _refresh_create_pr_progress_ui)
+    ui.timer(0.5, _refresh_online_update_progress_ui)
     ui.timer(2.0, check_config_changes)
+
+    def _flush_search() -> None:
+        nonlocal _search_dirty
+        if _search_dirty:
+            _search_dirty = False
+            render_macro_list()
+
+    ui.timer(0.25, _flush_search)
 
     with ui.footer().classes("items-center justify-end px-4 py-1 bg-grey-9 text-grey-3"):
         ui.label(f"KlipperVault v{app_version}").classes("text-xs")

@@ -14,6 +14,20 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence, TypedDict
 
+# ---------------------------------------------------------------------------
+# Module-level compiled regex constants (avoid per-call recompilation)
+# ---------------------------------------------------------------------------
+_RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_RE_AXIS_LETTER = re.compile(r"([A-Za-z])(.*)")
+_RE_VALUE_START = re.compile(r"^[+\-0-9.{]")
+_RE_UPPER_COMMAND = re.compile(r"[A-Z0-9_.]+")
+_RE_SET_CLAUSE = re.compile(r"set\s+(.+?)\s*=\s*(.+)", re.IGNORECASE)
+_RE_FOR_CLAUSE = re.compile(r"for\s+(.+?)\s+in\s+(.+)", re.IGNORECASE)
+_RE_FILTER_EXPR = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$")
+_RE_PARAMS = re.compile(r"\bparams\.([A-Za-z_][A-Za-z0-9_]*)")
+_RE_PRINTER_OBJECTS = re.compile(r"\bprinter\.([A-Za-z_][A-Za-z0-9_\.]*)")
+_RE_FILTERS = re.compile(r"\|\s*([A-Za-z_][A-Za-z0-9_]*)")
+
 
 @dataclass(frozen=True)
 class MacroReference:
@@ -297,7 +311,7 @@ def _first_sentence(text: str) -> str:
     if not cleaned:
         return ""
 
-    parts = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)
+    parts = _RE_SENTENCE_SPLIT.split(cleaned, maxsplit=1)
     return parts[0]
 
 
@@ -496,13 +510,13 @@ def _parse_parameters(tokens: list[str]) -> dict[str, str]:
             params[current_key] = value
             continue
 
-        axis_match = re.fullmatch(r"([A-Za-z])(.*)", token)
+        axis_match = _RE_AXIS_LETTER.fullmatch(token)
         if axis_match and axis_match.group(2):
             candidate_value = axis_match.group(2)
             # Only treat compact one-letter parameters (e.g. X10, E-2, S{temp})
             # as key/value pairs. Plain words like PROBE_CALIBRATE should remain
             # command text, not synthetic parameters.
-            if re.match(r"^[+\-0-9.{]", candidate_value):
+            if _RE_VALUE_START.match(candidate_value):
                 candidate_key = axis_match.group(1).upper()
                 params[candidate_key] = candidate_value
                 current_key = candidate_key
@@ -511,7 +525,7 @@ def _parse_parameters(tokens: list[str]) -> dict[str, str]:
             # Command-like all-caps tokens should stop value continuation,
             # but mixed/lowercase text is often part of a quoted value split
             # by whitespace (e.g. MSG="value # keep").
-            if re.fullmatch(r"[A-Z0-9_.]+", token):
+            if _RE_UPPER_COMMAND.fullmatch(token):
                 current_key = None
                 continue
 
@@ -803,7 +817,7 @@ def _format_params(params: dict[str, str]) -> str:
 
 def _parse_template_set_clause(clause: str) -> tuple[str, str]:
     """Split a Jinja set directive into variable and expression."""
-    match = re.match(r"set\s+(.+?)\s*=\s*(.+)", clause, flags=re.IGNORECASE)
+    match = _RE_SET_CLAUSE.match(clause)
     if not match:
         return "", ""
     return match.group(1).strip(), match.group(2).strip()
@@ -811,7 +825,7 @@ def _parse_template_set_clause(clause: str) -> tuple[str, str]:
 
 def _parse_template_for_clause(clause: str) -> tuple[str, str]:
     """Split a Jinja for directive into loop variable and iterable."""
-    match = re.match(r"for\s+(.+?)\s+in\s+(.+)", clause, flags=re.IGNORECASE)
+    match = _RE_FOR_CLAUSE.match(clause)
     if not match:
         return "", ""
     return match.group(1).strip(), match.group(2).strip()
@@ -859,7 +873,7 @@ def _describe_template_set_assignment(variable_name: str, expression: str) -> st
     output_type = ""
 
     for filter_expr in parts[1:]:
-        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$", filter_expr)
+        match = _RE_FILTER_EXPR.match(filter_expr)
         if not match:
             continue
         filter_name = match.group(1).strip().lower()
@@ -892,9 +906,9 @@ def _describe_template_expression(expression: str) -> str:
         return ""
 
     notes: list[str] = []
-    parameter_names = sorted(set(re.findall(r"\bparams\.([A-Za-z_][A-Za-z0-9_]*)", expr)))
-    printer_objects = sorted(set(re.findall(r"\bprinter\.([A-Za-z_][A-Za-z0-9_\.]*)", expr)))
-    filters = sorted(set(re.findall(r"\|\s*([A-Za-z_][A-Za-z0-9_]*)", expr)))
+    parameter_names = sorted(set(_RE_PARAMS.findall(expr)))
+    printer_objects = sorted(set(_RE_PRINTER_OBJECTS.findall(expr)))
+    filters = sorted(set(_RE_FILTERS.findall(expr)))
 
     if parameter_names:
         joined = ", ".join(parameter_names)

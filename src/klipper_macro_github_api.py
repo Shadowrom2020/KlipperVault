@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 import json
 from typing import Callable, Iterable, Mapping
@@ -508,19 +509,30 @@ def commit_changed_text_files(
         result = CommitResult(changed_files=0, commit_sha="", created=False)
         return result.as_dict()
 
+    # Create blobs in parallel; maintain insertion order for deterministic commits.
+    blob_shas: dict[str, str] = {}
+    if changed_items:
+        def _create_one_blob(item: tuple[str, str]) -> tuple[str, str]:
+            path, text = item
+            return path, _create_blob(repo_url, token, text, timeout=timeout)
+
+        max_workers = min(8, max(1, len(changed_items)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for path, sha in executor.map(_create_one_blob, changed_items):
+                blob_shas[path] = sha
+                step += 1
+                _report(step, total_steps)
+
     tree_entries: list[dict[str, object]] = []
-    for file_path, content_text in changed_items:
-        blob_sha = _create_blob(repo_url, token, content_text, timeout=timeout)
+    for file_path, _content_text in changed_items:
         tree_entries.append(
             {
                 "path": file_path,
                 "mode": "100644",
                 "type": "blob",
-                "sha": blob_sha,
+                "sha": blob_shas[file_path],
             }
         )
-        step += 1
-        _report(step, total_steps)
 
     for file_path in changed_deletes:
         tree_entries.append(
