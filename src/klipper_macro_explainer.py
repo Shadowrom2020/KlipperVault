@@ -14,6 +14,20 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence, TypedDict
 
+# ---------------------------------------------------------------------------
+# Module-level compiled regex constants (avoid per-call recompilation)
+# ---------------------------------------------------------------------------
+_RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_RE_AXIS_LETTER = re.compile(r"([A-Za-z])(.*)")
+_RE_VALUE_START = re.compile(r"^[+\-0-9.{]")
+_RE_UPPER_COMMAND = re.compile(r"[A-Z0-9_.]+")
+_RE_SET_CLAUSE = re.compile(r"set\s+(.+?)\s*=\s*(.+)", re.IGNORECASE | re.DOTALL)
+_RE_FOR_CLAUSE = re.compile(r"for\s+(.+?)\s+in\s+(.+)", re.IGNORECASE | re.DOTALL)
+_RE_FILTER_EXPR = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$")
+_RE_PARAMS = re.compile(r"\bparams\.([A-Za-z_][A-Za-z0-9_]*)")
+_RE_PRINTER_OBJECTS = re.compile(r"\bprinter\.([A-Za-z_][A-Za-z0-9_\.]*)")
+_RE_FILTERS = re.compile(r"\|\s*([A-Za-z_][A-Za-z0-9_]*)")
+
 
 @dataclass(frozen=True)
 class MacroReference:
@@ -111,6 +125,7 @@ def explain_macro_script(
 
     gcode_text = str(macro.get("gcode") or "")
     body_lines = gcode_text.splitlines()
+    explainable_lines = _collapse_multiline_jinja_blocks(body_lines)
 
     current_macro_names = {
         str(macro.get("macro_name", "")).strip().lower(),
@@ -153,7 +168,7 @@ def explain_macro_script(
             key = (str(reference["macro_name"]), str(reference["file_path"]))
             references[key] = reference
 
-    for line_number, raw_line in enumerate(body_lines, start=1):
+    for line_number, raw_line in explainable_lines:
         entry = _explain_line(
             raw_line,
             line_number,
@@ -297,7 +312,7 @@ def _first_sentence(text: str) -> str:
     if not cleaned:
         return ""
 
-    parts = re.split(r"(?<=[.!?])\s+", cleaned, maxsplit=1)
+    parts = _RE_SENTENCE_SPLIT.split(cleaned, maxsplit=1)
     return parts[0]
 
 
@@ -420,7 +435,7 @@ def _explain_line(
             line_number=line_number,
             text=raw_line,
             kind="control",
-            confidence="medium",
+            confidence="high",
             effects=["template_control"],
             summary="Template expression inside g-code.",
             details="This line injects values computed from macro parameters or live printer state before the command runs.",
@@ -496,13 +511,13 @@ def _parse_parameters(tokens: list[str]) -> dict[str, str]:
             params[current_key] = value
             continue
 
-        axis_match = re.fullmatch(r"([A-Za-z])(.*)", token)
+        axis_match = _RE_AXIS_LETTER.fullmatch(token)
         if axis_match and axis_match.group(2):
             candidate_value = axis_match.group(2)
             # Only treat compact one-letter parameters (e.g. X10, E-2, S{temp})
             # as key/value pairs. Plain words like PROBE_CALIBRATE should remain
             # command text, not synthetic parameters.
-            if re.match(r"^[+\-0-9.{]", candidate_value):
+            if _RE_VALUE_START.match(candidate_value):
                 candidate_key = axis_match.group(1).upper()
                 params[candidate_key] = candidate_value
                 current_key = candidate_key
@@ -511,7 +526,7 @@ def _parse_parameters(tokens: list[str]) -> dict[str, str]:
             # Command-like all-caps tokens should stop value continuation,
             # but mixed/lowercase text is often part of a quoted value split
             # by whitespace (e.g. MSG="value # keep").
-            if re.fullmatch(r"[A-Z0-9_.]+", token):
+            if _RE_UPPER_COMMAND.fullmatch(token):
                 current_key = None
                 continue
 
@@ -539,6 +554,52 @@ def _strip_inline_comment(line: str) -> str:
         if char == "#" and not in_single and not in_double:
             return line[:idx]
     return line
+
+
+def _collapse_multiline_jinja_blocks(body_lines: Sequence[str]) -> list[tuple[int, str]]:
+    """Merge multiline Jinja blocks into single logical explainer lines.
+
+    Macros often split ``{% ... %}`` or ``{{ ... }}`` blocks across lines.
+    Explaining those lines independently can misclassify continuation lines.
+    """
+    collapsed: list[tuple[int, str]] = []
+    idx = 0
+    total = len(body_lines)
+
+    while idx < total:
+        raw_line = body_lines[idx]
+        stripped = _strip_inline_comment(raw_line.strip()).strip()
+
+        if stripped.startswith("{%") and not stripped.endswith("%}"):
+            start_line = idx + 1
+            parts = [raw_line]
+            idx += 1
+            while idx < total:
+                parts.append(body_lines[idx])
+                candidate = _strip_inline_comment(body_lines[idx].strip()).strip()
+                idx += 1
+                if candidate.endswith("%}"):
+                    break
+            collapsed.append((start_line, "\n".join(parts)))
+            continue
+
+        if stripped.startswith("{{") and not stripped.endswith("}}"):
+            start_line = idx + 1
+            parts = [raw_line]
+            idx += 1
+            while idx < total:
+                parts.append(body_lines[idx])
+                candidate = _strip_inline_comment(body_lines[idx].strip()).strip()
+                idx += 1
+                if candidate.endswith("}}"):
+                    break
+            collapsed.append((start_line, "\n".join(parts)))
+            continue
+
+        collapsed.append((idx + 1, raw_line))
+        idx += 1
+
+    return collapsed
 
 
 def _resolve_macro_references(
@@ -735,6 +796,7 @@ def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
     else:
         stripped = raw_line.strip()[2:-2].strip()
     normalized = stripped.lower()
+    confidence = "high"
 
     if normalized.startswith("if "):
         condition = stripped[3:].strip()
@@ -786,7 +848,7 @@ def _explain_template_block(raw_line: str, line_number: int) -> ExplanationLine:
         line_number=line_number,
         text=raw_line,
         kind="control",
-        confidence="medium",
+        confidence=confidence,
         effects=["template_control"],
         summary=summary,
         details=details,
@@ -803,7 +865,7 @@ def _format_params(params: dict[str, str]) -> str:
 
 def _parse_template_set_clause(clause: str) -> tuple[str, str]:
     """Split a Jinja set directive into variable and expression."""
-    match = re.match(r"set\s+(.+?)\s*=\s*(.+)", clause, flags=re.IGNORECASE)
+    match = _RE_SET_CLAUSE.match(clause)
     if not match:
         return "", ""
     return match.group(1).strip(), match.group(2).strip()
@@ -811,7 +873,7 @@ def _parse_template_set_clause(clause: str) -> tuple[str, str]:
 
 def _parse_template_for_clause(clause: str) -> tuple[str, str]:
     """Split a Jinja for directive into loop variable and iterable."""
-    match = re.match(r"for\s+(.+?)\s+in\s+(.+)", clause, flags=re.IGNORECASE)
+    match = _RE_FOR_CLAUSE.match(clause)
     if not match:
         return "", ""
     return match.group(1).strip(), match.group(2).strip()
@@ -859,7 +921,7 @@ def _describe_template_set_assignment(variable_name: str, expression: str) -> st
     output_type = ""
 
     for filter_expr in parts[1:]:
-        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)(?:\((.*)\))?$", filter_expr)
+        match = _RE_FILTER_EXPR.match(filter_expr)
         if not match:
             continue
         filter_name = match.group(1).strip().lower()
@@ -892,9 +954,9 @@ def _describe_template_expression(expression: str) -> str:
         return ""
 
     notes: list[str] = []
-    parameter_names = sorted(set(re.findall(r"\bparams\.([A-Za-z_][A-Za-z0-9_]*)", expr)))
-    printer_objects = sorted(set(re.findall(r"\bprinter\.([A-Za-z_][A-Za-z0-9_\.]*)", expr)))
-    filters = sorted(set(re.findall(r"\|\s*([A-Za-z_][A-Za-z0-9_]*)", expr)))
+    parameter_names = sorted(set(_RE_PARAMS.findall(expr)))
+    printer_objects = sorted(set(_RE_PRINTER_OBJECTS.findall(expr)))
+    filters = sorted(set(_RE_FILTERS.findall(expr)))
 
     if parameter_names:
         joined = ", ".join(parameter_names)

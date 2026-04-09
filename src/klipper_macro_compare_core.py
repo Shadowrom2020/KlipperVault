@@ -21,10 +21,18 @@ def format_ts(epoch_ts: int | None) -> str:
     return datetime.fromtimestamp(epoch_ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
+_macro_text_cache: dict[str, str] = {}
+_MACRO_TEXT_CACHE_MAX = 64
+
+
 def macro_to_text(macro: dict | None) -> str:
     """Render one macro row as INI-like text for code display widgets."""
     if macro is None:
         return ""
+
+    cache_key = str(macro.get("body_checksum") or "")
+    if cache_key and cache_key in _macro_text_cache:
+        return _macro_text_cache[cache_key]
 
     description = str(macro.get("description") or "")
     rename_existing = str(macro.get("rename_existing") or "").strip()
@@ -50,7 +58,11 @@ def macro_to_text(macro: dict | None) -> str:
         lines.append("gcode:")
         for line in gcode.splitlines():
             lines.append(f"  {line}")
-    return "\n".join(lines)
+    result = "\n".join(lines)
+
+    if cache_key and len(_macro_text_cache) < _MACRO_TEXT_CACHE_MAX:
+        _macro_text_cache[cache_key] = result
+    return result
 
 
 class MacroCompareDialog:

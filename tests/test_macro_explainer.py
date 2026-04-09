@@ -47,8 +47,26 @@ def test_explain_line_strips_semicolon_tail_before_template_detection() -> None:
 
     assert line is not None
     assert line.kind == "control"
-    assert line.confidence == "medium"
+    assert line.confidence == "high"
     assert line.summary == "Template variable assignment."
+
+
+def test_explain_line_template_inline_expression_is_high_confidence() -> None:
+    line = _explain_line("RESPOND MSG={{ printer.toolhead.position.x }}", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "control"
+    assert line.summary == "Template expression inside g-code."
+    assert line.confidence == "high"
+
+
+def test_explain_line_template_if_block_is_high_confidence() -> None:
+    line = _explain_line("{% if printer.idle_timeout.state == 'Printing' %}", 1, set(), {})
+
+    assert line is not None
+    assert line.kind == "control"
+    assert line.summary == "Conditional branch begins."
+    assert line.confidence == "high"
 
 
 def test_explain_line_ignores_inline_hash_comments() -> None:
@@ -482,6 +500,47 @@ def test_template_set_line_reports_source_default_and_result_type() -> None:
     assert "params.Z" in line.details
     assert "falls back to 30" in line.details
     assert "value type is int" in line.details
+
+
+def test_explain_macro_script_multiline_jinja_set_is_single_confident_control_line() -> None:
+    macro = {
+        "macro_name": "MULTI",
+        "gcode": (
+            "{% set home_all = ('X' in rawparams.upper() and 'Y' in rawparams.upper() and 'Z' in rawparams.upper()) or\n"
+            "                  ('X' not in rawparams.upper() and 'Y' not in rawparams.upper() and 'Z' not in rawparams.upper()) %}"
+        ),
+    }
+
+    result = explain_macro_script(macro, [])
+
+    assert result["has_content"] is True
+    assert len(result["lines"]) == 1
+    line = result["lines"][0]
+    assert line["kind"] == "control"
+    assert line["summary"] == "Template variable assignment."
+    assert line["confidence"] == "high"
+    assert "template variable home_all" in str(line["details"])
+    assert "combines multiple checks" in str(line["details"])
+
+
+def test_explain_macro_script_multiline_jinja_set_preserves_following_line_numbers() -> None:
+    macro = {
+        "macro_name": "MULTI",
+        "gcode": (
+            "{% set home_all = ('X' in rawparams.upper()) or\n"
+            "                  ('Y' in rawparams.upper()) %}\n"
+            "G28"
+        ),
+    }
+
+    result = explain_macro_script(macro, [])
+
+    assert result["has_content"] is True
+    assert len(result["lines"]) == 2
+    assert result["lines"][0]["line_number"] == 1
+    assert result["lines"][0]["kind"] == "control"
+    assert result["lines"][1]["line_number"] == 3
+    assert result["lines"][1]["kind"] == "motion"
 
 
 def test_load_command_pack_supports_commands_wrapper_and_filters_invalid_entries(tmp_path: Path) -> None:

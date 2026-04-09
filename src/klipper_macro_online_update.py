@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import concurrent.futures
+import functools
 import time
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -24,6 +26,7 @@ from klipper_vault_db import open_sqlite_connection
 from klipper_repo_url_utils import build_raw_githubusercontent_url
 
 
+@functools.lru_cache(maxsize=256)
 def _normalize_identity_component(value: str) -> str:
     """Normalize one identity component for case-insensitive comparisons."""
     return str(value or "").strip().lower()
@@ -217,6 +220,61 @@ def _fetch_remote_macro_payload(
     }
 
 
+def _bulk_load_local_rows(
+    conn,
+    source_vendor: str,
+    source_model: str,
+    macro_names: List[str],
+) -> Dict[str, tuple]:
+    """Batch load latest local rows for multiple macro names in two queries."""
+    if not macro_names:
+        return {}
+    vendor_norm = _normalize_identity_component(source_vendor)
+    model_norm = _normalize_identity_component(source_model)
+    placeholders = ",".join("?" * len(macro_names))
+
+    # Primary: match by vendor + model + macro_name (returns section_type … indexed_at)
+    rows = conn.execute(
+        f"""
+        SELECT macro_name, section_type, description, rename_existing, gcode,
+               variables_json, body_checksum, file_path, version, indexed_at
+        FROM macros
+        WHERE lower(source_vendor) = ?
+          AND lower(source_model) = ?
+          AND macro_name IN ({placeholders})
+        ORDER BY indexed_at DESC, version DESC
+        """,
+        [vendor_norm, model_norm, *macro_names],
+    ).fetchall()
+
+    result: Dict[str, tuple] = {}
+    for row in rows:
+        mn = row[0]
+        if mn not in result:
+            result[mn] = row[1:]  # drop macro_name; indices 0-8 match _local_latest_source_row
+
+    missing = [n for n in macro_names if n not in result]
+    if missing:
+        fb_ph = ",".join("?" * len(missing))
+        fb_rows = conn.execute(
+            f"""
+            SELECT macro_name, section_type, description, rename_existing, gcode,
+                   variables_json, body_checksum, file_path, version, indexed_at
+            FROM macros
+            WHERE macro_name IN ({fb_ph})
+              AND is_deleted = 0
+            ORDER BY is_active DESC, is_loaded DESC, indexed_at DESC, version DESC
+            """,
+            missing,
+        ).fetchall()
+        for row in fb_rows:
+            mn = row[0]
+            if mn not in result:
+                result[mn] = row[1:]
+
+    return result
+
+
 def _local_latest_source_row(conn, source_vendor: str, source_model: str, macro_name: str):
     """Fetch latest stored row matching source vendor/model/macro identity."""
     vendor_norm = _normalize_identity_component(source_vendor)
@@ -344,32 +402,52 @@ def check_online_macro_updates(
 
     manifest = _fetch_json_url(_build_raw_url(clean_repo, clean_ref, clean_manifest))
     manifest_entries = _manifest_entries_for_identity(manifest, source_vendor, source_model)
+    total = len(manifest_entries)
     if progress_callback is not None:
-        progress_callback(0, len(manifest_entries))
+        progress_callback(0, total)
 
     source_vendor_norm = _normalize_identity_component(source_vendor)
     source_model_norm = _normalize_identity_component(source_model)
     updates: List[Dict[str, object]] = []
     unchanged = 0
 
+    # ---- Phase 1: fetch all remote payloads in parallel ----
+    def _fetch_one(args: tuple) -> Dict[str, object]:
+        _idx, entry = args
+        return _fetch_remote_macro_payload(clean_repo, clean_ref, source_vendor, source_model, entry)
+
+    max_workers = min(8, max(1, total))
+    fetch_results: List[Dict[str, object]] = [None] * total  # type: ignore[list-item]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(_fetch_one, (i, entry)): i
+            for i, entry in enumerate(manifest_entries)
+        }
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            fetch_results[idx] = future.result()  # raises on error, propagated to caller
+
+    # ---- Phase 2: parse payloads and bulk-load local rows ----
+    parsed_remotes: List[tuple] = []
+    for remote_payload in fetch_results:
+        parsed = _parse_macro_section_text(str(remote_payload["section_text"]))
+        macro_name = str(parsed.get("macro_name", "")).strip()
+        remote_checksum = _make_checksum(str(parsed.get("section_text", remote_payload["section_text"])))
+        parsed_remotes.append((remote_payload, parsed, macro_name, remote_checksum))
+
+    macro_names = [x[2] for x in parsed_remotes]
+
     with open_sqlite_connection(
         db_path,
         ensure_schema=ensure_schema,
         pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
     ) as conn:
-        for index, entry in enumerate(manifest_entries, start=1):
-            remote_payload = _fetch_remote_macro_payload(
-                clean_repo,
-                clean_ref,
-                source_vendor,
-                source_model,
-                entry,
-            )
-            parsed = _parse_macro_section_text(str(remote_payload["section_text"]))
-            macro_name = str(parsed.get("macro_name", "")).strip()
-            remote_checksum = _make_checksum(str(parsed.get("section_text", remote_payload["section_text"])))
+        local_rows = _bulk_load_local_rows(conn, source_vendor, source_model, macro_names)
 
-            local_latest = _local_latest_source_row(conn, source_vendor, source_model, macro_name)
+        for index, (remote_payload, parsed, macro_name, remote_checksum) in enumerate(
+            parsed_remotes, start=1
+        ):
+            local_latest = local_rows.get(macro_name)
             changed = True
             local_version = 0
             if local_latest is not None:
@@ -423,7 +501,7 @@ def check_online_macro_updates(
                 unchanged += 1
 
             if progress_callback is not None:
-                progress_callback(index, len(manifest_entries))
+                progress_callback(index, total)
 
         conn.commit()
 

@@ -6,6 +6,7 @@ from klipper_macro_online_update import import_online_macro_updates
 from klipper_macro_indexer import (
     export_macro_share_payload,
     get_cfg_load_order,
+    get_cfg_loading_overview,
     import_macro_share_payload,
     load_duplicate_macro_groups,
     load_macro_list,
@@ -121,6 +122,139 @@ def test_get_cfg_load_order_includes_dynamicmacros_configs(tmp_path: Path) -> No
     assert order == ["printer.cfg", "generated/one.cfg", "generated/two.cfg", "orphan.cfg"]
 
 
+def test_get_cfg_loading_overview_reports_klipper_vs_scan_order(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [include extras/b.cfg]
+        [include extras/a.cfg]
+        """,
+    )
+    _write(tmp_path / "extras" / "a.cfg", "[printer]\n")
+    _write(tmp_path / "extras" / "b.cfg", "[printer]\n")
+    _write(tmp_path / "orphan.cfg", "[printer]\n")
+
+    overview = get_cfg_loading_overview(tmp_path)
+
+    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
+    klipper_macro_order = overview["klipper_macro_order"]
+
+    assert klipper_order == ["printer.cfg", "extras/b.cfg", "extras/a.cfg"]
+    assert overview["klipper_count"] == 3
+    assert klipper_macro_order == []
+    assert overview["klipper_macro_count"] == 0
+    assert "klippervault_order" not in overview
+    assert "klippervault_count" not in overview
+
+
+def test_get_cfg_loading_overview_ignores_dynamicmacros_section_like_klipper(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [dynamicmacros]
+        configs: generated.cfg
+        """,
+    )
+    _write(tmp_path / "generated.cfg", "[printer]\n")
+
+    overview = get_cfg_loading_overview(tmp_path)
+
+    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
+    assert klipper_order == ["printer.cfg"]
+    assert overview["klipper_count"] == 1
+
+
+def test_get_cfg_loading_overview_preserves_duplicate_include_entries_like_klipper(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [include extras/a.cfg]
+        [include extras/b.cfg]
+        """,
+    )
+    _write(
+        tmp_path / "extras" / "a.cfg",
+        """
+        [include common.cfg]
+        """,
+    )
+    _write(
+        tmp_path / "extras" / "b.cfg",
+        """
+        [include common.cfg]
+        """,
+    )
+    _write(tmp_path / "extras" / "common.cfg", "[printer]\n")
+
+    overview = get_cfg_loading_overview(tmp_path)
+    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
+
+    assert klipper_order == [
+        "printer.cfg",
+        "extras/a.cfg",
+        "extras/common.cfg",
+        "extras/b.cfg",
+        "extras/common.cfg",
+    ]
+
+
+def test_get_cfg_loading_overview_reports_macro_level_inline_include_order(tmp_path: Path) -> None:
+        _write(
+                tmp_path / "printer.cfg",
+                """
+                [gcode_macro PRINTER_HEAD]
+                gcode:
+                    RESPOND MSG="head"
+
+                [include macros.cfg]
+
+                [gcode_macro PRINTER_TAIL]
+                gcode:
+                    RESPOND MSG="tail"
+                """,
+        )
+        _write(
+                tmp_path / "macros.cfg",
+                """
+                [gcode_macro BEFORE_INCLUDE]
+                gcode:
+                    RESPOND MSG="before"
+
+                [include extras/sub.cfg]
+
+                [gcode_macro AFTER_INCLUDE]
+                gcode:
+                    RESPOND MSG="after"
+                """,
+        )
+        _write(
+                tmp_path / "extras" / "sub.cfg",
+                """
+                [gcode_macro SUB_MACRO]
+                gcode:
+                    RESPOND MSG="sub"
+                """,
+        )
+
+        overview = get_cfg_loading_overview(tmp_path)
+
+        assert [row["file_path"] for row in overview["klipper_order"]] == [
+                "printer.cfg",
+                "macros.cfg",
+                "extras/sub.cfg",
+        ]
+        assert [row["macro_name"] for row in overview["klipper_macro_order"]] == [
+                "PRINTER_HEAD",
+                "BEFORE_INCLUDE",
+                "SUB_MACRO",
+                "AFTER_INCLUDE",
+                "PRINTER_TAIL",
+        ]
+        assert overview["klipper_macro_count"] == 5
+        assert overview["klipper_macro_order"][2]["file_path"] == "extras/sub.cfg"
+        assert overview["klipper_macro_order"][2]["line_number"] == 1
+
+
 def test_run_indexing_marks_only_last_duplicate_macro_active(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "macros.db"
@@ -157,6 +291,42 @@ def test_run_indexing_marks_only_last_duplicate_macro_active(tmp_path: Path) -> 
     assert rows_by_path["base.cfg"]["is_active"] is False
     assert rows_by_path["override.cfg"]["is_active"] is True
     assert rows_by_path["override.cfg"]["runtime_macro_name"] == "HELLO"
+
+
+def test_run_indexing_respects_inline_include_order_for_active_macro(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [include parent.cfg]
+                """,
+        )
+        _write(
+                config_dir / "parent.cfg",
+                """
+                [include nested.cfg]
+
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="parent after include"
+                """,
+        )
+        _write(
+                config_dir / "nested.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="nested"
+                """,
+        )
+
+        run_indexing(config_dir, db_path)
+        macros = load_macro_list(db_path, config_dir=config_dir)
+        rows_by_path = {row["file_path"]: row for row in macros}
+
+        assert rows_by_path["nested.cfg"]["is_active"] is False
+        assert rows_by_path["parent.cfg"]["is_active"] is True
 
 
 def test_run_indexing_marks_unreferenced_cfg_macros_not_loaded(tmp_path: Path) -> None:
@@ -596,3 +766,56 @@ def test_load_macro_list_marks_identity_new_when_older_pending_version_exists(tm
     assert macros[0]["macro_name"] == "HELLO"
     assert macros[0]["is_new"] is True
     assert macros[0]["is_active"] is True
+
+
+def test_load_macro_list_attaches_true_macro_load_order_when_config_dir_given(tmp_path: Path) -> None:
+    """load_macro_list enriches each macro with true macro-level load order."""
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    _write(
+        config_dir / "printer.cfg",
+                "[gcode_macro PRINTER_MACRO]\n"
+                "gcode:\n"
+                "  RESPOND MSG=\"from printer\"\n\n"
+                "[include macros.cfg]\n\n"
+                "[gcode_macro PRINTER_TAIL_MACRO]\n"
+                "gcode:\n"
+                "  RESPOND MSG=\"after include in printer\"\n",
+    )
+    _write(
+        config_dir / "macros.cfg",
+                "[gcode_macro BEFORE_INCLUDE]\n"
+                "gcode:\n"
+                "  RESPOND MSG=\"before\"\n\n"
+                "[include extras/sub.cfg]\n\n"
+                "[gcode_macro AFTER_INCLUDE_MACRO]\n"
+                "gcode:\n"
+                "  RESPOND MSG=\"after\"\n",
+    )
+    _write(
+        config_dir / "extras" / "sub.cfg",
+        """
+        [gcode_macro SUB_MACRO]
+        gcode:
+          RESPOND MSG="from sub"
+        """,
+    )
+    run_indexing(config_dir, db_path)
+
+    macros = load_macro_list(db_path, config_dir=config_dir)
+    by_name = {row["macro_name"]: row for row in macros}
+
+    assert by_name["PRINTER_MACRO"]["load_order_index"] == 0
+    assert by_name["BEFORE_INCLUDE"]["load_order_index"] == 1
+    assert by_name["SUB_MACRO"]["load_order_index"] == 2
+    assert by_name["AFTER_INCLUDE_MACRO"]["load_order_index"] == 3
+    assert by_name["PRINTER_TAIL_MACRO"]["load_order_index"] == 4
+
+    macros_by_load_order = sorted(macros, key=lambda row: row["load_order_index"])
+    assert [row["macro_name"] for row in macros_by_load_order] == [
+        "PRINTER_MACRO",
+        "BEFORE_INCLUDE",
+        "SUB_MACRO",
+        "AFTER_INCLUDE_MACRO",
+        "PRINTER_TAIL_MACRO",
+    ]

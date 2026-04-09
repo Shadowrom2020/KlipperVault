@@ -27,6 +27,7 @@ It is built for Klipper systems that keep configuration in `~/printer_data/confi
 - Dynamic macro awareness for configs loaded via `[dynamicmacros]` `configs:` entries.
 - Dynamic macro status badge (`Dynamic`) and dedicated `Reload Dynamic Macros` action.
 - Duplicate macro detection with guided conflict resolution.
+- Loading-order overview showing Klipper file parse order and macro-level inline include order.
 - In-place macro editing with write-back to cfg files.
 - Backup and restore of both indexed rows and cfg snapshots.
 - Macro sharing workflow:
@@ -143,6 +144,12 @@ Typical flow:
 5. For dynamic macros, editing is allowed even while printing.
 6. Use `Reload Dynamic Macros` to apply dynamic-macro changes without a full Klipper restart.
 7. Save and re-index.
+
+Loading-order inspection:
+
+1. Open `Macro actions`.
+2. Click `Loading order overview`.
+3. Review file and macro parse order to confirm include sequencing and macro override precedence.
 
 Share/import flow:
 
