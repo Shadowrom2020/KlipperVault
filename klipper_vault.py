@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import subprocess  # nosec B404
 import sys
@@ -89,6 +90,99 @@ def _load_app_version() -> str:
         return "unknown"
 
 
+def _patch_nicegui_disconnect_signature() -> None:
+    """Adapt NiceGUI disconnect callback for newer socket.io argument shape."""
+    try:
+        from nicegui import nicegui as nicegui_runtime
+    except Exception:
+        return
+
+    disconnect_handler = getattr(nicegui_runtime, "_on_disconnect", None)
+    sio = getattr(nicegui_runtime, "sio", None)
+    if disconnect_handler is None or sio is None:
+        return
+
+    try:
+        parameter_count = len(inspect.signature(disconnect_handler).parameters)
+    except (TypeError, ValueError):
+        parameter_count = 0
+
+    if parameter_count >= 2:
+        return
+
+    def _on_disconnect_compat(sid: str, *_: object) -> None:
+        disconnect_handler(sid)
+
+    nicegui_runtime._on_disconnect = _on_disconnect_compat
+    sio.on("disconnect", _on_disconnect_compat)
+
+
+def _patch_nicegui_deleted_parent_slot_event_race() -> None:
+    """Ignore stale UI events that arrive after a client's element tree is removed."""
+    try:
+        from nicegui import events as nicegui_events
+    except Exception:
+        return
+
+    if getattr(nicegui_events.handle_event, "__name__", "") == "_handle_event_compat":
+        return
+
+    def _handle_event_compat(handler, arguments) -> None:
+        if handler is None:
+            return
+        try:
+            if isinstance(arguments, nicegui_events.UiEventArguments):
+                parent_slot = arguments.sender.parent_slot or arguments.sender.client.layout.default_slot
+            else:
+                parent_slot = nicegui_events.nullcontext()
+
+            with parent_slot:
+                if nicegui_events.helpers.expects_arguments(handler):
+                    result = handler(arguments)
+                else:
+                    result = handler()
+
+            if nicegui_events.helpers.should_await(result):
+                nicegui_events.background_tasks.create_or_defer(
+                    nicegui_events.helpers.await_with_context(result, parent_slot),
+                    name=str(handler),
+                )
+        except RuntimeError as error:
+            if "The parent slot of the element has been deleted." in str(error):
+                return
+            nicegui_events.core.app.handle_exception(error)
+        except Exception as error:
+            nicegui_events.core.app.handle_exception(error)
+
+    nicegui_events.handle_event = _handle_event_compat
+
+
+def _patch_nicegui_deleted_parent_slot_exception_filter() -> None:
+    """Suppress only the known benign parent-slot teardown RuntimeError."""
+    try:
+        from nicegui import core as nicegui_core
+    except Exception:
+        return
+
+    app_object = getattr(nicegui_core, "app", None)
+    if app_object is None:
+        return
+
+    original_handle_exception = getattr(app_object, "handle_exception", None)
+    if original_handle_exception is None:
+        return
+
+    if getattr(original_handle_exception, "__name__", "") == "_handle_exception_compat":
+        return
+
+    def _handle_exception_compat(error: Exception) -> None:
+        if isinstance(error, RuntimeError) and str(error) == "The parent slot of the element has been deleted.":
+            return
+        original_handle_exception(error)
+
+    app_object.handle_exception = _handle_exception_compat
+
+
 def main() -> None:
     """Start the NiceGUI application with configured runtime settings."""
     _sync_venv_requirements_if_needed()
@@ -100,6 +194,10 @@ def main() -> None:
     from klipper_vault_config import load_or_create as _load_vault_config
     from klipper_vault_i18n import t
     from nicegui import ui
+
+    _patch_nicegui_disconnect_signature()
+    _patch_nicegui_deleted_parent_slot_event_race()
+    _patch_nicegui_deleted_parent_slot_exception_filter()
 
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
     vault_cfg = _load_vault_config(config_dir)

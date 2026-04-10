@@ -236,7 +236,12 @@ def build_ui(app_version: str = "unknown") -> None:
         _cached_versions = []
         _cached_versions_key = None
         selected_key = None
-        viewer.set_macro(None, [])
+        try:
+            viewer.set_macro(None, [])
+        except RuntimeError as error:
+            # NiceGUI may tear down element slots before disconnect callbacks finish.
+            if "parent slot of the element has been deleted" not in str(error):
+                raise
 
     def _on_client_connect(client=None) -> None:
         """Track connected clients and restore normal active behavior."""
