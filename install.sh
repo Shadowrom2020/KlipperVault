@@ -29,6 +29,8 @@ MAINSAIL_NAV_TARGET="${MAINSAIL_NAV_TARGET:-_blank}"
 MAINSAIL_NAV_POSITION="${MAINSAIL_NAV_POSITION:-85}"
 UPDATE_MANAGER_NAME="${UPDATE_MANAGER_NAME:-klippervault}"
 
+LOW_MEMORY_THRESHOLD_KB=1048576
+
 need_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -64,6 +66,48 @@ install_apt_dependencies() {
   echo "Detected apt-based system; installing required Python packages..."
   as_root apt-get update
   as_root apt-get install -y python3-venv python3-pip
+}
+
+check_system_memory() {
+  if [[ ! -r /proc/meminfo ]]; then
+    return
+  fi
+
+  local total_kb
+  total_kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+
+  if [[ ! "$total_kb" =~ ^[0-9]+$ ]]; then
+    return
+  fi
+
+  if (( total_kb >= LOW_MEMORY_THRESHOLD_KB )); then
+    return
+  fi
+
+  local total_mb
+  total_mb=$((total_kb / 1024))
+
+  echo "WARNING: Detected ${total_mb}MB RAM (less than 1024MB)."
+  echo "KlipperVault may run poorly on systems with less than 1GB of RAM."
+
+  if [[ ! -t 0 ]]; then
+    echo "Cannot prompt for confirmation in non-interactive mode. Aborting install."
+    exit 1
+  fi
+
+  if ! read -r -p "Continue anyway? [y/N]: " confirm_low_memory; then
+    echo "Install canceled due to low memory."
+    exit 1
+  fi
+
+  case "${confirm_low_memory,,}" in
+    y|yes)
+      ;;
+    n|no|*)
+      echo "Install canceled due to low memory."
+      exit 1
+      ;;
+  esac
 }
 
 detect_vault_port() {
@@ -244,6 +288,8 @@ echo "Virtualenv: $VENV_DIR"
 need_cmd "$PYTHON_BIN"
 need_cmd systemctl
 need_cmd getent
+
+check_system_memory
 
 install_apt_dependencies
 
