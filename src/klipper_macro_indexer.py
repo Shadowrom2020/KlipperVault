@@ -21,7 +21,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from klipper_macro_backup import ensure_backup_schema
 from klipper_vault_db import open_sqlite_connection
@@ -1161,13 +1161,21 @@ def run_indexing(
     db_path: Path,
     max_versions: int = _MAX_VERSIONS,
     printer_profile_id: int = 1,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> Dict[str, object]:
     """Index cfg files into SQLite and return a small run summary."""
+    if progress_callback is not None:
+        progress_callback(0, 3)
+
     if not config_dir.exists() or not config_dir.is_dir():
         raise FileNotFoundError(f"config directory not found: {config_dir}")
 
     cfg_files, _, _ = _resolve_cfg_file_sets(config_dir)
+    if progress_callback is not None:
+        progress_callback(1, 3)
     all_records, _, _ = _collect_macro_records_in_order(config_dir)
+    if progress_callback is not None:
+        progress_callback(2, 3)
     cfg_count = len(cfg_files)
 
     now_ts = int(time.time())
@@ -1184,6 +1192,9 @@ def run_indexing(
             max_versions=max_versions,
         )
         conn.commit()
+
+    if progress_callback is not None:
+        progress_callback(3, 3)
 
     return {
         "cfg_files_scanned": cfg_count,

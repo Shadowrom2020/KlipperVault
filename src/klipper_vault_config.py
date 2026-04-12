@@ -127,6 +127,87 @@ def _missing_persisted_config_keys(parser: configparser.ConfigParser) -> set[str
     }
 
 
+def _get_stripped(
+    parser: configparser.ConfigParser,
+    section: str,
+    option: str,
+    *,
+    default: str,
+    lower: bool = False,
+    require_non_empty: bool = False,
+) -> str:
+    """Read one config option as stripped text with optional normalization."""
+    if not parser.has_option(section, option):
+        return default
+    value = parser.get(section, option).strip()
+    if lower:
+        value = value.lower()
+    if require_non_empty and not value:
+        return default
+    return value
+
+
+def _get_int_in_range(
+    parser: configparser.ConfigParser,
+    section: str,
+    option: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+    clamp_below_minimum: bool = False,
+    clamp_above_maximum: bool = False,
+) -> int:
+    """Read one config option as int constrained to an inclusive range."""
+    if not parser.has_option(section, option):
+        return default
+    try:
+        value = int(parser.get(section, option))
+    except ValueError:
+        return default
+    if value < minimum and clamp_below_minimum:
+        return minimum
+    if value > maximum and clamp_above_maximum:
+        return maximum
+    if minimum <= value <= maximum:
+        return value
+    return default
+
+
+def _get_bool(
+    parser: configparser.ConfigParser,
+    section: str,
+    option: str,
+    *,
+    default: bool,
+) -> bool:
+    """Read one config option as a legacy-compatible boolean toggle."""
+    if not parser.has_option(section, option):
+        return default
+    value = parser.get(section, option).strip().lower()
+    return value in ("true", "1", "yes")
+
+
+def _get_enum(
+    parser: configparser.ConfigParser,
+    section: str,
+    option: str,
+    *,
+    default: str,
+    allowed: set[str],
+) -> str:
+    """Read one config option constrained to a predefined set of values."""
+    value = _get_stripped(
+        parser,
+        section,
+        option,
+        default=default,
+        lower=True,
+        require_non_empty=True,
+    )
+    return value if value in allowed else default
+
+
 def _read_key_value_line(raw_line: str) -> tuple[str, str] | None:
     """Parse simple cfg lines like `key: value` or `key = value`."""
     line = raw_line.split("#", 1)[0].strip()
@@ -301,98 +382,92 @@ def load_or_create(config_dir: Path) -> VaultConfig:
     parser.read(str(cfg_path), encoding="utf-8")
     missing_persisted_keys = _missing_persisted_config_keys(parser)
 
-    version_history_size = 5
-    port = 10090
-    if parser.has_option("vault", "version_history_size"):
-        try:
-            version_history_size = max(1, int(parser.get("vault", "version_history_size")))
-        except ValueError:
-            pass
-
-    if parser.has_option("vault", "port"):
-        try:
-            parsed_port = int(parser.get("vault", "port"))
-            if 1 <= parsed_port <= 65535:
-                port = parsed_port
-        except ValueError:
-            pass
-
-    ui_language = "en"
-    if parser.has_option("vault", "ui_language"):
-        raw_language = parser.get("vault", "ui_language").strip().lower()
-        if raw_language:
-            ui_language = raw_language
-
-    runtime_mode = "auto"
-    if parser.has_option("vault", "runtime_mode"):
-        parsed_runtime_mode = parser.get("vault", "runtime_mode").strip().lower()
-        if parsed_runtime_mode in {"auto", "on_printer", "off_printer"}:
-            runtime_mode = parsed_runtime_mode
+    version_history_size = _get_int_in_range(
+        parser,
+        "vault",
+        "version_history_size",
+        default=5,
+        minimum=1,
+        maximum=2_147_483_647,
+        clamp_below_minimum=True,
+    )
+    port = _get_int_in_range(
+        parser,
+        "vault",
+        "port",
+        default=10090,
+        minimum=1,
+        maximum=65535,
+    )
+    ui_language = _get_stripped(
+        parser,
+        "vault",
+        "ui_language",
+        default="en",
+        lower=True,
+        require_non_empty=True,
+    )
+    runtime_mode = _get_enum(
+        parser,
+        "vault",
+        "runtime_mode",
+        default="auto",
+        allowed={"auto", "on_printer", "off_printer"},
+    )
 
     printer_vendor = ""
     vendor_is_stored = False
     if parser.has_option("vault", "printer_vendor"):
         vendor_is_stored = True
-        printer_vendor = parser.get("vault", "printer_vendor").strip()
+        printer_vendor = _get_stripped(parser, "vault", "printer_vendor", default="")
 
     printer_model = ""
     model_is_stored = False
     if parser.has_option("vault", "printer_model"):
         model_is_stored = True
-        printer_model = parser.get("vault", "printer_model").strip()
+        printer_model = _get_stripped(parser, "vault", "printer_model", default="")
 
-    online_update_repo_url = _DEFAULT_ONLINE_UPDATE_REPO_URL
-    if parser.has_option("vault", "online_update_repo_url"):
-        online_update_repo_url = parser.get("vault", "online_update_repo_url").strip()
+    online_update_repo_url = _get_stripped(
+        parser,
+        "vault",
+        "online_update_repo_url",
+        default=_DEFAULT_ONLINE_UPDATE_REPO_URL,
+    )
+    online_update_manifest_path = _get_stripped(
+        parser,
+        "vault",
+        "online_update_manifest_path",
+        default=_DEFAULT_ONLINE_UPDATE_MANIFEST_PATH,
+        require_non_empty=True,
+    )
+    online_update_ref = _get_stripped(
+        parser,
+        "vault",
+        "online_update_ref",
+        default=_DEFAULT_ONLINE_UPDATE_REF,
+        require_non_empty=True,
+    )
 
-    online_update_manifest_path = _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
-    if parser.has_option("vault", "online_update_manifest_path"):
-        parsed_manifest_path = parser.get("vault", "online_update_manifest_path").strip()
-        if parsed_manifest_path:
-            online_update_manifest_path = parsed_manifest_path
-
-    online_update_ref = _DEFAULT_ONLINE_UPDATE_REF
-    if parser.has_option("vault", "online_update_ref"):
-        parsed_ref = parser.get("vault", "online_update_ref").strip()
-        if parsed_ref:
-            online_update_ref = parsed_ref
-
-    developer = False
-    if parser.has_option("vault", "developer"):
-        dev_value = parser.get("vault", "developer").strip().lower()
-        developer = dev_value in ("true", "1", "yes")
-
-    enable_remote_api = False
-    if parser.has_option("vault", "enable_remote_api"):
-        remote_api_value = parser.get("vault", "enable_remote_api").strip().lower()
-        enable_remote_api = remote_api_value in ("true", "1", "yes")
-
-    api_bind_host = "127.0.0.1"
-    if parser.has_option("vault", "api_bind_host"):
-        parsed_bind_host = parser.get("vault", "api_bind_host").strip()
-        if parsed_bind_host:
-            api_bind_host = parsed_bind_host
-
-    api_port = 10091
-    if parser.has_option("vault", "api_port"):
-        try:
-            parsed_api_port = int(parser.get("vault", "api_port"))
-            if 1 <= parsed_api_port <= 65535:
-                api_port = parsed_api_port
-        except ValueError:
-            pass
-
-    api_token = ""
-    if parser.has_option("vault", "api_token"):
-        api_token = parser.get("vault", "api_token").strip()
-
-    remote_api_url = ""
-    if parser.has_option("vault", "remote_api_url"):
-        remote_api_url = parser.get("vault", "remote_api_url").strip()
-
-    remote_api_token = ""
-    if parser.has_option("vault", "remote_api_token"):
-        remote_api_token = parser.get("vault", "remote_api_token").strip()
+    developer = _get_bool(parser, "vault", "developer", default=False)
+    enable_remote_api = _get_bool(parser, "vault", "enable_remote_api", default=False)
+    api_bind_host = _get_stripped(
+        parser,
+        "vault",
+        "api_bind_host",
+        default="127.0.0.1",
+        require_non_empty=True,
+    )
+    api_port = _get_int_in_range(
+        parser,
+        "vault",
+        "api_port",
+        default=10091,
+        minimum=1,
+        maximum=65535,
+    )
+    api_token = _get_stripped(parser, "vault", "api_token", default="")
+    remote_api_url = _get_stripped(parser, "vault", "remote_api_url", default="")
+    remote_api_token = _get_stripped(parser, "vault", "remote_api_token", default="")
 
     detected_printer_identity = False
     if not printer_vendor or not printer_model:

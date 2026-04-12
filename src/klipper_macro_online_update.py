@@ -22,6 +22,7 @@ from klipper_macro_indexer import (
     _parse_macro_section_text,
     ensure_schema,
 )
+from klipper_type_utils import to_text as _as_text
 from klipper_vault_db import open_sqlite_connection
 from klipper_repo_url_utils import build_raw_githubusercontent_url
 
@@ -30,11 +31,6 @@ from klipper_repo_url_utils import build_raw_githubusercontent_url
 def _normalize_identity_component(value: str) -> str:
     """Normalize one identity component for case-insensitive comparisons."""
     return str(value or "").strip().lower()
-
-
-def _as_text(value: object) -> str:
-    """Normalize dynamic values into stripped text."""
-    return str(value or "").strip()
 
 
 class OnlineImportCandidate(BaseModel):

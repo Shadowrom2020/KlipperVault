@@ -131,6 +131,29 @@ def test_off_printer_mode_uses_active_profile_moonraker_url(tmp_path: Path) -> N
     assert url.startswith("http://remote.local:8125")
 
 
+def test_off_printer_rewrites_localhost_moonraker_url_to_remote_host(tmp_path: Path) -> None:
+    service = MacroGuiService(
+        db_path=tmp_path / "vault.db",
+        config_dir=tmp_path / "config",
+        version_history_size=5,
+        runtime_mode="off_printer",
+        moonraker_base_url="http://127.0.0.1:7125",
+    )
+
+    service.save_ssh_profile(
+        profile_name="Remote",
+        host="192.168.0.25",
+        username="pi",
+        remote_config_dir="/remote/config",
+        moonraker_url="http://127.0.0.1:7125",
+        auth_mode="key",
+        is_active=True,
+    )
+
+    url = service._moonraker_url("/printer/restart")
+    assert url.startswith("http://192.168.0.25:7125")
+
+
 def test_on_printer_mode_keeps_explicit_moonraker_url(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service.save_ssh_profile(
@@ -243,8 +266,9 @@ def test_off_printer_index_syncs_remote_before_index(tmp_path: Path) -> None:
     assert result["cfg_files_scanned"] == 2
     assert "remote_sync" in result
     assert result["remote_sync"]["synced_files"] == 2
-    assert (tmp_path / "config" / "printer.cfg").exists()
-    assert (tmp_path / "config" / "macros.cfg").exists()
+    runtime_dir = Path(str(result.get("runtime_config_dir", "")))
+    assert (runtime_dir / "printer.cfg").exists()
+    assert (runtime_dir / "macros.cfg").exists()
 
 
 def test_off_printer_index_syncs_with_tilde_remote_root(tmp_path: Path) -> None:
@@ -284,7 +308,8 @@ def test_off_printer_index_syncs_with_tilde_remote_root(tmp_path: Path) -> None:
     assert result["cfg_files_scanned"] == 1
     assert "remote_sync" in result
     assert result["remote_sync"]["synced_files"] == 1
-    assert (tmp_path / "config" / "printer.cfg").exists()
+    runtime_dir = Path(str(result.get("runtime_config_dir", "")))
+    assert (runtime_dir / "printer.cfg").exists()
 
 
 def test_off_printer_save_pushes_local_file_to_remote(tmp_path: Path) -> None:
@@ -312,8 +337,9 @@ def test_off_printer_save_pushes_local_file_to_remote(tmp_path: Path) -> None:
         ),
         patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
     ):
-        (tmp_path / "config" / "macros.cfg").parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / "config" / "macros.cfg").write_text("[gcode_macro TEST]\n", encoding="utf-8")
+        runtime_dir = service.get_runtime_config_dir()
+        (runtime_dir / "macros.cfg").parent.mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "macros.cfg").write_text("[gcode_macro TEST]\n", encoding="utf-8")
         result = service.save_macro_editor_text("macros.cfg", "TEST", "[gcode_macro TEST]\n")
 
     write_mock.assert_called_once()
@@ -457,14 +483,20 @@ def test_off_printer_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) 
         is_active=True,
     )
 
-    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "config" / "printer.cfg").write_text("[include macros.cfg]\n", encoding="utf-8")
-    (tmp_path / "config" / "macros.cfg").write_text("[gcode_macro TEST]\n", encoding="utf-8")
+    runtime_dir = service.get_runtime_config_dir()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "printer.cfg").write_text("[include macros.cfg]\n", encoding="utf-8")
+    (runtime_dir / "macros.cfg").write_text("[gcode_macro TEST]\n", encoding="utf-8")
 
     with (
         patch(
             "klipper_macro_gui_service.restore_macro_backup",
-            return_value={"backup_id": 7, "restored_cfg_files": 2, "removed_cfg_files": 1},
+                return_value={
+                    "backup_id": 7,
+                    "restored_cfg_files": 2,
+                    "removed_cfg_files": 1,
+                    "touched_cfg_files": ["printer.cfg", "macros.cfg"],
+                },
         ),
         patch(
             "klipper_macro_gui_service.SshTransport.list_cfg_files",
@@ -481,8 +513,79 @@ def test_off_printer_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) 
 
     assert result["remote_synced"] is True
     remote_sync = result["remote_sync"]
-    assert remote_sync["uploaded_files"] == 2
-    assert remote_sync["removed_remote_files"] == 1
-    assert "/remote/config/obsolete.cfg" in remote_sync["removed_remote_paths"]
-    assert write_mock.call_count == 2
-    remove_mock.assert_called_once_with("/remote/config/obsolete.cfg")
+    assert remote_sync["uploaded_files"] == 1
+    assert remote_sync["blocked_files"] == 1
+    assert remote_sync["blocked_by_protected_file"] is True
+    assert write_mock.call_count == 1
+    remove_mock.assert_not_called()
+
+
+def test_off_printer_blocks_printer_cfg_macro_edit(tmp_path: Path) -> None:
+    service = MacroGuiService(
+        db_path=tmp_path / "vault.db",
+        config_dir=tmp_path / "config",
+        version_history_size=5,
+        runtime_mode="off_printer",
+    )
+    service.save_ssh_profile(
+        profile_name="Remote",
+        host="remote.local",
+        username="pi",
+        remote_config_dir="/remote/config",
+        moonraker_url="http://remote.local:7125",
+        auth_mode="password",
+        secret_value="pw123",
+        is_active=True,
+    )
+
+    try:
+        service.save_macro_editor_text("printer.cfg", "TEST", "[gcode_macro TEST]\n")
+    except ValueError as exc:
+        assert "read-only" in str(exc).lower()
+    else:
+        raise AssertionError("Expected protected printer.cfg edit to be blocked")
+
+
+def test_off_printer_duplicate_resolve_upload_error_includes_file_context(tmp_path: Path) -> None:
+    service = MacroGuiService(
+        db_path=tmp_path / "vault.db",
+        config_dir=tmp_path / "config",
+        version_history_size=5,
+        runtime_mode="off_printer",
+    )
+    service.save_ssh_profile(
+        profile_name="Remote",
+        host="remote.local",
+        username="pi",
+        remote_config_dir="/remote/config",
+        moonraker_url="http://remote.local:7125",
+        auth_mode="password",
+        secret_value="pw123",
+        is_active=True,
+    )
+
+    runtime_dir = service.get_runtime_config_dir()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "macros.cfg").write_text("[gcode_macro TEST]\n", encoding="utf-8")
+
+    with (
+        patch(
+            "klipper_macro_gui_service.resolve_duplicate_macros",
+            return_value={"removed_sections": 1, "touched_files": ["macros.cfg"]},
+        ),
+        patch(
+            "klipper_macro_gui_service.SshTransport.write_text_file_atomic",
+            side_effect=RuntimeError("Failure"),
+        ),
+    ):
+        try:
+            service.resolve_duplicates(
+                keep_choices={"TEST": "macros.cfg"},
+                duplicate_groups=[{"macro_name": "TEST", "entries": [{"file_path": "macros.cfg"}]}],
+            )
+        except RuntimeError as exc:
+            text = str(exc)
+            assert "macros.cfg" in text
+            assert "Failure" in text
+        else:
+            raise AssertionError("Expected duplicate resolve upload to raise RuntimeError")

@@ -485,6 +485,8 @@ def restore_macro_backup(
     macro_count = 0
     restored_cfg_files = 0
     removed_cfg_files = 0
+    touched_cfg_files: set[str] = set()
+    removed_cfg_paths: set[str] = set()
 
     with open_sqlite_connection(
         db_path,
@@ -612,6 +614,7 @@ def restore_macro_backup(
                     for rel_path, content in chunk:
                         rel = str(rel_path)
                         snapshot_paths.add(rel)
+                        touched_cfg_files.add(rel)
                         target = _safe_cfg_path(config_dir, rel)
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_text(str(content), encoding="utf-8")
@@ -620,6 +623,7 @@ def restore_macro_backup(
                 for rel_path, content in legacy_file_rows:
                     rel = str(rel_path)
                     snapshot_paths.add(rel)
+                    touched_cfg_files.add(rel)
                     target = _safe_cfg_path(config_dir, rel)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(str(content), encoding="utf-8")
@@ -632,6 +636,7 @@ def restore_macro_backup(
                     if rel not in snapshot_paths:
                         cfg_file.unlink(missing_ok=True)
                         removed_cfg_files += 1
+                        removed_cfg_paths.add(rel)
 
     return {
         "backup_id": int(backup_meta[0]),
@@ -640,6 +645,8 @@ def restore_macro_backup(
         "macro_count": macro_count,
         "restored_cfg_files": restored_cfg_files,
         "removed_cfg_files": removed_cfg_files,
+        "touched_cfg_files": sorted(touched_cfg_files),
+        "removed_cfg_paths": sorted(removed_cfg_paths),
     }
 
 

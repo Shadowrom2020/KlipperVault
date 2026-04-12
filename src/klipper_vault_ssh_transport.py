@@ -135,7 +135,17 @@ class SshTransport:
             with client.open_sftp() as sftp:
                 with sftp.file(temp_path, "wb") as remote_file:
                     remote_file.write(payload)
-                sftp.rename(temp_path, target)
+                try:
+                    sftp.rename(temp_path, target)
+                except OSError:
+                    # Some SFTP servers return a generic "Failure" for rename;
+                    # fallback to direct write so updates can still proceed.
+                    with sftp.file(target, "wb") as remote_file:
+                        remote_file.write(payload)
+                    try:
+                        sftp.remove(temp_path)
+                    except OSError:
+                        pass
         finally:
             client.close()
 

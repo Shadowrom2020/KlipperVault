@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
+import atexit
 import time
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -84,32 +87,21 @@ from klipper_macro_github_api import (
     get_open_pull_request_for_head,
     load_json_file_from_branch,
 )
+from klipper_type_utils import to_int as _as_int
+from klipper_type_utils import to_text as _as_text
 
 
-def _as_int(value: object, default: int = 0) -> int:
-    """Convert dynamic values to int with a safe fallback."""
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-    return default
+_PROTECTED_CFG_FILENAME = "printer.cfg"
+
+
+def _cfg_is_protected(file_path: str) -> bool:
+    """Return True when cfg path points to protected printer.cfg."""
+    return Path(_as_text(file_path)).name.lower() == _PROTECTED_CFG_FILENAME
 
 
 def _as_list(value: object) -> list[object]:
     """Return list values unchanged and coerce everything else to an empty list."""
     return value if isinstance(value, list) else []
-
-
-def _as_text(value: object) -> str:
-    """Normalize dynamic values into stripped text, matching existing truthy/falsey behavior."""
-    return str(value or "").strip()
 
 
 class MoonrakerStatusResult(BaseModel):
@@ -273,7 +265,11 @@ class MacroGuiService:
         if self._runtime_mode not in {"auto", "on_printer", "off_printer"}:
             self._runtime_mode = "auto"
         self._moonraker_base_url = moonraker_base_url.rstrip("/")
+        self._cache_base_dir = Path(tempfile.gettempdir()) / "klippervault"
+        self._active_cache_dir: Path | None = None
+        self._active_cache_printer_profile_id: int | None = None
         self._credential_store = CredentialStore(self._db_path)
+        atexit.register(self.cleanup_runtime_cache)
         # Prepare off-printer profile/credential tables before SSH features are wired into UI.
         with open_sqlite_connection(self._db_path, ensure_schema=ensure_remote_profile_schema) as conn:
             conn.commit()
@@ -283,6 +279,95 @@ class MacroGuiService:
 
         # In off-printer mode the active SSH profile is the source of Moonraker routing.
         self._refresh_moonraker_base_url_from_active_profile()
+
+    @staticmethod
+    def _protected_file_block_message(file_path: str) -> str:
+        """Build user-facing rationale for protected printer.cfg operations."""
+        return (
+            f"Macros in {_PROTECTED_CFG_FILENAME} are read-only in KlipperVault. "
+            "This file may contain critical printer settings, so automated updates are blocked. "
+            "Move the macro to a separate included .cfg file to enable updates."
+        )
+
+    @staticmethod
+    def _emit_operation_progress(
+        callback: Callable[[str, int, int], None] | None,
+        phase: str,
+        current: int,
+        total: int,
+    ) -> None:
+        """Emit normalized operation progress payload to UI callback."""
+        if callback is None:
+            return
+        callback(str(phase), max(int(current), 0), max(int(total), 1))
+
+    def get_runtime_config_dir(self) -> Path:
+        """Return active config root used for parser and file mutations."""
+        return self._resolve_runtime_config_dir()
+
+    def cleanup_runtime_cache(self) -> None:
+        """Remove active off-printer cache directory when available."""
+        if self._active_cache_dir is not None:
+            shutil.rmtree(self._active_cache_dir, ignore_errors=True)
+        self._active_cache_dir = None
+        self._active_cache_printer_profile_id = None
+
+    def _cache_dir_for_profile(self, profile_id: int) -> Path:
+        """Create a deterministic per-printer cache directory under system temp."""
+        target = self._cache_base_dir / f"printer-{int(profile_id)}"
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def _resolve_runtime_config_dir(self) -> Path:
+        """Resolve effective config root based on current runtime mode/profile."""
+        if self._runtime_mode != "off_printer":
+            self._config_dir.mkdir(parents=True, exist_ok=True)
+            return self._config_dir
+
+        profile_id = int(self._active_printer_profile_id)
+        if self._active_cache_printer_profile_id != profile_id:
+            self.cleanup_runtime_cache()
+            self._active_cache_dir = self._cache_dir_for_profile(profile_id)
+            self._active_cache_printer_profile_id = profile_id
+
+        assert self._active_cache_dir is not None
+        self._active_cache_dir.mkdir(parents=True, exist_ok=True)
+        return self._active_cache_dir
+
+    def _append_restart_policy_result(self, result: dict[str, object], *, uploaded_files: int) -> None:
+        """Apply upload-triggered restart policy metadata for off-printer mode."""
+        if self._runtime_mode != "off_printer":
+            return
+        if int(uploaded_files) <= 0:
+            result["klipper_restarted"] = False
+            result["restart_deferred"] = False
+            result["restart_message"] = "No restart was triggered because no permitted cfg file was uploaded."
+            return
+
+        try:
+            status = self.query_printer_status(timeout=1.5)
+        except Exception:
+            status = {"is_printing": False}
+
+        if bool(status.get("is_printing", False)):
+            result["klipper_restarted"] = False
+            result["restart_deferred"] = True
+            result["restart_message"] = "Printer is printing. Restart skipped; restart Klipper manually after the print."
+            return
+
+        try:
+            restart_result = self.restart_klipper(timeout=3.0)
+            result["restart_result"] = restart_result
+            result["klipper_restarted"] = bool(restart_result.get("ok", False))
+            result["restart_deferred"] = False
+            if bool(restart_result.get("ok", False)):
+                result["restart_message"] = "Klipper restart requested automatically after upload."
+            else:
+                result["restart_message"] = "Klipper restart request failed after upload."
+        except Exception as exc:
+            result["klipper_restarted"] = False
+            result["restart_deferred"] = False
+            result["restart_message"] = f"Klipper restart request failed after upload: {exc}"
 
     def list_printer_profiles(self) -> list[dict[str, object]]:
         """Return configured printer profiles."""
@@ -337,6 +422,7 @@ class MacroGuiService:
         updated = set_active_printer_profile(self._db_path, int(profile_id))
         if not updated:
             return {"ok": False, "error": "profile not found"}
+        self.cleanup_runtime_cache()
         self._active_printer_profile_id = int(profile_id)
         profile = get_active_printer_profile(self._db_path)
         if profile is not None and profile.ssh_profile_id is not None:
@@ -409,13 +495,50 @@ class MacroGuiService:
             return
         active_printer = get_active_printer_profile(self._db_path)
         profile_moonraker_url = _as_text(active_printer.ssh_moonraker_url) if active_printer is not None else ""
+        profile_ssh_host = _as_text(active_printer.ssh_host) if active_printer is not None else ""
         if not profile_moonraker_url:
             active_profile = get_active_ssh_host_profile(self._db_path)
             if active_profile is None:
                 return
             profile_moonraker_url = _as_text(active_profile.moonraker_url)
+            if not profile_ssh_host:
+                profile_ssh_host = _as_text(active_profile.host)
         if profile_moonraker_url:
-            self._moonraker_base_url = profile_moonraker_url.rstrip("/")
+            normalized = self._normalize_off_printer_moonraker_url(profile_moonraker_url, profile_ssh_host)
+            self._moonraker_base_url = normalized.rstrip("/")
+
+    @staticmethod
+    def _normalize_off_printer_moonraker_url(moonraker_url: str, ssh_host: str) -> str:
+        """Rewrite localhost Moonraker URLs to the remote SSH host for off-printer mode."""
+        raw_url = _as_text(moonraker_url)
+        remote_host = _as_text(ssh_host)
+        if not raw_url:
+            return raw_url
+
+        parse_target = raw_url if "://" in raw_url else f"http://{raw_url}"
+        parsed = urlparse(parse_target)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return raw_url
+
+        current_host = _as_text(parsed.hostname).lower()
+        if current_host not in {"localhost", "127.0.0.1", "::1"} or not remote_host:
+            return parsed.geturl()
+
+        netloc_host = remote_host
+        if ":" in remote_host and not remote_host.startswith("["):
+            netloc_host = f"[{remote_host}]"
+
+        userinfo = ""
+        if parsed.username:
+            userinfo = parsed.username
+            if parsed.password:
+                userinfo += f":{parsed.password}"
+            userinfo += "@"
+
+        netloc = f"{userinfo}{netloc_host}"
+        if parsed.port is not None:
+            netloc += f":{parsed.port}"
+        return parsed._replace(netloc=netloc).geturl()
 
     @staticmethod
     def _normalize_remote_root(remote_config_dir: str, username: str) -> PurePosixPath:
@@ -526,6 +649,7 @@ class MacroGuiService:
         username = self._require_non_empty(username, "username is required")
         remote_config_dir = self._require_non_empty(remote_config_dir, "remote_config_dir is required")
         moonraker_url = self._require_non_empty(moonraker_url, "moonraker_url is required")
+        moonraker_url = self._normalize_off_printer_moonraker_url(moonraker_url, host)
         auth_mode = (_as_text(auth_mode).lower() or "key")
         if auth_mode not in {"key", "password"}:
             raise ValueError("auth_mode must be 'key' or 'password'")
@@ -606,6 +730,7 @@ class MacroGuiService:
         if not updated:
             return {"ok": False, "error": "profile not found"}
 
+        self.cleanup_runtime_cache()
         self._active_printer_profile_id = resolved_printer_profile_id
         profile = get_active_printer_profile(self._db_path)
         if profile is not None and profile.ssh_profile_id is not None:
@@ -657,6 +782,9 @@ class MacroGuiService:
         legacy_ssh_profile_id = profile.get("ssh_profile_id")
         if legacy_ssh_profile_id is not None:
             delete_ssh_host_profile(self._db_path, int(legacy_ssh_profile_id))
+
+        if bool(profile.get("is_active", False)):
+            self.cleanup_runtime_cache()
 
         return {
             "ok": True,
@@ -740,49 +868,62 @@ class MacroGuiService:
             raise ValueError("file_path is required")
         return str(remote_root.joinpath(PurePosixPath(rel_path)))
 
-    def sync_active_remote_cfg_to_local(self, *, prune_missing: bool = True) -> dict[str, object]:
+    def sync_active_remote_cfg_to_local(
+        self,
+        *,
+        prune_missing: bool = True,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, object]:
         """Mirror active profile remote cfg files into local config directory."""
         transport, profile = self._active_ssh_transport()
         remote_config_dir = _as_text(profile.get("remote_config_dir", ""))
         if not remote_config_dir:
             raise RuntimeError("Active SSH profile is missing remote config directory")
 
-        self._config_dir.mkdir(parents=True, exist_ok=True)
+        runtime_config_dir = self._resolve_runtime_config_dir()
+        runtime_config_dir.mkdir(parents=True, exist_ok=True)
         remote_root = self._normalize_remote_root(remote_config_dir, _as_text(profile.get("username", "")))
         remote_files = transport.list_cfg_files(remote_config_dir)
+        self._emit_operation_progress(progress_callback, "download", 0, len(remote_files) or 1)
         mirrored_rel_paths: set[str] = set()
         synced_files = 0
 
-        for remote_file in remote_files:
+        for idx, remote_file in enumerate(remote_files, start=1):
             try:
                 remote_path = PurePosixPath(_as_text(remote_file))
                 rel_posix = str(remote_path.relative_to(remote_root))
             except Exception:
+                self._emit_operation_progress(progress_callback, "download", idx, len(remote_files) or 1)
                 continue
 
             if not rel_posix.lower().endswith(".cfg"):
+                self._emit_operation_progress(progress_callback, "download", idx, len(remote_files) or 1)
                 continue
 
             local_rel_path = Path(rel_posix)
-            local_target = (self._config_dir / local_rel_path).resolve()
+            local_target = (runtime_config_dir / local_rel_path).resolve()
             try:
-                local_target.relative_to(self._config_dir)
+                local_target.relative_to(runtime_config_dir)
             except ValueError:
+                self._emit_operation_progress(progress_callback, "download", idx, len(remote_files) or 1)
                 continue
 
             local_target.parent.mkdir(parents=True, exist_ok=True)
             local_target.write_text(transport.read_text_file(str(remote_path)), encoding="utf-8")
             mirrored_rel_paths.add(rel_posix)
             synced_files += 1
+            self._emit_operation_progress(progress_callback, "download", idx, len(remote_files) or 1)
 
         removed_local_files = 0
         if prune_missing:
-            for local_cfg in self._config_dir.rglob("*.cfg"):
-                rel_local = local_cfg.relative_to(self._config_dir).as_posix()
+            for local_cfg in runtime_config_dir.rglob("*.cfg"):
+                rel_local = local_cfg.relative_to(runtime_config_dir).as_posix()
                 if rel_local in mirrored_rel_paths:
                     continue
                 local_cfg.unlink(missing_ok=True)
                 removed_local_files += 1
+
+        self._emit_operation_progress(progress_callback, "download", len(remote_files) or 1, len(remote_files) or 1)
 
         return {
             "ok": True,
@@ -790,41 +931,96 @@ class MacroGuiService:
             "remote_config_dir": remote_config_dir,
             "synced_files": synced_files,
             "removed_local_files": removed_local_files,
+            "local_cache_dir": str(runtime_config_dir),
         }
 
-    def _push_local_cfg_file_to_active_remote(self, file_path: str) -> str:
+    def _push_local_cfg_file_to_active_remote(
+        self,
+        file_path: str,
+        *,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, object]:
         """Upload one local cfg file back to the active remote profile path."""
+        rel_path = _as_text(file_path)
+        if _cfg_is_protected(rel_path):
+            return {
+                "uploaded": False,
+                "blocked": True,
+                "blocked_by_protected_file": True,
+                "file_path": rel_path,
+            }
+
         transport, profile = self._active_ssh_transport()
         remote_config_dir = _as_text(profile.get("remote_config_dir", ""))
         if not remote_config_dir:
             raise RuntimeError("Active SSH profile is missing remote config directory")
 
-        rel_path = _as_text(file_path)
         if not rel_path:
             raise ValueError("file_path is required")
 
-        local_cfg = (self._config_dir / rel_path).resolve()
+        runtime_config_dir = self._resolve_runtime_config_dir()
+        local_cfg = (runtime_config_dir / rel_path).resolve()
         try:
-            local_cfg.relative_to(self._config_dir)
+            local_cfg.relative_to(runtime_config_dir)
         except ValueError as exc:
             raise ValueError(f"invalid cfg file path outside config directory: {file_path}") from exc
 
+        self._emit_operation_progress(progress_callback, "upload", 0, 1)
         payload = local_cfg.read_text(encoding="utf-8")
         remote_path = self._build_remote_cfg_path(remote_config_dir, _as_text(profile.get("username", "")), rel_path)
-        transport.write_text_file_atomic(remote_path, payload)
-        return remote_path
+        try:
+            transport.write_text_file_atomic(remote_path, payload)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to upload cfg file '{rel_path}' to '{remote_path}': {exc}"
+            ) from exc
+        self._emit_operation_progress(progress_callback, "upload", 1, 1)
+        return {
+            "uploaded": True,
+            "blocked": False,
+            "blocked_by_protected_file": False,
+            "file_path": rel_path,
+            "remote_path": remote_path,
+        }
 
-    def _push_local_cfg_files_to_active_remote(self, file_paths: list[str]) -> list[str]:
-        """Upload a list of local cfg files and return uploaded remote paths."""
-        uploaded: list[str] = []
+    def _push_local_cfg_files_to_active_remote(
+        self,
+        file_paths: list[str],
+        *,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, object]:
+        """Upload a list of local cfg files and return summary metadata."""
+        uploaded_paths: list[str] = []
+        blocked_paths: list[str] = []
         seen: set[str] = set()
+        total = len(file_paths) if file_paths else 1
+        current = 0
+        self._emit_operation_progress(progress_callback, "upload", 0, total)
         for rel_path in file_paths:
             normalized = _as_text(rel_path)
             if not normalized or normalized in seen:
                 continue
-            uploaded.append(self._push_local_cfg_file_to_active_remote(normalized))
             seen.add(normalized)
-        return uploaded
+            if _cfg_is_protected(normalized):
+                blocked_paths.append(normalized)
+                current += 1
+                self._emit_operation_progress(progress_callback, "upload", current, total)
+                continue
+            result = self._push_local_cfg_file_to_active_remote(normalized)
+            remote_path = _as_text(result.get("remote_path", ""))
+            if remote_path:
+                uploaded_paths.append(remote_path)
+            current += 1
+            self._emit_operation_progress(progress_callback, "upload", current, total)
+
+        self._emit_operation_progress(progress_callback, "upload", total, total)
+        return {
+            "uploaded_files": len(uploaded_paths),
+            "uploaded_paths": sorted(uploaded_paths),
+            "blocked_files": len(blocked_paths),
+            "blocked_paths": sorted(blocked_paths),
+            "blocked_by_protected_file": bool(blocked_paths),
+        }
 
     def _sync_local_cfg_tree_to_active_remote(self, *, prune_remote_missing: bool) -> dict[str, object]:
         """Upload all local cfg files and optionally remove remote cfg files not present locally."""
@@ -834,9 +1030,14 @@ class MacroGuiService:
             raise RuntimeError("Active SSH profile is missing remote config directory")
 
         uploaded_paths: list[str] = []
+        blocked_paths: list[str] = []
         local_rel_paths: set[str] = set()
-        for local_cfg in self._config_dir.rglob("*.cfg"):
-            rel_path = local_cfg.relative_to(self._config_dir).as_posix()
+        runtime_config_dir = self._resolve_runtime_config_dir()
+        for local_cfg in runtime_config_dir.rglob("*.cfg"):
+            rel_path = local_cfg.relative_to(runtime_config_dir).as_posix()
+            if _cfg_is_protected(rel_path):
+                blocked_paths.append(rel_path)
+                continue
             remote_path = self._build_remote_cfg_path(
                 remote_config_dir,
                 _as_text(profile.get("username", "")),
@@ -868,6 +1069,9 @@ class MacroGuiService:
             "removed_remote_files": len(removed_remote_paths),
             "uploaded_paths": sorted(uploaded_paths),
             "removed_remote_paths": sorted(removed_remote_paths),
+            "blocked_files": len(blocked_paths),
+            "blocked_paths": sorted(blocked_paths),
+            "blocked_by_protected_file": bool(blocked_paths),
         }
 
     def _moonraker_url(self, path: str) -> str:
@@ -1016,14 +1220,35 @@ class MacroGuiService:
         return bool(status.get("is_printing", False))
 
     def restart_klipper(self, timeout: float = 3.0) -> dict[str, object]:
-        """Request a Klipper host restart through Moonraker."""
-        result = self._moonraker_post_command(
-            path="/printer/restart",
-            timeout=timeout,
-            json_body=None,
-            error_prefix="Moonraker restart request",
-        )
-        return result.as_dict()
+        """Request a Klipper host restart through Moonraker.
+
+        Prefer the dedicated restart endpoint and fall back to RESTART gcode
+        when the endpoint is unavailable on the target Moonraker instance.
+        """
+        try:
+            result = self._moonraker_post_command(
+                path="/printer/restart",
+                timeout=timeout,
+                json_body=None,
+                error_prefix="Moonraker restart request",
+            )
+            payload = result.as_dict()
+            payload["restart_method"] = "endpoint"
+            return payload
+        except RuntimeError as primary_error:
+            try:
+                fallback = self._moonraker_post_command(
+                    path="/printer/gcode/script",
+                    timeout=timeout,
+                    json_body={"script": "RESTART"},
+                    error_prefix="Moonraker restart fallback request",
+                )
+                payload = fallback.as_dict()
+                payload["restart_method"] = "gcode_script"
+                payload["restart_fallback_from_error"] = str(primary_error)
+                return payload
+            except RuntimeError:
+                raise primary_error
 
     def reload_dynamic_macros(self, timeout: float = 3.0) -> dict[str, object]:
         """Execute DYNAMIC_MACRO command through Moonraker gcode API."""
@@ -1062,25 +1287,34 @@ class MacroGuiService:
             notification=notification_text,
         ).as_dict()
 
-    def index(self) -> dict[str, object]:
+    def index(self, progress_callback: Callable[[str, int, int], None] | None = None) -> dict[str, object]:
         """Run config indexing with configured retention settings."""
         sync_result: dict[str, object] | None = None
+        runtime_config_dir = self._resolve_runtime_config_dir()
         if self._runtime_mode == "off_printer":
-            sync_result = self.sync_active_remote_cfg_to_local(prune_missing=True)
+            sync_result = self.sync_active_remote_cfg_to_local(
+                prune_missing=True,
+                progress_callback=progress_callback,
+            )
+
+        def _parse_progress(current: int, total: int) -> None:
+            self._emit_operation_progress(progress_callback, "parse", current, total)
 
         result = run_indexing(
-            config_dir=self._config_dir,
+            config_dir=runtime_config_dir,
             db_path=self._db_path,
             max_versions=self._version_history_size,
             printer_profile_id=self._active_printer_profile_id,
+            progress_callback=_parse_progress,
         )
         if sync_result is not None:
             result["remote_sync"] = sync_result
+        result["runtime_config_dir"] = str(runtime_config_dir)
         return result
 
     def load_cfg_loading_overview(self) -> dict[str, object]:
         """Load cfg parse-order overview for Klipper and KlipperVault."""
-        return get_cfg_loading_overview(self._config_dir)
+        return get_cfg_loading_overview(self._resolve_runtime_config_dir())
 
     def load_dashboard(self, *, limit: int = 500, offset: int = 0) -> tuple[dict[str, object], list[dict[str, object]]]:
         """Load aggregate stats and paged latest macro list for dashboard refresh."""
@@ -1090,7 +1324,7 @@ class MacroGuiService:
                 self._db_path,
                 limit=limit,
                 offset=offset,
-                config_dir=self._config_dir,
+                config_dir=self._resolve_runtime_config_dir(),
                 include_macro_body=False,
                 printer_profile_id=self._active_printer_profile_id,
             ),
@@ -1137,44 +1371,85 @@ class MacroGuiService:
         """Remove all deleted macro histories from database."""
         return remove_all_deleted_macros(self._db_path, printer_profile_id=self._active_printer_profile_id)
 
-    def restore_version(self, file_path: str, macro_name: str, version: int) -> dict[str, object]:
+    def restore_version(
+        self,
+        file_path: str,
+        macro_name: str,
+        version: int,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, object]:
         """Restore a historical macro version back into cfg files."""
+        if _cfg_is_protected(file_path):
+            raise ValueError(self._protected_file_block_message(file_path))
+
         result = restore_macro_version(
             db_path=self._db_path,
-            config_dir=self._config_dir,
+            config_dir=self._resolve_runtime_config_dir(),
             file_path=file_path,
             macro_name=macro_name,
             version=version,
             printer_profile_id=self._active_printer_profile_id,
         )
         if self._runtime_mode == "off_printer":
-            result["remote_path"] = self._push_local_cfg_file_to_active_remote(file_path)
-            result["remote_synced"] = True
+            remote_sync = self._push_local_cfg_files_to_active_remote([file_path], progress_callback=progress_callback)
+            result["remote_sync"] = remote_sync
+            remote_paths = remote_sync.get("uploaded_paths")
+            if isinstance(remote_paths, list) and remote_paths:
+                result["remote_path"] = str(remote_paths[0])
+            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
+            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
         return result
 
-    def save_macro_editor_text(self, file_path: str, macro_name: str, section_text: str) -> dict[str, object]:
+    def save_macro_editor_text(
+        self,
+        file_path: str,
+        macro_name: str,
+        section_text: str,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, object]:
         """Save edited macro text back into its cfg file."""
+        if _cfg_is_protected(file_path):
+            raise ValueError(self._protected_file_block_message(file_path))
+
         result = save_macro_edit(
-            config_dir=self._config_dir,
+            config_dir=self._resolve_runtime_config_dir(),
             file_path=file_path,
             macro_name=macro_name,
             section_text=section_text,
         )
         if self._runtime_mode == "off_printer":
-            result["remote_path"] = self._push_local_cfg_file_to_active_remote(file_path)
-            result["remote_synced"] = True
+            remote_sync = self._push_local_cfg_files_to_active_remote([file_path], progress_callback=progress_callback)
+            result["remote_sync"] = remote_sync
+            remote_paths = remote_sync.get("uploaded_paths")
+            if isinstance(remote_paths, list) and remote_paths:
+                result["remote_path"] = str(remote_paths[0])
+            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
+            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
         return result
 
-    def delete_macro_source(self, file_path: str, macro_name: str) -> dict[str, object]:
+    def delete_macro_source(
+        self,
+        file_path: str,
+        macro_name: str,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, object]:
         """Delete one macro section from its source cfg file."""
+        if _cfg_is_protected(file_path):
+            raise ValueError(self._protected_file_block_message(file_path))
+
         result = delete_macro_from_cfg(
-            config_dir=self._config_dir,
+            config_dir=self._resolve_runtime_config_dir(),
             file_path=file_path,
             macro_name=macro_name,
         )
         if self._runtime_mode == "off_printer":
-            result["remote_path"] = self._push_local_cfg_file_to_active_remote(file_path)
-            result["remote_synced"] = True
+            remote_sync = self._push_local_cfg_files_to_active_remote([file_path], progress_callback=progress_callback)
+            result["remote_sync"] = remote_sync
+            remote_paths = remote_sync.get("uploaded_paths")
+            if isinstance(remote_paths, list) and remote_paths:
+                result["remote_path"] = str(remote_paths[0])
+            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
+            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
         return result
 
     def list_duplicates(self) -> list[dict[str, object]]:
@@ -1185,17 +1460,22 @@ class MacroGuiService:
         self,
         keep_choices: dict[str, str],
         duplicate_groups: list[dict[str, object]],
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
         """Apply duplicate-resolution choices to cfg files."""
         result = resolve_duplicate_macros(
-            config_dir=self._config_dir,
+            config_dir=self._resolve_runtime_config_dir(),
             keep_choices=keep_choices,
             duplicate_groups=duplicate_groups,
         )
         if self._runtime_mode == "off_printer":
             touched_files = [str(path) for path in _as_list(result.get("touched_files", [])) if _as_text(path)]
-            result["remote_uploaded_paths"] = self._push_local_cfg_files_to_active_remote(touched_files)
-            result["remote_synced"] = True
+            remote_sync = self._push_local_cfg_files_to_active_remote(touched_files, progress_callback=progress_callback)
+            result["remote_sync"] = remote_sync
+            remote_uploaded_paths = remote_sync.get("uploaded_paths")
+            result["remote_uploaded_paths"] = list(remote_uploaded_paths) if isinstance(remote_uploaded_paths, list) else []
+            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
+            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
         return result
 
     def create_backup(self, name: str) -> dict[str, object]:
@@ -1203,7 +1483,7 @@ class MacroGuiService:
         return create_macro_backup(
             db_path=self._db_path,
             backup_name=name,
-            config_dir=self._config_dir,
+            config_dir=self._resolve_runtime_config_dir(),
             printer_profile_id=self._active_printer_profile_id,
         )
 
@@ -1215,17 +1495,28 @@ class MacroGuiService:
         """Return snapshot items for one backup."""
         return load_backup_items(self._db_path, backup_id, printer_profile_id=self._active_printer_profile_id)
 
-    def restore_backup(self, backup_id: int) -> dict[str, object]:
+    def restore_backup(
+        self,
+        backup_id: int,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, object]:
         """Restore selected backup state to db/cfg."""
         result = restore_macro_backup(
             db_path=self._db_path,
             backup_id=backup_id,
-            config_dir=self._config_dir,
+            config_dir=self._resolve_runtime_config_dir(),
             printer_profile_id=self._active_printer_profile_id,
         )
         if self._runtime_mode == "off_printer":
-            result["remote_sync"] = self._sync_local_cfg_tree_to_active_remote(prune_remote_missing=True)
-            result["remote_synced"] = True
+            touched_cfg_files = [
+                _as_text(path)
+                for path in _as_list(result.get("touched_cfg_files", []))
+                if _as_text(path)
+            ]
+            remote_sync = self._push_local_cfg_files_to_active_remote(touched_cfg_files, progress_callback=progress_callback)
+            result["remote_sync"] = remote_sync
+            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
+            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
         return result
 
     def delete_backup(self, backup_id: int) -> dict[str, object]:
@@ -1419,6 +1710,7 @@ class MacroGuiService:
         activate_identities: list[str],
         repo_url: str,
         repo_ref: str,
+        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
         """Import online updates and optionally activate selected imported versions."""
         import_result = import_online_macro_updates(
@@ -1432,6 +1724,8 @@ class MacroGuiService:
         imported_items = _as_list(import_result.get("imported_items", []))
         activate_set = {_as_text(identity) for identity in activate_identities}
         activated_count = 0
+        activated_files: list[str] = []
+        runtime_config_dir = self._resolve_runtime_config_dir()
 
         for item in imported_items:
             parsed_item = self._parse_imported_update_item(item)
@@ -1440,19 +1734,31 @@ class MacroGuiService:
 
             restore_macro_version(
                 db_path=self._db_path,
-                config_dir=self._config_dir,
+                config_dir=runtime_config_dir,
                 file_path=parsed_item.file_path,
                 macro_name=parsed_item.macro_name,
                 version=parsed_item.version,
             )
             activated_count += 1
+            activated_files.append(parsed_item.file_path)
 
         imported_count = _as_int(import_result.get("imported", 0))
-        return {
+        result = {
             "imported": imported_count,
             "activated": activated_count,
             "imported_items": imported_items,
         }
+
+        if self._runtime_mode == "off_printer" and activated_files:
+            remote_sync = self._push_local_cfg_files_to_active_remote(
+                activated_files,
+                progress_callback=progress_callback,
+            )
+            result["remote_sync"] = remote_sync
+            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
+            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
+
+        return result
 
     def export_online_update_repository_zip(
         self,

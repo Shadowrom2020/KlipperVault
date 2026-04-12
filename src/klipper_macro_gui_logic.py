@@ -6,22 +6,7 @@
 from __future__ import annotations
 
 from collections import Counter
-
-
-def _to_int(value: object, default: int = 0) -> int:
-    """Convert dynamic UI payload values to int with a safe fallback."""
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-    return default
+from klipper_type_utils import to_int as _to_int
 
 
 def _display_macro_name(macro: dict[str, object]) -> str:

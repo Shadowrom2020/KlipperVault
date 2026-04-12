@@ -48,6 +48,33 @@ def _requires_api_token_for_bind(bind_host: str) -> bool:
     return normalized not in {"127.0.0.1", "localhost", "::1"}
 
 
+def _payload_text(payload: dict[str, object], key: str, default: str = "") -> str:
+    """Extract one payload field as stripped text preserving legacy fallback behavior."""
+    return str(payload.get(key, default) or default).strip()
+
+
+def _payload_int(payload: dict[str, object], key: str, default: int = 0) -> int:
+    """Extract one payload field as int preserving legacy conversion behavior."""
+    return int(payload.get(key, default) or default)
+
+
+def _payload_float(payload: dict[str, object], key: str, default: float = 0.0) -> float:
+    """Extract one payload field as float preserving legacy conversion behavior."""
+    return float(payload.get(key, default) or default)
+
+
+def _payload_dict(payload: dict[str, object], key: str) -> dict[str, object]:
+    """Extract one payload field as dict with empty-dict fallback."""
+    value = payload.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _payload_list(payload: dict[str, object], key: str) -> list[object]:
+    """Extract one payload field as list with empty-list fallback."""
+    value = payload.get(key, [])
+    return value if isinstance(value, list) else []
+
+
 class _HostApiState:
     """Mutable host API runtime state shared by request handlers."""
 
@@ -492,7 +519,7 @@ class _HostApiHandler(BaseHTTPRequestHandler):
             trigger = "manual"
             try:
                 payload = self._read_json()
-                trigger = str(payload.get("trigger", "manual")).strip() or "manual"
+                trigger = _payload_text(payload, "trigger", "manual") or "manual"
             except Exception:
                 trigger = "manual"
             job = self.state.create_index_job(trigger=trigger)
@@ -502,11 +529,11 @@ class _HostApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/jobs/online-check":
             try:
                 payload = self._read_json()
-                repo_url = str(payload.get("repo_url", "") or "").strip()
-                manifest_path = str(payload.get("manifest_path", "") or "updates/manifest.json").strip() or "updates/manifest.json"
-                repo_ref = str(payload.get("repo_ref", "") or "main").strip() or "main"
-                source_vendor = str(payload.get("source_vendor", "") or "").strip()
-                source_model = str(payload.get("source_model", "") or "").strip()
+                repo_url = _payload_text(payload, "repo_url")
+                manifest_path = _payload_text(payload, "manifest_path", "updates/manifest.json") or "updates/manifest.json"
+                repo_ref = _payload_text(payload, "repo_ref", "main") or "main"
+                source_vendor = _payload_text(payload, "source_vendor")
+                source_model = _payload_text(payload, "source_model")
                 if not repo_url:
                     raise ValueError("repo_url is required")
 
@@ -531,15 +558,15 @@ class _HostApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/jobs/create-pr":
             try:
                 payload = self._read_json()
-                source_vendor = str(payload.get("source_vendor", "") or "").strip()
-                source_model = str(payload.get("source_model", "") or "").strip()
-                repo_url = str(payload.get("repo_url", "") or "").strip()
-                base_branch = str(payload.get("base_branch", "") or "").strip()
-                head_branch = str(payload.get("head_branch", "") or "").strip()
-                manifest_path = str(payload.get("manifest_path", "") or "updates/manifest.json").strip() or "updates/manifest.json"
-                github_token = str(payload.get("github_token", "") or "").strip()
-                pull_request_title = str(payload.get("pull_request_title", "") or "").strip()
-                pull_request_body = str(payload.get("pull_request_body", "") or "").strip()
+                source_vendor = _payload_text(payload, "source_vendor")
+                source_model = _payload_text(payload, "source_model")
+                repo_url = _payload_text(payload, "repo_url")
+                base_branch = _payload_text(payload, "base_branch")
+                head_branch = _payload_text(payload, "head_branch")
+                manifest_path = _payload_text(payload, "manifest_path", "updates/manifest.json") or "updates/manifest.json"
+                github_token = _payload_text(payload, "github_token")
+                pull_request_title = _payload_text(payload, "pull_request_title")
+                pull_request_body = _payload_text(payload, "pull_request_body")
                 if not repo_url:
                     raise ValueError("repo_url is required")
 
@@ -592,19 +619,18 @@ class _HostApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/share/export":
             try:
                 payload = self._read_json()
-                identities_raw = payload.get("identities", [])
+                identities_raw = _payload_list(payload, "identities")
                 identities: list[tuple[str, str]] = []
-                if isinstance(identities_raw, list):
-                    for item in identities_raw:
-                        if not isinstance(item, (list, tuple)) or len(item) != 2:
-                            continue
-                        file_path = str(item[0] or "").strip()
-                        macro_name = str(item[1] or "").strip()
-                        if file_path and macro_name:
-                            identities.append((file_path, macro_name))
+                for item in identities_raw:
+                    if not isinstance(item, (list, tuple)) or len(item) != 2:
+                        continue
+                    file_path = str(item[0] or "").strip()
+                    macro_name = str(item[1] or "").strip()
+                    if file_path and macro_name:
+                        identities.append((file_path, macro_name))
 
-                source_vendor = str(payload.get("source_vendor", "") or "").strip()
-                source_model = str(payload.get("source_model", "") or "").strip()
+                source_vendor = _payload_text(payload, "source_vendor")
+                source_model = _payload_text(payload, "source_model")
                 share_payload = self.state.service.export_macro_share_payload_data(
                     identities=identities,
                     source_vendor=source_vendor,
@@ -629,10 +655,9 @@ class _HostApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/share/import":
             try:
                 payload = self._read_json()
-                share_payload_raw = payload.get("payload", {})
-                share_payload = share_payload_raw if isinstance(share_payload_raw, dict) else {}
-                target_vendor = str(payload.get("target_vendor", "") or "").strip()
-                target_model = str(payload.get("target_model", "") or "").strip()
+                share_payload = _payload_dict(payload, "payload")
+                target_vendor = _payload_text(payload, "target_vendor")
+                target_model = _payload_text(payload, "target_model")
                 result = self.state.service.import_macro_share_payload_data(
                     payload=share_payload,
                     target_vendor=target_vendor,
@@ -648,11 +673,11 @@ class _HostApiHandler(BaseHTTPRequestHandler):
         if path == "/api/v1/online-update/export-zip":
             try:
                 payload = self._read_json()
-                source_vendor = str(payload.get("source_vendor", "") or "").strip()
-                source_model = str(payload.get("source_model", "") or "").strip()
-                repo_url = str(payload.get("repo_url", "") or "").strip()
-                repo_ref = str(payload.get("repo_ref", "") or "main").strip() or "main"
-                manifest_path = str(payload.get("manifest_path", "") or "updates/manifest.json").strip() or "updates/manifest.json"
+                source_vendor = _payload_text(payload, "source_vendor")
+                source_model = _payload_text(payload, "source_model")
+                repo_url = _payload_text(payload, "repo_url")
+                repo_ref = _payload_text(payload, "repo_ref", "main") or "main"
+                manifest_path = _payload_text(payload, "manifest_path", "updates/manifest.json") or "updates/manifest.json"
                 with tempfile.NamedTemporaryFile(prefix="klippervault-online-update-", suffix=".zip", delete=False) as temp_zip:
                     temp_zip_path = Path(temp_zip.name)
 
@@ -694,11 +719,9 @@ class _HostApiHandler(BaseHTTPRequestHandler):
 
         try:
             payload = self._read_json()
-            method = str(payload.get("method", "")).strip()
-            args_raw = payload.get("args", [])
-            kwargs_raw = payload.get("kwargs", {})
-            args = args_raw if isinstance(args_raw, list) else []
-            kwargs = kwargs_raw if isinstance(kwargs_raw, dict) else {}
+            method = _payload_text(payload, "method")
+            args = _payload_list(payload, "args")
+            kwargs = _payload_dict(payload, "kwargs")
             result = self.state.call_method(method, args, kwargs)
         except Exception as exc:
             self._write_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -708,73 +731,70 @@ class _HostApiHandler(BaseHTTPRequestHandler):
 
     def _run_action(self, action: str, payload: dict[str, object]) -> object:
         """Execute one typed action endpoint."""
-        if action == "remove_deleted":
-            return self.state.service.remove_deleted(
-                str(payload.get("file_path", "") or ""),
-                str(payload.get("macro_name", "") or ""),
-            )
-        if action == "remove_inactive_version":
-            return self.state.service.remove_inactive_version(
-                str(payload.get("file_path", "") or ""),
-                str(payload.get("macro_name", "") or ""),
-                int(payload.get("version", 0) or 0),
-            )
-        if action == "purge_all_deleted":
-            return self.state.service.purge_all_deleted()
-        if action == "restore_version":
-            return self.state.service.restore_version(
-                str(payload.get("file_path", "") or ""),
-                str(payload.get("macro_name", "") or ""),
-                int(payload.get("version", 0) or 0),
-            )
-        if action == "save_macro_editor_text":
-            return self.state.service.save_macro_editor_text(
-                str(payload.get("file_path", "") or ""),
-                str(payload.get("macro_name", "") or ""),
-                str(payload.get("section_text", "") or ""),
-            )
-        if action == "delete_macro_source":
-            return self.state.service.delete_macro_source(
-                str(payload.get("file_path", "") or ""),
-                str(payload.get("macro_name", "") or ""),
-            )
-        if action == "resolve_duplicates":
-            keep_choices_raw = payload.get("keep_choices", {})
-            duplicate_groups_raw = payload.get("duplicate_groups", [])
-            keep_choices = keep_choices_raw if isinstance(keep_choices_raw, dict) else {}
-            duplicate_groups = duplicate_groups_raw if isinstance(duplicate_groups_raw, list) else []
-            return self.state.service.resolve_duplicates(
-                keep_choices={str(k): str(v) for k, v in keep_choices.items()},
-                duplicate_groups=[row for row in duplicate_groups if isinstance(row, dict)],
-            )
-        if action == "create_backup":
-            return self.state.service.create_backup(str(payload.get("name", "") or ""))
-        if action == "restore_backup":
-            return self.state.service.restore_backup(int(payload.get("backup_id", 0) or 0))
-        if action == "delete_backup":
-            return self.state.service.delete_backup(int(payload.get("backup_id", 0) or 0))
-        if action == "restart_klipper":
-            return self.state.service.restart_klipper(float(payload.get("timeout", 3.0) or 3.0))
-        if action == "reload_dynamic_macros":
-            return self.state.service.reload_dynamic_macros(float(payload.get("timeout", 3.0) or 3.0))
-        if action == "send_mainsail_notification":
-            return self.state.service.send_mainsail_notification(
-                message=str(payload.get("message", "") or ""),
-                title=str(payload.get("title", "KlipperVault") or "KlipperVault"),
-                timeout=float(payload.get("timeout", 3.0) or 3.0),
-            )
-        if action == "import_online_updates":
-            updates_raw = payload.get("updates", [])
-            activate_raw = payload.get("activate_identities", [])
-            updates = updates_raw if isinstance(updates_raw, list) else []
-            activate_ids = activate_raw if isinstance(activate_raw, list) else []
-            return self.state.service.import_online_updates(
-                updates=[row for row in updates if isinstance(row, dict)],
-                activate_identities=[str(value) for value in activate_ids],
-                repo_url=str(payload.get("repo_url", "") or ""),
-                repo_ref=str(payload.get("repo_ref", "") or ""),
-            )
-        raise ValueError(f"unknown action: {action}")
+        handlers: dict[str, Any] = {
+            "remove_deleted": lambda: self.state.service.remove_deleted(
+                _payload_text(payload, "file_path"),
+                _payload_text(payload, "macro_name"),
+            ),
+            "remove_inactive_version": lambda: self.state.service.remove_inactive_version(
+                _payload_text(payload, "file_path"),
+                _payload_text(payload, "macro_name"),
+                _payload_int(payload, "version", 0),
+            ),
+            "purge_all_deleted": lambda: self.state.service.purge_all_deleted(),
+            "restore_version": lambda: self.state.service.restore_version(
+                _payload_text(payload, "file_path"),
+                _payload_text(payload, "macro_name"),
+                _payload_int(payload, "version", 0),
+            ),
+            "save_macro_editor_text": lambda: self.state.service.save_macro_editor_text(
+                _payload_text(payload, "file_path"),
+                _payload_text(payload, "macro_name"),
+                _payload_text(payload, "section_text"),
+            ),
+            "delete_macro_source": lambda: self.state.service.delete_macro_source(
+                _payload_text(payload, "file_path"),
+                _payload_text(payload, "macro_name"),
+            ),
+            "resolve_duplicates": lambda: self.state.service.resolve_duplicates(
+                keep_choices={
+                    str(k): str(v)
+                    for k, v in _payload_dict(payload, "keep_choices").items()
+                },
+                duplicate_groups=[
+                    row
+                    for row in _payload_list(payload, "duplicate_groups")
+                    if isinstance(row, dict)
+                ],
+            ),
+            "create_backup": lambda: self.state.service.create_backup(_payload_text(payload, "name")),
+            "restore_backup": lambda: self.state.service.restore_backup(_payload_int(payload, "backup_id", 0)),
+            "delete_backup": lambda: self.state.service.delete_backup(_payload_int(payload, "backup_id", 0)),
+            "restart_klipper": lambda: self.state.service.restart_klipper(_payload_float(payload, "timeout", 3.0)),
+            "reload_dynamic_macros": lambda: self.state.service.reload_dynamic_macros(_payload_float(payload, "timeout", 3.0)),
+            "send_mainsail_notification": lambda: self.state.service.send_mainsail_notification(
+                message=_payload_text(payload, "message"),
+                title=_payload_text(payload, "title", "KlipperVault") or "KlipperVault",
+                timeout=_payload_float(payload, "timeout", 3.0),
+            ),
+            "import_online_updates": lambda: self.state.service.import_online_updates(
+                updates=[
+                    row
+                    for row in _payload_list(payload, "updates")
+                    if isinstance(row, dict)
+                ],
+                activate_identities=[
+                    str(value)
+                    for value in _payload_list(payload, "activate_identities")
+                ],
+                repo_url=_payload_text(payload, "repo_url"),
+                repo_ref=_payload_text(payload, "repo_ref"),
+            ),
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise ValueError(f"unknown action: {action}")
+        return handler()
 
 
 class _HostApiServer(ThreadingHTTPServer):
