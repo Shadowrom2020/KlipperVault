@@ -15,6 +15,7 @@ def test_load_or_create_writes_defaults_when_missing(tmp_path: Path) -> None:
     assert cfg_path.exists()
     assert config.version_history_size == 5
     assert config.port == 10090
+    assert config.runtime_mode == "auto"
     assert config.ui_language == "en"
     assert config.printer_vendor == ""
     assert config.printer_model == ""
@@ -36,6 +37,7 @@ def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
 
     assert config.version_history_size == 1
     assert config.port == 10090
+    assert config.runtime_mode == "auto"
     assert config.ui_language == "de"
     assert config.printer_vendor == ""
     assert config.printer_model == ""
@@ -70,6 +72,7 @@ def test_save_persists_printer_identity_fields(tmp_path: Path) -> None:
         VaultConfig(
             version_history_size=7,
             port=10100,
+            runtime_mode="off_printer",
             ui_language="de",
             printer_vendor="RatRig",
             printer_model="V-Core 3",
@@ -83,6 +86,7 @@ def test_save_persists_printer_identity_fields(tmp_path: Path) -> None:
 
     assert config.version_history_size == 7
     assert config.port == 10100
+    assert config.runtime_mode == "off_printer"
     assert config.ui_language == "de"
     assert config.printer_vendor == "RatRig"
     assert config.printer_model == "V-Core 3"
@@ -228,12 +232,24 @@ def test_load_or_create_backfills_all_persisted_config_keys(tmp_path: Path) -> N
     cfg_text = cfg_path.read_text(encoding="utf-8")
     assert "version_history_size: 5" in cfg_text
     assert "ui_language: en" in cfg_text
+    assert "runtime_mode: auto" in cfg_text
     assert "printer_vendor:" in cfg_text
     assert "printer_model:" in cfg_text
     assert "online_update_repo_url: https://github.com/Shadowrom2020/KlipperVault-Online-Updates" in cfg_text
     assert "online_update_manifest_path: updates/manifest.json" in cfg_text
     assert "online_update_ref: main" in cfg_text
     assert "developer: false" in cfg_text
+
+
+def test_load_or_create_reads_runtime_mode(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "klippervault.cfg"
+    cfg_path.write_text(
+        "[vault]\nruntime_mode: off_printer\n",
+        encoding="utf-8",
+    )
+
+    config = load_or_create(tmp_path)
+    assert config.runtime_mode == "off_printer"
 
 
 def test_ensure_moonraker_update_manager_managed_services_migrates_legacy_value(tmp_path: Path) -> None:

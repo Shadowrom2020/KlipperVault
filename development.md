@@ -54,10 +54,25 @@ pip install -r requirements.txt
 ./.venv/bin/python klipper_vault_gui.py
 ```
 
-Use a custom test config tree:
+Use explicit off-printer runtime mode (recommended for current architecture work):
 
 ```bash
-KLIPPER_CONFIG_DIR=/tmp/testcfg ./.venv/bin/python klipper_vault_gui.py
+KLIPPERVAULT_RUNTIME_MODE=off_printer \
+KLIPPERVAULT_CONFIG_DIR=/tmp/kv-config \
+KLIPPERVAULT_DB_PATH=/tmp/kv-data/klipper_macros.db \
+./.venv/bin/python klipper_vault_gui.py
+```
+
+Notes:
+
+- In `off_printer` mode, indexing mirrors remote cfg files into local `KLIPPERVAULT_CONFIG_DIR` before scan.
+- Mutating operations (edit/delete/restore/duplicate resolve/backup restore) sync changed cfg content back to remote over SSH.
+- Manual/startup scan is intentionally blocked until an active SSH profile with credentials is configured.
+
+Legacy host API run (still available for compatibility):
+
+```bash
+./.venv/bin/python klipper_vault.py
 ```
 
 ## Project Layout
@@ -75,14 +90,46 @@ src/
   klipper_macro_explainer.py      G-code explanation heuristics
   klipper_macro_explainer_view.py Reusable explanation panel and macro popup
   klipper_macro_gui_service.py    Service layer for UI actions
+  klipper_macro_gui_remote_service.py Remote host-API client (legacy compatibility)
   klipper_macro_indexer.py        Parser, indexer, versioning, cfg rewrites
   klipper_macro_backup.py         Backup and restore support
   klipper_macro_compare.py        Version compare UI
   klipper_macro_compare_core.py   Diff logic used by compare dialog
   klipper_macro_watcher.py        Config file watcher
+  klipper_vault_ssh_transport.py  SSH/SFTP read-write transport for off_printer mode
+  klipper_vault_remote_profiles.py SQLite profile metadata and credential index tables
+  klipper_vault_secret_store.py   Keyring-first secret storage with DB fallback
   klipper_vault_config.py         klippervault.cfg handling
+  klipper_vault_paths.py          Runtime-aware default config/db path resolution
   klipper_vault_db.py             Shared SQLite helpers
 ```
+
+## Runtime Modes
+
+Supported `runtime_mode` values from `klippervault.cfg` (`[vault] runtime_mode`) or env:
+
+- `auto`: legacy local defaults and behavior.
+- `on_printer`: local printer-host behavior.
+- `off_printer`: SSH/SFTP-driven remote config workflow.
+
+Environment override:
+
+```bash
+KLIPPERVAULT_RUNTIME_MODE=off_printer
+```
+
+Off-printer persistence model:
+
+- SSH host profiles are stored in SQLite (`ssh_host_profiles`).
+- Secret backend metadata is tracked in `credential_store_index`.
+- Credential values are stored in OS keyring when available; SQLite fallback is used otherwise.
+
+Primary APIs and modules:
+
+- [src/klipper_macro_gui_service.py](src/klipper_macro_gui_service.py)
+- [src/klipper_vault_remote_profiles.py](src/klipper_vault_remote_profiles.py)
+- [src/klipper_vault_secret_store.py](src/klipper_vault_secret_store.py)
+- [src/klipper_vault_ssh_transport.py](src/klipper_vault_ssh_transport.py)
 
 ## Macro Sharing Implementation Notes
 
@@ -143,6 +190,7 @@ Run syntax checks on changed Python files (minimum requirement):
 python3 -m py_compile src/klipper_macro_gui.py
 python3 -m py_compile src/klipper_macro_indexer.py src/klipper_macro_backup.py
 python3 -m py_compile src/klipper_macro_gui_service.py src/klipper_macro_viewer.py
+python3 -m py_compile src/klipper_vault_remote_profiles.py src/klipper_vault_secret_store.py src/klipper_vault_ssh_transport.py
 ```
 
 Run tests:

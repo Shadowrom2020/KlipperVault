@@ -588,6 +588,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS macros (
             id          INTEGER PRIMARY KEY,
+            printer_profile_id INTEGER NOT NULL DEFAULT 1,
             file_path   TEXT    NOT NULL,
             section_type TEXT   NOT NULL,
             macro_name  TEXT    NOT NULL,
@@ -655,6 +656,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE macros ADD COLUMN remote_path TEXT")
     if not rebuilt and existing_cols and "remote_version" not in existing_cols:
         conn.execute("ALTER TABLE macros ADD COLUMN remote_version TEXT")
+    # v10→v11: store macro history scoped to one printer profile id.
+    if not rebuilt and existing_cols and "printer_profile_id" not in existing_cols:
+        conn.execute("ALTER TABLE macros ADD COLUMN printer_profile_id INTEGER NOT NULL DEFAULT 1")
 
     conn.execute(
         """
@@ -663,11 +667,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         WHERE runtime_macro_name IS NULL OR TRIM(runtime_macro_name) = ''
         """
     )
+    conn.execute("DROP INDEX IF EXISTS idx_macros_version")
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_macros_version "
-        "ON macros(file_path, macro_name, version)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_macros_version_profile "
+        "ON macros(printer_profile_id, file_path, macro_name, version)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_macros_name ON macros(macro_name)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_macros_printer_profile "
+        "ON macros(printer_profile_id, macro_name, indexed_at DESC)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_macros_source_identity "
         "ON macros(source_vendor, source_model, macro_name, indexed_at DESC)"
@@ -701,6 +710,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 def _promote_existing_version_to_latest(
     conn: sqlite3.Connection,
+    printer_profile_id: int,
     file_path: str,
     macro_name: str,
     from_version: int,
@@ -717,9 +727,9 @@ def _promote_existing_version_to_latest(
         """
         SELECT version
         FROM macros
-        WHERE file_path = ? AND macro_name = ?
+        WHERE printer_profile_id = ? AND file_path = ? AND macro_name = ?
         """,
-        (file_path, macro_name),
+        (int(printer_profile_id), file_path, macro_name),
     ).fetchall()
     if not versions:
         return
@@ -740,9 +750,9 @@ def _promote_existing_version_to_latest(
             """
             UPDATE macros
             SET version = version + ?
-            WHERE file_path = ? AND macro_name = ?
+            WHERE printer_profile_id = ? AND file_path = ? AND macro_name = ?
             """,
-            (offset, file_path, macro_name),
+            (offset, int(printer_profile_id), file_path, macro_name),
         )
         conn.execute(
             """
@@ -752,7 +762,7 @@ def _promote_existing_version_to_latest(
                 WHEN version > ? AND version <= ? THEN version - ? - 1
                 ELSE version - ?
             END
-            WHERE file_path = ? AND macro_name = ?
+            WHERE printer_profile_id = ? AND file_path = ? AND macro_name = ?
             """,
             (
                 shifted_from,
@@ -761,6 +771,7 @@ def _promote_existing_version_to_latest(
                 shifted_to,
                 offset,
                 offset,
+                int(printer_profile_id),
                 file_path,
                 macro_name,
             ),
@@ -774,6 +785,7 @@ def _promote_existing_version_to_latest(
 
 def index_macros(
     conn: sqlite3.Connection, records: List[MacroRecord], now_ts: int,
+    printer_profile_id: int = 1,
     max_versions: int = _MAX_VERSIONS,
 ) -> tuple[int, int, int]:
     """Insert a new version only when parsed macro content truly changed.
@@ -796,10 +808,10 @@ def index_macros(
                 line_number,
                 body_checksum
             FROM macros
-            WHERE file_path = ? AND macro_name = ?
+            WHERE printer_profile_id = ? AND file_path = ? AND macro_name = ?
             ORDER BY version ASC
             """,
-            (rec.file_path, rec.macro_name),
+            (int(printer_profile_id), rec.file_path, rec.macro_name),
         ).fetchall()
 
         latest = versions[-1] if versions else None
@@ -830,6 +842,7 @@ def index_macros(
             if matched_checksum_version is not None and matched_checksum_version != latest_version:
                 _promote_existing_version_to_latest(
                     conn=conn,
+                    printer_profile_id=int(printer_profile_id),
                     file_path=rec.file_path,
                     macro_name=rec.macro_name,
                     from_version=matched_checksum_version,
@@ -843,6 +856,7 @@ def index_macros(
                         is_new = 0,
                         indexed_at = ?
                     WHERE file_path = ? AND macro_name = ? AND version = ?
+                      AND printer_profile_id = ?
                     """,
                     (
                         rec.line_number,
@@ -851,6 +865,7 @@ def index_macros(
                         rec.file_path,
                         rec.macro_name,
                         latest_version,
+                        int(printer_profile_id),
                     ),
                 )
                 unchanged += 1
@@ -880,6 +895,7 @@ def index_macros(
                             is_new = 0,
                             indexed_at = ?
                         WHERE file_path = ? AND macro_name = ? AND version = ?
+                          AND printer_profile_id = ?
                         """,
                         (
                             rec.line_number,
@@ -888,6 +904,7 @@ def index_macros(
                             rec.file_path,
                             rec.macro_name,
                             latest_version,
+                            int(printer_profile_id),
                         ),
                     )
                 else:
@@ -897,8 +914,9 @@ def index_macros(
                         SET indexed_at = ?
                                     ,is_new = 0
                         WHERE file_path = ? AND macro_name = ? AND version = ?
+                                                    AND printer_profile_id = ?
                         """,
-                        (now_ts, rec.file_path, rec.macro_name, latest_version),
+                                                (now_ts, rec.file_path, rec.macro_name, latest_version, int(printer_profile_id)),
                     )
                 unchanged += 1
                 continue
@@ -926,6 +944,7 @@ def index_macros(
             if matched_version is not None:
                 _promote_existing_version_to_latest(
                     conn=conn,
+                    printer_profile_id=int(printer_profile_id),
                     file_path=rec.file_path,
                     macro_name=rec.macro_name,
                     from_version=matched_version,
@@ -939,6 +958,7 @@ def index_macros(
                         is_new = 0,
                         indexed_at = ?
                     WHERE file_path = ? AND macro_name = ? AND version = ?
+                      AND printer_profile_id = ?
                     """,
                     (
                         rec.line_number,
@@ -947,6 +967,7 @@ def index_macros(
                         rec.file_path,
                         rec.macro_name,
                         latest_version,
+                        int(printer_profile_id),
                     ),
                 )
                 unchanged += 1
@@ -959,14 +980,16 @@ def index_macros(
         conn.execute(
             """
             INSERT INTO macros (
+                printer_profile_id,
                 file_path, section_type, macro_name, line_number,
                 description, rename_existing, gcode, variables_json, body_checksum, is_active,
                 runtime_macro_name, renamed_from, is_loaded, is_dynamic, is_new,
                 version, indexed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                int(printer_profile_id),
                 rec.file_path,
                 rec.section_type,
                 rec.macro_name,
@@ -990,13 +1013,21 @@ def index_macros(
         conn.execute(
             """
             DELETE FROM macros
-            WHERE file_path = ? AND macro_name = ?
+                        WHERE printer_profile_id = ? AND file_path = ? AND macro_name = ?
               AND version <= (
                 SELECT MAX(version) - ? FROM macros
-                WHERE file_path = ? AND macro_name = ?
+                                WHERE printer_profile_id = ? AND file_path = ? AND macro_name = ?
               )
             """,
-            (rec.file_path, rec.macro_name, max_versions, rec.file_path, rec.macro_name),
+                        (
+                                int(printer_profile_id),
+                                rec.file_path,
+                                rec.macro_name,
+                                max_versions,
+                                int(printer_profile_id),
+                                rec.file_path,
+                                rec.macro_name,
+                        ),
         )
         inserted += 1
         if rec.is_dynamic:
@@ -1008,7 +1039,15 @@ def index_macros(
         (rec.file_path, rec.macro_name): (bool(rec.is_loaded), bool(rec.is_dynamic))
         for rec in records
     }
-    latest_rows = conn.execute(_LATEST_VERSION_SUBQUERY).fetchall()
+    latest_rows = conn.execute(
+        """
+        SELECT file_path, macro_name, MAX(version) AS max_version
+        FROM macros
+        WHERE printer_profile_id = ?
+        GROUP BY file_path, macro_name
+        """,
+        (int(printer_profile_id),),
+    ).fetchall()
     for file_path, macro_name, max_version in latest_rows:
         identity = (str(file_path), str(macro_name))
         is_seen = identity in seen_identity_status
@@ -1027,6 +1066,7 @@ def index_macros(
                 is_dynamic = ?,
                 is_new = CASE WHEN ? = 1 THEN 0 ELSE is_new END
             WHERE file_path = ? AND macro_name = ? AND version = ?
+              AND printer_profile_id = ?
             """,
             (
                 1 if is_seen else 0,
@@ -1036,6 +1076,7 @@ def index_macros(
                 str(file_path),
                 str(macro_name),
                 int(max_version),
+                int(printer_profile_id),
             ),
         )
 
@@ -1066,7 +1107,9 @@ def index_macros(
         SET is_active = 0,
             runtime_macro_name = macro_name,
             renamed_from = NULL
+        WHERE printer_profile_id = ?
         """
+        ,(int(printer_profile_id),)
     )
 
     runtime_names_by_identity: Dict[tuple[str, str], list[str]] = {}
@@ -1091,20 +1134,33 @@ def index_macros(
             WHERE file_path = ? AND macro_name = ?
                             AND is_deleted = 0
                             AND is_loaded = 1
+                                                        AND printer_profile_id = ?
               AND version = (
                 SELECT MAX(version)
                 FROM macros
-                WHERE file_path = ? AND macro_name = ?
+                                WHERE printer_profile_id = ? AND file_path = ? AND macro_name = ?
               )
             """,
-            (selected_runtime, renamed_from, file_path, macro_name, file_path, macro_name),
+                        (
+                                selected_runtime,
+                                renamed_from,
+                                file_path,
+                                macro_name,
+                                int(printer_profile_id),
+                                int(printer_profile_id),
+                                file_path,
+                                macro_name,
+                        ),
         )
 
     return inserted, unchanged, dynamic_inserted
 
 
 def run_indexing(
-    config_dir: Path, db_path: Path, max_versions: int = _MAX_VERSIONS
+    config_dir: Path,
+    db_path: Path,
+    max_versions: int = _MAX_VERSIONS,
+    printer_profile_id: int = 1,
 ) -> Dict[str, object]:
     """Index cfg files into SQLite and return a small run summary."""
     if not config_dir.exists() or not config_dir.is_dir():
@@ -1120,7 +1176,13 @@ def run_indexing(
         ensure_schema=ensure_schema,
         pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
     ) as conn:
-        inserted, unchanged, dynamic_inserted = index_macros(conn, all_records, now_ts, max_versions=max_versions)
+        inserted, unchanged, dynamic_inserted = index_macros(
+            conn,
+            all_records,
+            now_ts,
+            printer_profile_id=int(printer_profile_id),
+            max_versions=max_versions,
+        )
         conn.commit()
 
     return {
@@ -1256,6 +1318,7 @@ def import_macro_share_payload(
     db_path: Path,
     payload: Dict[str, object],
     now_ts: Optional[int] = None,
+    printer_profile_id: int = 1,
 ) -> Dict[str, object]:
     """Store imported macros as inactive latest rows marked as new."""
     if str(payload.get("format", "")).strip() != _SHARE_FORMAT:
@@ -1333,6 +1396,7 @@ def import_macro_share_payload(
             conn.execute(
                 """
                 INSERT INTO macros (
+                    printer_profile_id,
                     file_path,
                     section_type,
                     macro_name,
@@ -1355,9 +1419,10 @@ def import_macro_share_payload(
                     version,
                     indexed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    int(printer_profile_id),
                     file_path,
                     section_type,
                     macro_name,
@@ -1391,7 +1456,7 @@ def import_macro_share_payload(
     }
 
 
-def load_stats(db_path: Path) -> Dict[str, object]:
+def load_stats(db_path: Path, printer_profile_id: int | None = None) -> Dict[str, object]:
     """Return aggregate stats for the stats panel."""
     if not db_path.exists():
         return {
@@ -1403,6 +1468,23 @@ def load_stats(db_path: Path) -> Dict[str, object]:
             "macros_per_file": [],
         }
 
+    latest_subquery = _LATEST_VERSION_SUBQUERY
+    latest_args: tuple[object, ...] = ()
+    if printer_profile_id is not None:
+        latest_subquery = """
+        SELECT file_path, macro_name, MAX(version) AS max_version
+        FROM macros
+        WHERE printer_profile_id = ?
+        GROUP BY file_path, macro_name
+        """.strip()
+        latest_args = (int(printer_profile_id),)
+
+    row_filter = ""
+    row_args: tuple[object, ...] = ()
+    if printer_profile_id is not None:
+        row_filter = " AND m.printer_profile_id = ?"
+        row_args = (int(printer_profile_id),)
+
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         # Count distinct latest, non-deleted macros to reflect current cfg state.
         total_macros = int(conn.execute(
@@ -1412,14 +1494,16 @@ def load_stats(db_path: Path) -> Dict[str, object]:
                 SELECT m.file_path, m.macro_name
                 FROM macros AS m
                 INNER JOIN (
-                    {_LATEST_VERSION_SUBQUERY}
+                    {latest_subquery}
                 ) AS latest
                     ON m.file_path = latest.file_path
                    AND m.macro_name = latest.macro_name
                    AND m.version = latest.max_version
                 WHERE m.is_deleted = 0
+                {row_filter}
             )
             """
+            , latest_args + row_args
         ).fetchone()[0])
         deleted_macros = int(conn.execute(
             f"""
@@ -1428,70 +1512,86 @@ def load_stats(db_path: Path) -> Dict[str, object]:
                 SELECT m.file_path, m.macro_name
                 FROM macros AS m
                 INNER JOIN (
-                    {_LATEST_VERSION_SUBQUERY}
+                    {latest_subquery}
                 ) AS latest
                     ON m.file_path = latest.file_path
                    AND m.macro_name = latest.macro_name
                    AND m.version = latest.max_version
                 WHERE m.is_deleted = 1
+                {row_filter}
             )
             """
+            , latest_args + row_args
         ).fetchone()[0])
         distinct_macro_names = int(conn.execute(
             f"""
             SELECT COUNT(DISTINCT m.macro_name)
             FROM macros AS m
             INNER JOIN (
-                {_LATEST_VERSION_SUBQUERY}
+                {latest_subquery}
             ) AS latest
                 ON m.file_path = latest.file_path
                AND m.macro_name = latest.macro_name
                AND m.version = latest.max_version
             WHERE m.is_deleted = 0
+            {row_filter}
             """
+            , latest_args + row_args
         ).fetchone()[0])
         distinct_runtime_macro_names = int(conn.execute(
             f"""
             SELECT COUNT(DISTINCT COALESCE(NULLIF(TRIM(m.runtime_macro_name), ''), m.macro_name))
             FROM macros AS m
             INNER JOIN (
-                {_LATEST_VERSION_SUBQUERY}
+                {latest_subquery}
             ) AS latest
                 ON m.file_path = latest.file_path
                AND m.macro_name = latest.macro_name
                AND m.version = latest.max_version
             WHERE m.is_deleted = 0
+            {row_filter}
             """
+            , latest_args + row_args
         ).fetchone()[0])
         distinct_cfg_files = int(conn.execute(
             f"""
             SELECT COUNT(DISTINCT m.file_path)
             FROM macros AS m
             INNER JOIN (
-                {_LATEST_VERSION_SUBQUERY}
+                {latest_subquery}
             ) AS latest
                 ON m.file_path = latest.file_path
                AND m.macro_name = latest.macro_name
                AND m.version = latest.max_version
             WHERE m.is_deleted = 0
+            {row_filter}
             """
+            , latest_args + row_args
         ).fetchone()[0])
-        latest_update_ts = conn.execute("SELECT MAX(indexed_at) FROM macros").fetchone()[0]
+        if printer_profile_id is None:
+            latest_update_ts = conn.execute("SELECT MAX(indexed_at) FROM macros").fetchone()[0]
+        else:
+            latest_update_ts = conn.execute(
+                "SELECT MAX(indexed_at) FROM macros WHERE printer_profile_id = ?",
+                (int(printer_profile_id),),
+            ).fetchone()[0]
         rows = conn.execute(
             f"""
             SELECT m.file_path, COUNT(DISTINCT m.macro_name) AS macro_count
             FROM macros AS m
             INNER JOIN (
-                {_LATEST_VERSION_SUBQUERY}
+                {latest_subquery}
             ) AS latest
                 ON m.file_path = latest.file_path
                AND m.macro_name = latest.macro_name
                AND m.version = latest.max_version
             WHERE m.is_deleted = 0
+            {row_filter}
             GROUP BY m.file_path
             ORDER BY macro_count DESC, m.file_path ASC
             LIMIT 20
             """
+            , latest_args + row_args
         ).fetchall()
         macros_per_file = [
             {"file_path": str(file_path), "macro_count": int(macro_count)}
@@ -1515,6 +1615,7 @@ def load_macro_list(
     offset: int = 0,
     config_dir: Path | None = None,
     include_macro_body: bool = True,
+    printer_profile_id: int | None = None,
 ) -> List[Dict[str, object]]:
     """Return latest version row for each macro (list view payload).
 
@@ -1525,6 +1626,17 @@ def load_macro_list(
     """
     if not db_path.exists():
         return []
+
+    latest_subquery = _LATEST_VERSION_WITH_COUNT_SUBQUERY
+    latest_args: tuple[object, ...] = ()
+    if printer_profile_id is not None:
+        latest_subquery = """
+        SELECT file_path, macro_name, MAX(version) AS max_version, COUNT(*) AS version_count
+        FROM macros
+        WHERE printer_profile_id = ?
+        GROUP BY file_path, macro_name
+        """.strip()
+        latest_args = (int(printer_profile_id),)
 
     load_order_map: Dict[tuple[str, str, int], int] = {}
     if config_dir is not None:
@@ -1562,20 +1674,22 @@ def load_macro_list(
                                         WHERE pending.file_path = m.file_path
                                             AND pending.macro_name = m.macro_name
                                             AND pending.is_new = 1
+                                            AND (? IS NULL OR pending.printer_profile_id = ?)
                                 ) AS has_new_version,
                 cnt.version_count
             FROM macros AS m
             INNER JOIN (
-                {_LATEST_VERSION_WITH_COUNT_SUBQUERY}
+                {latest_subquery}
             ) AS cnt
                 ON m.file_path = cnt.file_path
                AND m.macro_name = cnt.macro_name
                AND m.version = cnt.max_version
+            WHERE (? IS NULL OR m.printer_profile_id = ?)
             ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
             LIMIT ?
             OFFSET ?
             """,
-            (limit, offset),
+            latest_args + (printer_profile_id, printer_profile_id, printer_profile_id, printer_profile_id, limit, offset),
         ).fetchall()
 
     return [
@@ -1625,7 +1739,12 @@ def load_macro_list(
     ]
 
 
-def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[Dict[str, object]]:
+def load_macro_versions(
+    db_path: Path,
+    file_path: str,
+    macro_name: str,
+    printer_profile_id: int | None = None,
+) -> List[Dict[str, object]]:
     """Load all stored versions for one macro, newest first."""
     if not db_path.exists():
         return []
@@ -1652,9 +1771,10 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
                 is_new
             FROM macros
             WHERE file_path = ? AND macro_name = ?
+                            AND (? IS NULL OR printer_profile_id = ?)
             ORDER BY version DESC
             """,
-            (file_path, macro_name),
+                        (file_path, macro_name, printer_profile_id, printer_profile_id),
         ).fetchall()
 
     return [
@@ -1698,10 +1818,16 @@ def load_macro_versions(db_path: Path, file_path: str, macro_name: str) -> List[
     ]
 
 
-def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
+def load_duplicate_macro_groups(db_path: Path, printer_profile_id: Optional[int] = None) -> List[Dict[str, object]]:
     """Return duplicate macro definitions grouped by macro_name."""
     if not db_path.exists():
         return []
+
+    where_profile = ""
+    params: tuple[object, ...] = ()
+    if printer_profile_id is not None:
+        where_profile = "\n                  AND m.printer_profile_id = ?"
+        params = (int(printer_profile_id),)
 
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         rows = conn.execute(
@@ -1716,7 +1842,8 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
                    AND m.macro_name = l.macro_name
                    AND m.version = l.max_version
                 WHERE m.is_deleted = 0
-                                    AND m.is_loaded = 1
+                  AND m.is_loaded = 1
+{where_profile}
                   AND COALESCE(NULLIF(TRIM(m.runtime_macro_name), ''), m.macro_name) = m.macro_name
             ), duplicated AS (
                 SELECT macro_name
@@ -1734,7 +1861,8 @@ def load_duplicate_macro_groups(db_path: Path) -> List[Dict[str, object]]:
             INNER JOIN duplicated AS d
                 ON d.macro_name = m.macro_name
             ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
-            """
+            """,
+            params,
         ).fetchall()
 
     groups: Dict[str, List[Dict[str, object]]] = {}
@@ -1788,8 +1916,6 @@ def _macro_version_to_section_text(row: tuple) -> str:
     if gcode:
         lines.append("gcode:\n")
         for line in str(gcode).splitlines():
-            # Preserve stored gcode text verbatim to avoid creating
-            # whitespace-only diffs during restore/reactivation.
             lines.append(f"{line}\n")
 
     return "".join(lines)
@@ -1942,30 +2068,50 @@ def restore_macro_version(
     file_path: str,
     macro_name: str,
     version: int,
+    printer_profile_id: Optional[int] = None,
 ) -> Dict[str, object]:
     """Restore one stored macro version into its cfg file content."""
     if version <= 0:
         raise ValueError("version must be a positive integer")
 
+    where_profile = ""
+    params: tuple[object, ...]
+    if printer_profile_id is not None:
+        where_profile = " AND printer_profile_id = ?"
+        params = (file_path, macro_name, int(version), int(printer_profile_id))
+    else:
+        params = (file_path, macro_name, int(version))
+
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT section_type, macro_name, description, rename_existing, gcode, variables_json, is_new
             FROM macros
             WHERE file_path = ? AND macro_name = ? AND version = ?
+            {where_profile}
             LIMIT 1
             """,
-            (file_path, macro_name, int(version)),
+            params,
         ).fetchone()
         if row is not None and bool(int(row[6])):
-            conn.execute(
-                """
-                UPDATE macros
-                SET is_new = 0
-                WHERE file_path = ? AND macro_name = ? AND version = ?
-                """,
-                (file_path, macro_name, int(version)),
-            )
+            if printer_profile_id is not None:
+                conn.execute(
+                    """
+                    UPDATE macros
+                    SET is_new = 0
+                    WHERE file_path = ? AND macro_name = ? AND version = ? AND printer_profile_id = ?
+                    """,
+                    (file_path, macro_name, int(version), int(printer_profile_id)),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE macros
+                    SET is_new = 0
+                    WHERE file_path = ? AND macro_name = ? AND version = ?
+                    """,
+                    (file_path, macro_name, int(version)),
+                )
             conn.commit()
 
     if row is None:
@@ -2029,46 +2175,50 @@ def delete_macro_from_cfg(
     }
 
 
-def remove_deleted_macro(db_path: Path, file_path: str, macro_name: str) -> Dict[str, object]:
-    """Permanently delete one macro identity from DB when marked as deleted.
+def remove_deleted_macro(
+    db_path: Path,
+    file_path: str,
+    macro_name: str,
+    printer_profile_id: Optional[int] = None,
+) -> Dict[str, object]:
+    """Permanently delete one macro identity from DB when marked as deleted."""
+    where_profile = ""
+    latest_params: tuple[object, ...]
+    delete_params: tuple[object, ...]
+    if printer_profile_id is not None:
+        where_profile = " AND printer_profile_id = ?"
+        latest_params = (file_path, macro_name, int(printer_profile_id))
+        delete_params = (file_path, macro_name, int(printer_profile_id))
+    else:
+        latest_params = (file_path, macro_name)
+        delete_params = (file_path, macro_name)
 
-    Removes all stored versions for (file_path, macro_name) only if its latest
-    version is currently marked is_deleted=1.
-    """
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         latest = conn.execute(
-            """
+            f"""
             SELECT version, is_deleted
             FROM macros
             WHERE file_path = ? AND macro_name = ?
+            {where_profile}
             ORDER BY version DESC
             LIMIT 1
             """,
-            (file_path, macro_name),
+            latest_params,
         ).fetchone()
 
         if latest is None:
-            return {
-                "removed": 0,
-                "reason": "not_found",
-            }
+            return {"removed": 0, "reason": "not_found"}
 
         if int(latest[1]) == 0:
-            return {
-                "removed": 0,
-                "reason": "not_deleted",
-            }
+            return {"removed": 0, "reason": "not_deleted"}
 
         removed = conn.execute(
-            "DELETE FROM macros WHERE file_path = ? AND macro_name = ?",
-            (file_path, macro_name),
+            f"DELETE FROM macros WHERE file_path = ? AND macro_name = ?{where_profile}",
+            delete_params,
         ).rowcount
         conn.commit()
 
-    return {
-        "removed": int(removed or 0),
-        "reason": "removed",
-    }
+    return {"removed": int(removed or 0), "reason": "removed"}
 
 
 def remove_inactive_macro_version(
@@ -2076,50 +2226,55 @@ def remove_inactive_macro_version(
     file_path: str,
     macro_name: str,
     version: int,
+    printer_profile_id: Optional[int] = None,
 ) -> Dict[str, object]:
     """Permanently delete one selected inactive macro version from DB."""
+    where_profile = ""
+    select_params: tuple[object, ...]
+    delete_params: tuple[object, ...]
+    if printer_profile_id is not None:
+        where_profile = " AND printer_profile_id = ?"
+        select_params = (file_path, macro_name, version, int(printer_profile_id))
+        delete_params = (file_path, macro_name, version, int(printer_profile_id))
+    else:
+        select_params = (file_path, macro_name, version)
+        delete_params = (file_path, macro_name, version)
+
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         row = conn.execute(
-            """
+            f"""
             SELECT version, is_active, is_deleted
             FROM macros
             WHERE file_path = ? AND macro_name = ? AND version = ?
+            {where_profile}
             """,
-            (file_path, macro_name, version),
+            select_params,
         ).fetchone()
 
         if row is None:
-            return {
-                "removed": 0,
-                "reason": "not_found",
-            }
-
+            return {"removed": 0, "reason": "not_found"}
         if int(row[2]) != 0:
-            return {
-                "removed": 0,
-                "reason": "deleted",
-            }
-
+            return {"removed": 0, "reason": "deleted"}
         if int(row[1]) != 0:
-            return {
-                "removed": 0,
-                "reason": "not_inactive",
-            }
+            return {"removed": 0, "reason": "not_inactive"}
 
         removed = conn.execute(
-            "DELETE FROM macros WHERE file_path = ? AND macro_name = ? AND version = ?",
-            (file_path, macro_name, version),
+            f"DELETE FROM macros WHERE file_path = ? AND macro_name = ? AND version = ?{where_profile}",
+            delete_params,
         ).rowcount
         conn.commit()
 
-    return {
-        "removed": int(removed or 0),
-        "reason": "removed",
-    }
+    return {"removed": int(removed or 0), "reason": "removed"}
 
 
-def remove_all_deleted_macros(db_path: Path) -> Dict[str, object]:
+def remove_all_deleted_macros(db_path: Path, printer_profile_id: Optional[int] = None) -> Dict[str, object]:
     """Permanently remove all macro identities whose latest version is deleted."""
+    where_profile = ""
+    params: tuple[object, ...] = ()
+    if printer_profile_id is not None:
+        where_profile = " AND m.printer_profile_id = ?"
+        params = (int(printer_profile_id),)
+
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         removed = conn.execute(
             f"""
@@ -2133,15 +2288,14 @@ def remove_all_deleted_macros(db_path: Path) -> Dict[str, object]:
                     ON m.file_path = latest.file_path
                    AND m.macro_name = latest.macro_name
                    AND m.version = latest.max_version
-                WHERE m.is_deleted = 1
+                WHERE m.is_deleted = 1{where_profile}
             )
-            """
+            """,
+            params,
         ).rowcount
         conn.commit()
 
-    return {
-        "removed": int(removed or 0),
-    }
+    return {"removed": int(removed or 0)}
 
 
 def _remove_macro_sections_from_cfg(cfg_file: Path, macro_name: str) -> int:

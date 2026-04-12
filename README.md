@@ -10,7 +10,7 @@ KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definiti
 
 KlipperVault scans your Klipper config tree, indexes every `[gcode_macro ...]` section in SQLite, and presents the results in a NiceGUI interface.
 
-It is built for Klipper systems that keep configuration in `~/printer_data/config` and want safer macro maintenance than editing raw `.cfg` files alone.
+It supports both local printer-host operation and off-printer operation via SSH/SFTP profile connections, with safer macro maintenance than editing raw `.cfg` files alone.
 
 ## What's New
 
@@ -52,19 +52,30 @@ Dynamic Macros project:
 - Linux
 - Python 3 with `venv` support
 - systemd
-- Klipper config directory (typically `~/printer_data/config`)
-- Moonraker reachable at `http://127.0.0.1:7125` (default)
+- For `on_printer` mode: Klipper config directory (typically `~/printer_data/config`)
+- For `off_printer` mode: SSH access to target host config directory and Moonraker URL for that host/profile
 
 Dependencies are split by runtime profile:
 
 - Printer host profile: [requirements-printer.txt](requirements-printer.txt)
 - Full GUI profile: [requirements.txt](requirements.txt)
 
+Off-printer credential storage:
+
+- SSH profile metadata is stored in the KlipperVault SQLite database.
+- SSH secrets use OS key storage (keyring) when available.
+- If no usable keyring backend is present, secrets fall back to encrypted-at-rest SQLite storage.
+
 ## Default Paths
 
-- Config directory: `~/printer_data/config`
-- Database: `~/printer_data/db/klipper_macros.db`
-- App config: `~/printer_data/config/klippervault.cfg`
+- Runtime mode default: `off_printer`
+- Off-printer defaults:
+  - Config directory: `~/.config/klippervault`
+  - Database: `~/.local/share/klippervault/klipper_macros.db`
+- On-printer defaults:
+  - Config directory: `~/printer_data/config`
+  - Database: `~/printer_data/db/klipper_macros.db`
+- App config path default (installer): `~/printer_data/config/klippervault.cfg`
 - Default HTTP port: `10090`
 - Default Moonraker URL: `http://127.0.0.1:7125`
 
@@ -76,6 +87,7 @@ KlipperVault creates `klippervault.cfg` on first start if it does not exist.
 [vault]
 version_history_size: 5
 port: 10090
+runtime_mode: off_printer
 ui_language: en
 printer_vendor:
 printer_model:
@@ -93,6 +105,7 @@ remote_api_token:
 
 - `version_history_size`: max stored versions per macro
 - `port`: web UI port
+- `runtime_mode`: runtime behavior (`auto`, `on_printer`, `off_printer`)
 - `ui_language`: UI language (`en`, `de`)
 - `printer_vendor`: optional printer vendor shown in UI and exported share metadata
 - `printer_model`: optional printer model shown in UI and exported share metadata
@@ -107,6 +120,12 @@ remote_api_token:
 - `remote_api_url`: optional remote API URL used by GUI mode (for example: `http://printer-host.local:10091`)
 - `remote_api_token`: optional bearer token used by GUI mode for remote API auth
 
+Environment overrides:
+
+- `KLIPPERVAULT_RUNTIME_MODE`
+- `KLIPPERVAULT_CONFIG_DIR`
+- `KLIPPERVAULT_DB_PATH`
+
 If vendor/model are missing, KlipperVault prompts for them and writes them back to config.
 
 ## Installation
@@ -117,13 +136,19 @@ From repository root:
 sudo ./install.sh
 ```
 
-Installer summary (printer host default):
+Installer summary (GUI/off-printer default):
 
 1. Detect target user
 2. Migrate legacy installs (`klippervault-venv`, old GUI service/nav entries) when found
-3. Create printer virtualenv (`~/klippervault-printer-venv`)
-4. Install printer dependencies from `requirements-printer.txt`
-5. Write and enable `klipper-vault-host-api.service` (can be disabled with `INSTALL_HOST_API_SERVICE=0`)
+3. Create virtualenv (`~/klippervault-venv` by default)
+4. Install dependencies from `requirements.txt` (GUI/off-printer profile)
+5. Write and enable `klipper-vault.service` (default)
+6. Host API service is optional and disabled by default (`INSTALL_HOST_API_SERVICE=0`)
+
+Legacy printer-host focused install can still be enabled explicitly by setting:
+
+- `INSTALL_HOST_API_SERVICE=1`
+- `KLIPPERVAULT_RUNTIME_MODE=on_printer` (or `auto`)
 
 Uninstall:
 
@@ -140,13 +165,22 @@ Manual run:
 ./.venv/bin/python klipper_vault_gui.py
 ```
 
+Off-printer mode run (explicit):
+
+```bash
+KLIPPERVAULT_RUNTIME_MODE=off_printer \
+KLIPPERVAULT_CONFIG_DIR=$HOME/.config/klippervault \
+KLIPPERVAULT_DB_PATH=$HOME/.local/share/klippervault/klipper_macros.db \
+./.venv/bin/python klipper_vault_gui.py
+```
+
 Host API service mode (printer host):
 
 ```bash
 ./.venv/bin/python klipper_vault.py
 ```
 
-Remote GUI mode (client machine):
+Legacy remote GUI mode (client machine, host API compatibility):
 
 ```bash
 KLIPPERVAULT_REMOTE_API_URL=http://printer-host.local:10091 \
@@ -171,15 +205,27 @@ Install without host API service unit:
 sudo INSTALL_HOST_API_SERVICE=0 ./install.sh
 ```
 
-Install legacy local GUI service as well:
+Install with host API service unit (optional compatibility mode):
 
 ```bash
-sudo INSTALL_GUI_SERVICE=1 INSTALL_MAINSAIL_NAV=1 REQUIREMENTS_FILE="$PWD/requirements.txt" ./install.sh
+sudo INSTALL_HOST_API_SERVICE=1 KLIPPERVAULT_RUNTIME_MODE=on_printer ./install.sh
 ```
 
 ## Usage
 
 Typical flow:
+
+1. Open KlipperVault.
+2. In `off_printer` mode, open `Manage SSH profiles`, save one profile, and activate it.
+3. Click `Test SSH profile`.
+4. Click `Scan macros`.
+5. Select a macro and review details/history.
+6. Edit latest non-deleted version.
+7. For dynamic macros, editing is allowed even while printing.
+8. Use `Reload Dynamic Macros` to apply dynamic-macro changes without a full Klipper restart.
+9. Save and re-index.
+
+On-printer/auto flow:
 
 1. Open KlipperVault.
 2. Click `Scan macros`.
@@ -225,7 +271,7 @@ Compatibility behavior:
 - Import warns when source printer metadata is unknown or differs from local printer metadata.
 - Online updates use checksum comparison to detect changes; only changed macros appear in the update list.
 
-Remote host API typed endpoints (current):
+Remote host API typed endpoints (legacy compatibility mode):
 
 - `GET /api/v1/health`
 - `GET /api/v1/dashboard`
@@ -263,7 +309,8 @@ App does not start:
 
 No macros found:
 
-- Verify config files exist under `~/printer_data/config`.
+- In `off_printer` mode, verify an active SSH profile exists, credentials are set, and `Test SSH profile` succeeds.
+- In `on_printer`/`auto` mode, verify config files exist under `~/printer_data/config`.
 - Check `printer.cfg` includes and file readability.
 - Trigger a manual scan.
 
@@ -278,7 +325,7 @@ Editing is disabled:
 Developer setup, architecture, checks, and contribution guidance are in [development.md](development.md).
 
 ## Honorable people that helped me to build this:
-@[triadterm](https://github.com/triadterm) - Thanks for beign an early adopter and testing this
+@[triadterm](https://github.com/triadterm) - Thanks for being an early adopter and testing this
 
 ## License
 

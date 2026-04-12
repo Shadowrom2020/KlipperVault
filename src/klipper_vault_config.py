@@ -42,6 +42,11 @@ version_history_size: 5
 # HTTP port for the KlipperVault web UI.
 port: 10090
 
+# Runtime mode controls where connection settings come from.
+# auto: detect from environment, on_printer: force local printer mode,
+# off_printer: use DB-backed remote SSH profiles.
+runtime_mode: auto
+
 # UI language used by the web interface (for example: en, de).
 ui_language: en
 
@@ -89,6 +94,7 @@ remote_api_token:
 class VaultConfig:
     version_history_size: int = 5
     port: int = 10090
+    runtime_mode: str = "auto"
     ui_language: str = "en"
     printer_vendor: str = ""
     printer_model: str = ""
@@ -229,6 +235,11 @@ def save(config_dir: Path, config: VaultConfig) -> None:
         "# HTTP port for the KlipperVault web UI.",
         f"port: {int(config.port)}",
         "",
+        "# Runtime mode controls where connection settings come from.",
+        "# auto: detect from environment, on_printer: force local printer mode,",
+        "# off_printer: use DB-backed remote SSH profiles.",
+        f"runtime_mode: {str(config.runtime_mode or 'auto').strip().lower() or 'auto'}",
+        "",
         "# UI language used by the web interface (for example: en, de).",
         f"ui_language: {str(config.ui_language or 'en').strip().lower() or 'en'}",
         "",
@@ -311,6 +322,12 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         raw_language = parser.get("vault", "ui_language").strip().lower()
         if raw_language:
             ui_language = raw_language
+
+    runtime_mode = "auto"
+    if parser.has_option("vault", "runtime_mode"):
+        parsed_runtime_mode = parser.get("vault", "runtime_mode").strip().lower()
+        if parsed_runtime_mode in {"auto", "on_printer", "off_printer"}:
+            runtime_mode = parsed_runtime_mode
 
     printer_vendor = ""
     vendor_is_stored = False
@@ -398,6 +415,7 @@ def load_or_create(config_dir: Path) -> VaultConfig:
     config = VaultConfig(
         version_history_size=version_history_size,
         port=port,
+        runtime_mode=runtime_mode,
         ui_language=ui_language,
         printer_vendor=printer_vendor,
         printer_model=printer_model,

@@ -12,10 +12,12 @@ from klipper_macro_indexer import (
     load_macro_list,
     macro_row_to_section_text,
     parse_macros_from_cfg,
+    remove_deleted_macro,
     remove_inactive_macro_version,
     restore_macro_version,
     run_indexing,
 )
+from klipper_vault_db import open_sqlite_connection
 
 
 def _write(path: Path, content: str) -> None:
@@ -614,6 +616,173 @@ def test_remove_inactive_macro_version_rejects_active_row(tmp_path: Path) -> Non
     result = remove_inactive_macro_version(db_path, "printer.cfg", "HELLO", int(active_row["version"]))
 
     assert result == {"removed": 0, "reason": "not_inactive"}
+
+
+def test_load_duplicate_macro_groups_scoped_by_printer_profile(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "macros.db"
+
+    config_p1 = tmp_path / "config_p1"
+    _write(
+        config_p1 / "printer.cfg",
+        """
+        [include base.cfg]
+        [include override.cfg]
+        """,
+    )
+    _write(
+        config_p1 / "base.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="base"
+        """,
+    )
+    _write(
+        config_p1 / "override.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="override"
+        """,
+    )
+
+    config_p2 = tmp_path / "config_p2"
+    _write(
+        config_p2 / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="single"
+        """,
+    )
+
+    run_indexing(config_p1, db_path, printer_profile_id=1)
+    run_indexing(config_p2, db_path, printer_profile_id=2)
+
+    scoped_p1 = load_duplicate_macro_groups(db_path, printer_profile_id=1)
+    scoped_p2 = load_duplicate_macro_groups(db_path, printer_profile_id=2)
+
+    assert len(scoped_p1) == 1
+    assert scoped_p1[0]["macro_name"] == "HELLO"
+    assert len(scoped_p1[0]["entries"]) == 2
+    assert scoped_p2 == []
+
+
+def test_remove_inactive_macro_version_scoped_by_printer_profile(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [include base.cfg]
+        [include override.cfg]
+        """,
+    )
+    _write(
+        config_dir / "base.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="base"
+        """,
+    )
+    _write(
+        config_dir / "override.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="override"
+        """,
+    )
+
+    run_indexing(config_dir, db_path, printer_profile_id=1)
+    run_indexing(config_dir, db_path, printer_profile_id=2)
+
+    p1_base = next(row for row in load_macro_list(db_path, printer_profile_id=1) if row["file_path"] == "base.cfg")
+
+    result = remove_inactive_macro_version(
+        db_path,
+        "base.cfg",
+        "HELLO",
+        int(p1_base["version"]),
+        printer_profile_id=1,
+    )
+
+    p1_rows = load_macro_list(db_path, printer_profile_id=1)
+    p2_rows = load_macro_list(db_path, printer_profile_id=2)
+    assert result == {"removed": 1, "reason": "removed"}
+    assert len(p1_rows) == 1
+    assert len(p2_rows) == 2
+
+
+def test_remove_deleted_macro_scoped_by_printer_profile(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="hello"
+        """,
+    )
+
+    run_indexing(config_dir, db_path, printer_profile_id=1)
+    run_indexing(config_dir, db_path, printer_profile_id=2)
+
+    with open_sqlite_connection(db_path) as conn:
+        conn.execute("UPDATE macros SET is_deleted = 1 WHERE printer_profile_id = 1")
+        conn.execute("UPDATE macros SET is_deleted = 1 WHERE printer_profile_id = 2")
+        conn.commit()
+
+    result = remove_deleted_macro(db_path, "printer.cfg", "HELLO", printer_profile_id=1)
+
+    p1_rows = load_macro_list(db_path, printer_profile_id=1)
+    p2_rows = load_macro_list(db_path, printer_profile_id=2)
+    assert result == {"removed": 1, "reason": "removed"}
+    assert p1_rows == []
+    assert len(p2_rows) == 1
+    assert p2_rows[0]["is_deleted"] is True
+
+
+def test_restore_macro_version_scoped_by_printer_profile(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "macros.db"
+
+    config_p1 = tmp_path / "config_p1"
+    _write(
+        config_p1 / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="profile-1"
+        """,
+    )
+    config_p2 = tmp_path / "config_p2"
+    _write(
+        config_p2 / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="profile-2"
+        """,
+    )
+
+    run_indexing(config_p1, db_path, printer_profile_id=1)
+    run_indexing(config_p2, db_path, printer_profile_id=2)
+
+    restore_dir = tmp_path / "restore_target"
+    restore_macro_version(
+        db_path,
+        restore_dir,
+        "printer.cfg",
+        "HELLO",
+        1,
+        printer_profile_id=2,
+    )
+
+    restored = (restore_dir / "printer.cfg").read_text(encoding="utf-8")
+    assert "profile-2" in restored
+    assert "profile-1" not in restored
 
 
 def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> None:

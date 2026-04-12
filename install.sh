@@ -5,8 +5,9 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="klipper-vault.service"
 HOST_API_SERVICE_NAME="klipper-vault-host-api.service"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-INSTALL_HOST_API_SERVICE="${INSTALL_HOST_API_SERVICE:-1}"
-INSTALL_GUI_SERVICE="${INSTALL_GUI_SERVICE:-0}"
+INSTALL_HOST_API_SERVICE="${INSTALL_HOST_API_SERVICE:-0}"
+INSTALL_GUI_SERVICE="${INSTALL_GUI_SERVICE:-1}"
+KLIPPERVAULT_RUNTIME_MODE="${KLIPPERVAULT_RUNTIME_MODE:-off_printer}"
 
 if [[ -n "${SUDO_USER:-}" ]]; then
   APP_USER="$SUDO_USER"
@@ -20,9 +21,11 @@ if [[ -z "$APP_HOME" ]]; then
   exit 1
 fi
 
-VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-printer-venv}"
+VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-venv}"
 LEGACY_VENV_DIR="${LEGACY_VENV_DIR:-$APP_HOME/klippervault-venv}"
-REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-$APP_DIR/requirements-printer.txt}"
+REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-$APP_DIR/requirements.txt}"
+KLIPPERVAULT_CONFIG_DIR="${KLIPPERVAULT_CONFIG_DIR:-$APP_HOME/.config/klippervault}"
+KLIPPERVAULT_DB_PATH="${KLIPPERVAULT_DB_PATH:-$APP_HOME/.local/share/klippervault/klipper_macros.db}"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
 HOST_API_SERVICE_PATH="/etc/systemd/system/${HOST_API_SERVICE_NAME}"
 KLIPPER_CONFIG_DIR="${KLIPPER_CONFIG_DIR:-$APP_HOME/printer_data/config}"
@@ -339,6 +342,16 @@ migrate_legacy_installation() {
     as_root chown -R "$APP_USER":"$APP_USER" "$VENV_DIR"
   fi
 
+  if [[ "$INSTALL_HOST_API_SERVICE" != "1" ]]; then
+    if as_root systemctl list-unit-files --type=service | grep -q "^${HOST_API_SERVICE_NAME}"; then
+      echo "Disabling legacy host API service..."
+      as_root systemctl disable --now "$HOST_API_SERVICE_NAME" || true
+    fi
+    if [[ -f "$HOST_API_SERVICE_PATH" ]]; then
+      as_root rm -f "$HOST_API_SERVICE_PATH"
+    fi
+  fi
+
   if [[ "$INSTALL_GUI_SERVICE" != "1" ]]; then
     if as_root systemctl list-unit-files --type=service | grep -q "^${SERVICE_NAME}"; then
       echo "Disabling legacy GUI service for printer-only install..."
@@ -358,6 +371,10 @@ echo "Service user: $APP_USER"
 echo "Virtualenv: $VENV_DIR"
 echo "Requirements file: $REQUIREMENTS_FILE"
 echo "Install GUI service: $INSTALL_GUI_SERVICE"
+echo "Install host API service: $INSTALL_HOST_API_SERVICE"
+echo "Runtime mode: $KLIPPERVAULT_RUNTIME_MODE"
+echo "KlipperVault config dir: $KLIPPERVAULT_CONFIG_DIR"
+echo "KlipperVault DB path: $KLIPPERVAULT_DB_PATH"
 
 need_cmd "$PYTHON_BIN"
 need_cmd systemctl
@@ -367,7 +384,7 @@ check_system_memory
 
 install_apt_dependencies
 
-if [[ ! -f "$APP_DIR/klipper_vault.py" ]]; then
+if [[ "$INSTALL_HOST_API_SERVICE" == "1" && ! -f "$APP_DIR/klipper_vault.py" ]]; then
   echo "klipper_vault.py not found in $APP_DIR"
   exit 1
 fi
@@ -408,8 +425,8 @@ TMP_SERVICE="$(mktemp)"
 cat > "$TMP_SERVICE" <<EOF
 [Unit]
 Description=KlipperVault Service
-After=network-online.target klipper.service mainsail.service
-Wants=network-online.target klipper.service mainsail.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -420,7 +437,10 @@ Restart=on-failure
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
 Environment=KLIPPERVAULT_AUTO_UPDATE_VENV=1
-Environment=KLIPPERVAULT_REQUIREMENTS_FILE=requirements.txt
+Environment=KLIPPERVAULT_REQUIREMENTS_FILE=$REQUIREMENTS_FILE
+Environment=KLIPPERVAULT_RUNTIME_MODE=$KLIPPERVAULT_RUNTIME_MODE
+Environment=KLIPPERVAULT_CONFIG_DIR=$KLIPPERVAULT_CONFIG_DIR
+Environment=KLIPPERVAULT_DB_PATH=$KLIPPERVAULT_DB_PATH
 
 [Install]
 WantedBy=multi-user.target
@@ -436,8 +456,8 @@ if [[ "$INSTALL_HOST_API_SERVICE" == "1" ]]; then
   cat > "$TMP_HOST_API_SERVICE" <<EOF
 [Unit]
 Description=KlipperVault Host API Service
-After=network-online.target klipper.service mainsail.service
-Wants=network-online.target klipper.service mainsail.service
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -470,7 +490,11 @@ fi
 if [[ "$INSTALL_MAINSAIL_NAV" == "1" ]]; then
   setup_mainsail_navigation
 fi
-setup_mainsail_update_section
+if [[ "$INSTALL_HOST_API_SERVICE" == "1" ]]; then
+  setup_mainsail_update_section
+else
+  echo "Skipping moonraker update_manager integration (host API service not installed)."
+fi
 
 echo "Install complete."
 if [[ "$INSTALL_GUI_SERVICE" == "1" ]]; then

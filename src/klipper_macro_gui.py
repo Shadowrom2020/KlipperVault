@@ -15,6 +15,7 @@ from pathlib import Path
 import threading
 import tempfile
 import time
+from urllib.parse import urlparse
 
 from nicegui import app, ui
 
@@ -32,9 +33,8 @@ from klipper_macro_gui_service import MacroGuiService
 from klipper_macro_gui_remote_service import RemoteMacroGuiService
 from klipper_macro_viewer import MacroViewer, format_ts as _format_ts
 from klipper_macro_watcher import ConfigWatcher
-from klipper_vault_config import load_or_create as _load_vault_config
+from klipper_vault_config import _detect_printer_identity, load_or_create as _load_vault_config
 from klipper_vault_paths import DEFAULT_CONFIG_DIR, DEFAULT_DB_PATH
-from klipper_vault_config import save as _save_vault_config
 from klipper_vault_i18n import set_language, t
 
 _STATUS_BADGE_CLASSES: dict[str, str] = {
@@ -112,14 +112,24 @@ def build_ui(app_version: str = "unknown") -> None:
     vault_cfg = _load_vault_config(config_dir)
     set_language(os.environ.get("KLIPPERVAULT_LANG", vault_cfg.ui_language))
     ui.page_title(t("Klipper Vault"))
+    runtime_mode = str(
+        os.environ.get("KLIPPERVAULT_RUNTIME_MODE", vault_cfg.runtime_mode)
+    ).strip().lower()
+    if runtime_mode not in {"auto", "on_printer", "off_printer"}:
+        runtime_mode = "auto"
+
     remote_api_url = str(
         os.environ.get("KLIPPERVAULT_REMOTE_API_URL", vault_cfg.remote_api_url)
     ).strip()
     remote_api_token = str(
         os.environ.get("KLIPPERVAULT_REMOTE_API_TOKEN", vault_cfg.remote_api_token)
     ).strip()
-    remote_mode_enabled = bool(remote_api_url)
-    if remote_api_url:
+
+    # Legacy host-api mode stays available until the full SSH migration lands,
+    # but off_printer explicitly disables this transport.
+    remote_mode_enabled = bool(remote_api_url) and runtime_mode != "off_printer"
+    off_printer_mode_enabled = runtime_mode == "off_printer"
+    if remote_mode_enabled:
         service = RemoteMacroGuiService(
             base_url=remote_api_url,
             api_token=remote_api_token,
@@ -130,6 +140,7 @@ def build_ui(app_version: str = "unknown") -> None:
             db_path=db_path,
             config_dir=config_dir,
             version_history_size=vault_cfg.version_history_size,
+            runtime_mode=runtime_mode,
             moonraker_base_url=os.environ.get("MOONRAKER_BASE_URL", "http://127.0.0.1:7125"),
         )
 
@@ -180,12 +191,18 @@ def build_ui(app_version: str = "unknown") -> None:
     printer_state: str = "unknown"
     remote_api_connected: bool = True
     remote_api_status_text: str = ""
+    off_printer_profile_ready: bool = not off_printer_mode_enabled
+    off_printer_profile_status_text: str = ""
+    ssh_profile_option_ids: dict[str, int] = {}
+    ssh_profiles_by_id: dict[int, dict[str, object]] = {}
+    printer_profile_option_ids: dict[str, int] = {}
     remote_event_queue: SimpleQueue[dict[str, object]] = SimpleQueue()
     remote_event_stop = threading.Event()
     remote_event_listener_thread: threading.Thread | None = None
     remote_last_event_id: int = 0
     remote_data_dirty: bool = False
     print_lock_popup_open: bool = False
+    printer_connecting_modal_open: bool = False
     restart_required: bool = False
     dynamic_reload_required: bool = False
     memory_trim_enabled: bool = _env_bool("KLIPPERVAULT_MEMORY_TRIM", True)
@@ -305,6 +322,7 @@ def build_ui(app_version: str = "unknown") -> None:
     create_pr_progress_current: int = 0
     create_pr_progress_total: int = 1
     startup_online_update_check_in_progress: bool = False
+    deferred_startup_scan: bool = False
 
     async def _on_import_upload(e) -> None:
         """Capture uploaded macro share file contents for import."""
@@ -336,7 +354,84 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def _remote_actions_available() -> bool:
         """Return True when backend actions are currently available."""
-        return (not remote_mode_enabled) or remote_api_connected
+        remote_ready = (not remote_mode_enabled) or remote_api_connected
+        off_printer_ready = (not off_printer_mode_enabled) or off_printer_profile_ready
+        return remote_ready and off_printer_ready
+
+    def _remote_sync_status_suffix(result: dict[str, object]) -> str:
+        """Build a compact status suffix for off-printer remote sync metadata."""
+        if not off_printer_mode_enabled or not isinstance(result, dict):
+            return ""
+
+        remote_sync = result.get("remote_sync")
+        if isinstance(remote_sync, dict):
+            uploaded = _to_int(remote_sync.get("uploaded_files", 0), default=0)
+            removed = _to_int(remote_sync.get("removed_remote_files", 0), default=0)
+            fetched = _to_int(remote_sync.get("synced_files", 0), default=0)
+            if uploaded > 0 or removed > 0:
+                return " | " + t("Remote sync: {uploaded} uploaded, {removed} removed", uploaded=uploaded, removed=removed)
+            if fetched > 0:
+                return " | " + t("Remote sync: {fetched} fetched", fetched=fetched)
+
+        uploaded_paths = result.get("remote_uploaded_paths")
+        if isinstance(uploaded_paths, list) and uploaded_paths:
+            return " | " + t("Remote sync: {count} uploaded", count=len(uploaded_paths))
+
+        remote_path = str(result.get("remote_path", "")).strip()
+        if remote_path:
+            return " | " + t("Remote updated")
+
+        if bool(result.get("remote_synced", False)):
+            return " | " + t("Remote sync complete")
+        return ""
+
+    def _set_off_printer_profile_state(ready: bool, detail: str = "") -> None:
+        """Update off-printer profile status indicators."""
+        nonlocal off_printer_profile_ready
+        nonlocal off_printer_profile_status_text
+
+        off_printer_profile_ready = ready
+        detail_text = str(detail or "").strip()
+        if ready:
+            off_printer_profile_status_text = t("Printer connection ready")
+            if detail_text:
+                off_printer_profile_status_text = t("Printer connection ready: {detail}", detail=detail_text)
+            off_printer_profile_label.classes(replace="text-xs text-positive")
+        else:
+            off_printer_profile_status_text = t("No active printer connection configured")
+            if detail_text:
+                off_printer_profile_status_text = t(
+                    "No active printer connection configured: {detail}",
+                    detail=detail_text,
+                )
+            off_printer_profile_label.classes(replace="text-xs text-negative")
+        off_printer_profile_label.set_text(off_printer_profile_status_text)
+
+    def refresh_off_printer_profile_state() -> None:
+        """Refresh off-printer profile readiness state from local profile storage."""
+        if not off_printer_mode_enabled:
+            return
+        was_ready = off_printer_profile_ready
+        try:
+            profile = service.get_active_ssh_profile()
+        except Exception as exc:
+            _set_off_printer_profile_state(False, str(exc))
+            return
+
+        if not isinstance(profile, dict) or not profile:
+            _set_off_printer_profile_state(False)
+            return
+
+        profile_name = str(profile.get("profile_name", "")).strip() or t("unnamed")
+        auth_mode = str(profile.get("auth_mode", "")).strip().lower()
+        has_secret = bool(profile.get("has_secret", False))
+        if auth_mode in {"password", "key"} and not has_secret:
+            _set_off_printer_profile_state(False, t("{profile} (missing credentials)", profile=profile_name))
+            return
+
+        _set_off_printer_profile_state(True, profile_name)
+        if not was_ready and off_printer_profile_ready:
+            _maybe_run_deferred_startup_scan("printer connection became ready")
 
     def _set_remote_connection_state(connected: bool, detail: str = "") -> None:
         """Update remote connectivity indicators used for degraded read-only mode."""
@@ -423,9 +518,42 @@ def build_ui(app_version: str = "unknown") -> None:
         with ui.row().classes("w-full justify-end mt-2"):
             ui.button(t("OK"), on_click=print_lock_dialog.close).props("flat no-caps")
 
+    with ui.dialog().props("persistent") as printer_connecting_dialog, ui.card().classes("w-[30rem] max-w-[94vw]"):
+        ui.label(t("Connecting to printer...")).classes("text-lg font-semibold")
+        printer_connecting_label = ui.label(
+            t("KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again.")
+        ).classes("text-sm text-grey-5")
+
+    def _set_printer_connecting_modal(visible: bool, detail: str = "") -> None:
+        """Show a modal while reconnecting to printer and hide when healthy again."""
+        nonlocal printer_connecting_modal_open
+
+        if visible:
+            detail_text = str(detail or "").strip()
+            if detail_text:
+                printer_connecting_label.set_text(
+                    t(
+                        "KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again."
+                    )
+                    + "\n"
+                    + detail_text
+                )
+            else:
+                printer_connecting_label.set_text(
+                    t("KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again.")
+                )
+            if not printer_connecting_modal_open:
+                printer_connecting_dialog.open()
+                printer_connecting_modal_open = True
+            return
+
+        if printer_connecting_modal_open:
+            printer_connecting_dialog.close()
+            printer_connecting_modal_open = False
+
     with ui.dialog().props("persistent") as printer_profile_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
-        ui.label(t("Printer profile setup")).classes("text-lg font-semibold")
-        ui.label(t("Please provide your printer vendor and model for first-time setup.")).classes("text-sm text-grey-5")
+        ui.label(t("Printer identity")).classes("text-lg font-semibold")
+        ui.label(t("Automatic detection could not determine vendor/model. Please enter them.")).classes("text-sm text-grey-5")
         printer_vendor_input = ui.input(label=t("Printer vendor")).props("outlined autofocus").classes("w-full mt-2")
         printer_model_input = ui.input(label=t("Printer model")).props("outlined").classes("w-full mt-2")
         printer_profile_error = ui.label("").classes("text-sm text-negative mt-1")
@@ -433,30 +561,115 @@ def build_ui(app_version: str = "unknown") -> None:
             save_printer_profile_button = ui.button(t("Save")).props("color=primary no-caps")
 
     def _printer_profile_missing() -> bool:
-        """Return True when first-start printer profile values are not yet set."""
-        return bool(vault_cfg.printer_profile_prompt_required)
+        """Return True when active printer vendor/model values are not set."""
+        vendor, model = _active_printer_identity()
+        return not vendor or not model
+
+    def _active_printer_identity() -> tuple[str, str]:
+        """Return active printer vendor/model from current active printer profile."""
+        profile = service.get_active_printer_profile()
+        if isinstance(profile, dict) and profile:
+            vendor = str(profile.get("vendor", "")).strip()
+            model = str(profile.get("model", "")).strip()
+            if vendor and model:
+                return vendor, model
+        return "", ""
 
     def _format_printer_profile_label() -> str:
         """Format printer identity for status sidebar display."""
-        vendor = str(vault_cfg.printer_vendor or "").strip()
-        model = str(vault_cfg.printer_model or "").strip()
+        profile = service.get_active_printer_profile()
+        if not isinstance(profile, dict) or not profile:
+            return t("Active printer: not set")
+        profile_name = str(profile.get("profile_name", "")).strip() or t("unnamed")
+        vendor = str(profile.get("vendor", "")).strip()
+        model = str(profile.get("model", "")).strip()
         if vendor and model:
-            return t("Printer profile: {vendor} {model}", vendor=vendor, model=model)
-        return t("Printer profile: not set")
+            return t("Active printer: {profile} ({vendor} {model})", profile=profile_name, vendor=vendor, model=model)
+        return t("Active printer: {profile}", profile=profile_name)
+
+    def refresh_printer_profile_selector() -> None:
+        """Refresh active-printer selector options from service state."""
+        printer_profile_option_ids.clear()
+        try:
+            profiles = service.list_printer_profiles()
+        except Exception as exc:
+            status_label.set_text(t("Failed to load printer profiles: {error}", error=exc))
+            return
+
+        has_non_default_profile = any(
+            isinstance(raw, dict) and str(raw.get("profile_name", "")).strip() and str(raw.get("profile_name", "")).strip() != "Default Printer"
+            for raw in profiles
+        )
+
+        options: list[str] = []
+        selected = ""
+        for raw in profiles:
+            if not isinstance(raw, dict):
+                continue
+            profile_id = _to_int(raw.get("id"), default=0)
+            if profile_id <= 0:
+                continue
+            profile_name = str(raw.get("profile_name", "")).strip() or t("unnamed")
+            if has_non_default_profile and profile_name == "Default Printer":
+                continue
+            vendor = str(raw.get("vendor", "")).strip()
+            model = str(raw.get("model", "")).strip()
+            meta = f"{vendor} {model}".strip()
+            active_suffix = " *" if bool(raw.get("is_active", False)) else ""
+            label = f"{profile_name} [{meta}]" if meta else profile_name
+            option = f"{label}{active_suffix}"
+            options.append(option)
+            printer_profile_option_ids[option] = profile_id
+            if bool(raw.get("is_active", False)):
+                selected = option
+
+        if not selected and options:
+            selected = options[0]
+        active_printer_select.set_options(options, value=selected)
+        printer_profile_label.set_text(_format_printer_profile_label())
+
+    def on_active_printer_profile_change(_event) -> None:
+        """Switch active printer profile and refresh scoped data."""
+        selected_option = str(active_printer_select.value or "").strip()
+        profile_id = printer_profile_option_ids.get(selected_option, 0)
+        if profile_id <= 0:
+            return
+        try:
+            result = service.activate_printer_profile(profile_id)
+        except Exception as exc:
+            message = t("Failed to activate printer profile: {error}", error=exc)
+            status_label.set_text(message)
+            ui.notify(message, type="negative")
+            return
+        if not bool(result.get("ok", False)):
+            message = t("Failed to activate printer profile.")
+            status_label.set_text(message)
+            ui.notify(message, type="warning")
+            return
+
+        refresh_printer_profile_selector()
+        if off_printer_mode_enabled:
+            refresh_off_printer_profile_state()
+        refresh_print_state()
+        refresh_data()
+        message = t("Active printer profile updated.")
+        status_label.set_text(message)
+        ui.notify(message, type="positive")
 
     def _save_printer_profile() -> None:
-        """Validate and persist printer profile values into klippervault.cfg."""
+        """Validate and persist active printer profile identity."""
         vendor = str(printer_vendor_input.value or "").strip()
         model = str(printer_model_input.value or "").strip()
         if not vendor or not model:
             printer_profile_error.set_text(t("Vendor and model are required."))
             return
 
-        vault_cfg.printer_vendor = vendor
-        vault_cfg.printer_model = model
-        vault_cfg.printer_profile_prompt_required = False
-        _save_vault_config(config_dir, vault_cfg)
+        result = service.update_active_printer_identity(vendor=vendor, model=model)
+        if not bool(result.get("ok", False)):
+            printer_profile_error.set_text(t("Failed to save printer profile."))
+            return
         printer_profile_label.set_text(_format_printer_profile_label())
+        refresh_printer_profile_selector()
         printer_profile_error.set_text("")
         printer_profile_dialog.close()
 
@@ -509,7 +722,17 @@ def build_ui(app_version: str = "unknown") -> None:
             status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
             remote_connection_label = ui.label("").classes("text-xs text-grey-5")
             remote_connection_label.set_visibility(remote_mode_enabled)
+            off_printer_profile_label = ui.label("").classes("text-xs text-grey-5")
+            off_printer_profile_label.set_visibility(off_printer_mode_enabled)
+            with ui.row().classes("items-center gap-2"):
+                off_printer_manage_profiles_button = ui.button(t("Manage printer connections")).props("flat dense no-caps")
+                off_printer_manage_profiles_button.set_visibility(off_printer_mode_enabled)
+                off_printer_test_button = ui.button(t("Test printer connection")).props("flat dense no-caps")
+                off_printer_test_button.set_visibility(off_printer_mode_enabled)
+                off_printer_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
+                off_printer_cfg_list_button.set_visibility(off_printer_mode_enabled)
             printer_profile_label = ui.label(_format_printer_profile_label()).classes("text-sm text-grey-5")
+            active_printer_select = ui.select(options=[], label=t("Active printer")).props("outlined dense").classes("w-full mt-2")
 
             ui.separator().classes("my-2")
             ui.label(t("Backups")).classes("text-md font-semibold mb-1")
@@ -671,6 +894,55 @@ def build_ui(app_version: str = "unknown") -> None:
                 duplicate_next_button = ui.button(t("Next")).props("flat no-caps")
                 duplicate_apply_button = ui.button(t("Apply")).props("color=warning no-caps")
 
+    with ui.dialog() as remote_cfg_list_dialog, ui.card().classes("w-[52rem] max-w-[98vw] h-[82vh] max-h-[92vh] flex flex-col"):
+        remote_cfg_list_title = ui.label(t("Remote cfg files")).classes("text-lg font-semibold")
+        remote_cfg_list_subtitle = ui.label("").classes("text-sm text-grey-5")
+        remote_cfg_list_text = ui.textarea(label=t("Files"), value="").props("readonly autogrow").classes(
+            "w-full flex-1 mt-2"
+        )
+        remote_cfg_list_error = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end mt-3"):
+            flat_dialog_button("Close", remote_cfg_list_dialog.close)
+
+    with ui.dialog() as off_printer_profile_dialog, ui.card().classes("w-[44rem] max-w-[96vw]"):
+        ui.label(t("Printer connection management")).classes("text-lg font-semibold")
+        ui.label(t("Configure SSH settings as part of each printer profile for off-printer mode.")).classes("text-sm text-grey-5")
+        ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
+        with ui.row().classes("w-full gap-2"):
+            ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
+            ssh_profile_host_input = ui.input(label=t("Host")).props("outlined dense").classes("flex-1")
+        with ui.row().classes("w-full gap-2"):
+            ssh_profile_port_input = ui.number(label=t("Port"), value=22).props("outlined dense").classes("w-32")
+            ssh_profile_username_input = ui.input(label=t("Username")).props("outlined dense").classes("flex-1")
+        ssh_profile_remote_dir_input = ui.input(label=t("Remote config directory"), value="~/printer_data/config").props(
+            "outlined dense"
+        ).classes("w-full")
+        ssh_profile_moonraker_url_input = ui.input(
+            label=t("Moonraker URL"), value="http://127.0.0.1:7125"
+        ).props("outlined dense").classes("w-full")
+        ssh_profile_auth_mode_select = ui.select(
+            options={"key": t("SSH key"), "password": t("Password")},
+            value="key",
+            label=t("Authentication mode"),
+        ).props("outlined dense").classes("w-full")
+        ssh_profile_secret_input = ui.input(label=t("SSH secret")).props("outlined dense type=text").classes(
+            "w-full"
+        )
+        ssh_profile_secret_mode_label = ui.label("").classes("text-xs text-grey-5")
+        ssh_profile_secret_state_label = ui.label("").classes("text-xs text-grey-5")
+        ssh_profile_active_toggle = ui.switch(t("Set as active profile"), value=True)
+        ssh_profile_error_label = ui.label("").classes("text-sm text-negative mt-1")
+        ssh_profile_status_label = ui.label("").classes("text-sm text-positive mt-1")
+        with ui.row().classes("w-full justify-between mt-3"):
+            with ui.row().classes("gap-2"):
+                flat_dialog_button("Close", off_printer_profile_dialog.close)
+                refresh_ssh_profiles_button = ui.button(t("Refresh")).props("flat no-caps")
+                new_ssh_profile_button = ui.button(t("New profile")).props("flat no-caps")
+            with ui.row().classes("gap-2"):
+                delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
+                activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")
+                save_ssh_profile_button = ui.button(t("Save profile")).props("color=primary no-caps")
+
     def open_macro_by_identity(file_path: str, macro_name: str) -> None:
         """Select a macro by identity, clearing filters if needed to reveal it."""
         nonlocal selected_key
@@ -816,7 +1088,7 @@ def build_ui(app_version: str = "unknown") -> None:
             macro_name=result["macro_name"],
             file_path=result["file_path"],
             version=result["version"],
-        ))
+        ) + _remote_sync_status_suffix(result))
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro restore")
@@ -851,7 +1123,7 @@ def build_ui(app_version: str = "unknown") -> None:
             macro_name=result["macro_name"],
             file_path=result["file_path"],
             operation=result["operation"],
-        ))
+        ) + _remote_sync_status_suffix(result))
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro edit")
@@ -896,7 +1168,7 @@ def build_ui(app_version: str = "unknown") -> None:
             macro_name=result["macro_name"],
             file_path=result["file_path"],
             removed=removed,
-        ))
+        ) + _remote_sync_status_suffix(result))
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro delete")
@@ -1188,7 +1460,7 @@ def build_ui(app_version: str = "unknown") -> None:
             "Removed {removed_sections} duplicate section(s) in {file_count} file(s). Re-indexing...",
             removed_sections=result["removed_sections"],
             file_count=touched_files_count,
-        ))
+        ) + _remote_sync_status_suffix(result))
         touched_files = [str(path) for path in touched_files_raw] if isinstance(touched_files_raw, list) else []
         _mark_reload_required(is_dynamic=_files_include_dynamic_macros(touched_files))
         perform_index("duplicate wizard")
@@ -1415,6 +1687,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     macro_count=result["macro_count"],
                     cfg_file_count=rewritten,
                 )
+                + _remote_sync_status_suffix(result)
             )
         else:
             status_label.set_text(
@@ -1425,6 +1698,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     restored_at=restored_label,
                     macro_count=result["macro_count"],
                 )
+                + _remote_sync_status_suffix(result)
             )
         _mark_reload_required(is_dynamic=False)
         perform_index("backup restore")
@@ -1502,24 +1776,51 @@ def build_ui(app_version: str = "unknown") -> None:
         nonlocal is_indexing
         if is_indexing:
             return
+        if off_printer_mode_enabled:
+            refresh_off_printer_profile_state()
+        if off_printer_mode_enabled and not off_printer_profile_ready:
+            message = t("Cannot scan macros: configure and activate a printer connection first.")
+            status_label.set_text(message)
+            ui.notify(message, type="warning")
+            return
         _note_activity()
         is_indexing = True
         try:
             status_label.set_text(t("Scanning macros ({trigger})...", trigger=trigger))
             result = service.index()
-            status_label.set_text(
-                t(
-                    "Stored {inserted} new version(s), {unchanged} unchanged - {scanned} .cfg files scanned",
-                    inserted=result["macros_inserted"],
-                    unchanged=result["macros_unchanged"],
-                    scanned=result["cfg_files_scanned"],
-                )
+            status_text = t(
+                "Stored {inserted} new version(s), {unchanged} unchanged - {scanned} .cfg files scanned",
+                inserted=result["macros_inserted"],
+                unchanged=result["macros_unchanged"],
+                scanned=result["cfg_files_scanned"],
             )
+            remote_sync = result.get("remote_sync") if isinstance(result, dict) else None
+            if isinstance(remote_sync, dict):
+                synced_files = _to_int(remote_sync.get("synced_files", 0), default=0)
+                removed_files = _to_int(remote_sync.get("removed_local_files", 0), default=0)
+                status_text = (
+                    f"{status_text} | "
+                    + t("Remote sync: {synced} fetched, {removed} removed", synced=synced_files, removed=removed_files)
+                )
+            status_label.set_text(status_text)
             if trigger != "startup" and _to_int(result.get("macros_inserted", 0)) > 0:
                 inserted = _to_int(result.get("macros_inserted", 0))
                 dynamic_inserted = _to_int(result.get("dynamic_macros_inserted", 0))
                 _mark_reload_required(is_dynamic=(inserted > 0 and dynamic_inserted == inserted))
             refresh_data()
+            active_profile = service.get_active_printer_profile()
+            if isinstance(active_profile, dict):
+                vendor = str(active_profile.get("vendor", "")).strip()
+                model = str(active_profile.get("model", "")).strip()
+                if not vendor or not model:
+                    detected = _detect_printer_identity(config_dir)
+                    if detected is not None:
+                        service.update_active_printer_identity(vendor=detected[0], model=detected[1])
+                        refresh_printer_profile_selector()
+                    else:
+                        printer_vendor_input.set_value(vendor)
+                        printer_model_input.set_value(model)
+                        printer_profile_dialog.open()
             watcher.reset()
         except FileNotFoundError as exc:
             status_label.set_text(t("Error: {error}", error=exc))
@@ -1527,6 +1828,20 @@ def build_ui(app_version: str = "unknown") -> None:
             status_label.set_text(t("Scan failed: {error}", error=exc))
         finally:
             is_indexing = False
+
+    def _maybe_run_deferred_startup_scan(reason: str) -> None:
+        """Run one deferred startup scan once off-printer prerequisites are ready."""
+        nonlocal deferred_startup_scan
+
+        if not deferred_startup_scan:
+            return
+        if is_indexing or printer_is_printing:
+            return
+        if off_printer_mode_enabled and not off_printer_profile_ready:
+            return
+
+        deferred_startup_scan = False
+        perform_index("startup")
 
     def open_backup_dialog() -> None:
         """Open backup creation dialog with generated default name."""
@@ -1616,6 +1931,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def perform_export() -> None:
         """Export selected macros to a share file on disk."""
+        source_vendor, source_model = _active_printer_identity()
         selections = [
             identity
             for identity, checkbox in export_macro_checkboxes.items()
@@ -1642,8 +1958,8 @@ def build_ui(app_version: str = "unknown") -> None:
         try:
             result = service.export_macro_share_file(
                 identities=identities,
-                source_vendor=vault_cfg.printer_vendor,
-                source_model=vault_cfg.printer_model,
+                source_vendor=source_vendor,
+                source_model=source_model,
                 out_file=out_path,
             )
         except Exception as exc:
@@ -1674,6 +1990,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def perform_import() -> None:
         """Import a macro share file and refresh dashboard state."""
+        target_vendor, target_model = _active_printer_identity()
         if not uploaded_import_bytes:
             import_error_label.set_text(t("Please upload a macro share file."))
             return
@@ -1687,8 +2004,8 @@ def build_ui(app_version: str = "unknown") -> None:
         try:
             result = service.import_macro_share_file(
                 import_file=temp_import_file,
-                target_vendor=vault_cfg.printer_vendor,
-                target_model=vault_cfg.printer_model,
+                target_vendor=target_vendor,
+                target_model=target_model,
             )
         except Exception as exc:
             import_error_label.set_text(t("Import failed: {error}", error=exc))
@@ -1731,6 +2048,7 @@ def build_ui(app_version: str = "unknown") -> None:
         if _printer_profile_missing():
             status_label.set_text(t("Set printer vendor/model before exporting update repository zip."))
             return
+        source_vendor, source_model = _active_printer_identity()
 
         generated_name = datetime.now().strftime("klippervault-online-update-repo-%Y%m%d-%H%M%S.zip")
         out_path = Path(tempfile.gettempdir()) / generated_name
@@ -1738,8 +2056,8 @@ def build_ui(app_version: str = "unknown") -> None:
         try:
             result = service.export_online_update_repository_zip(
                 out_file=out_path,
-                source_vendor=vault_cfg.printer_vendor,
-                source_model=vault_cfg.printer_model,
+                source_vendor=source_vendor,
+                source_model=source_model,
                 repo_url=vault_cfg.online_update_repo_url,
                 repo_ref=vault_cfg.online_update_ref,
                 manifest_path=vault_cfg.online_update_manifest_path,
@@ -1760,8 +2078,9 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def _default_pr_head_branch() -> str:
         """Build a unique default branch name for PR publishing."""
-        vendor = str(vault_cfg.printer_vendor or "").strip().lower().replace(" ", "-") or "printer"
-        model = str(vault_cfg.printer_model or "").strip().lower().replace(" ", "-") or "model"
+        source_vendor, source_model = _active_printer_identity()
+        vendor = source_vendor.lower().replace(" ", "-") or "printer"
+        model = source_model.lower().replace(" ", "-") or "model"
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         return f"klippervault/{vendor}-{model}/{stamp}"
 
@@ -1791,6 +2110,7 @@ def build_ui(app_version: str = "unknown") -> None:
         nonlocal create_pr_in_progress
         nonlocal create_pr_progress_current
         nonlocal create_pr_progress_total
+        source_vendor, source_model = _active_printer_identity()
 
         pr_repo_url_input.set_value(str(vault_cfg.online_update_repo_url or "").strip())
         pr_base_branch_input.set_value(str(vault_cfg.online_update_ref or "main").strip() or "main")
@@ -1798,15 +2118,15 @@ def build_ui(app_version: str = "unknown") -> None:
         pr_title_input.set_value(
             t(
                 "Update macros for {vendor} {model}",
-                vendor=str(vault_cfg.printer_vendor or "").strip() or "printer",
-                model=str(vault_cfg.printer_model or "").strip() or "model",
+                vendor=source_vendor or "printer",
+                model=source_model or "model",
             )
         )
         pr_body_input.set_value(
             t(
                 "Automated KlipperVault update for {vendor} {model}.",
-                vendor=str(vault_cfg.printer_vendor or "").strip() or "printer",
-                model=str(vault_cfg.printer_model or "").strip() or "model",
+                vendor=source_vendor or "printer",
+                model=source_model or "model",
             )
         )
         pr_token_input.set_value("")
@@ -1823,6 +2143,7 @@ def build_ui(app_version: str = "unknown") -> None:
         nonlocal create_pr_in_progress
         nonlocal create_pr_progress_current
         nonlocal create_pr_progress_total
+        source_vendor, source_model = _active_printer_identity()
 
         if _printer_profile_missing():
             create_pr_error_label.set_text(t("Set printer vendor/model before creating a pull request."))
@@ -1857,8 +2178,8 @@ def build_ui(app_version: str = "unknown") -> None:
         try:
             result = await asyncio.to_thread(
                 service.create_online_update_pull_request,
-                source_vendor=vault_cfg.printer_vendor,
-                source_model=vault_cfg.printer_model,
+                source_vendor=source_vendor,
+                source_model=source_model,
                 repo_url=repo_url,
                 base_branch=base_branch,
                 head_branch=head_branch,
@@ -1940,6 +2261,7 @@ def build_ui(app_version: str = "unknown") -> None:
         nonlocal online_update_check_in_progress
         nonlocal online_update_progress_current
         nonlocal online_update_progress_total
+        source_vendor, source_model = _active_printer_identity()
 
         online_update_activate_checkboxes.clear()
         online_update_list.clear()
@@ -1978,8 +2300,8 @@ def build_ui(app_version: str = "unknown") -> None:
                 repo_url=repo_url,
                 manifest_path=vault_cfg.online_update_manifest_path,
                 repo_ref=vault_cfg.online_update_ref,
-                source_vendor=vault_cfg.printer_vendor,
-                source_model=vault_cfg.printer_model,
+                source_vendor=source_vendor,
+                source_model=source_model,
                 progress_callback=report_progress,
             )
         except Exception as exc:
@@ -2026,8 +2348,11 @@ def build_ui(app_version: str = "unknown") -> None:
     async def _check_online_updates_on_startup() -> None:
         """Run one background online update check on every app startup when repository is configured."""
         nonlocal startup_online_update_check_in_progress
+        source_vendor, source_model = _active_printer_identity()
 
         if startup_online_update_check_in_progress:
+            return
+        if not source_vendor or not source_model:
             return
 
         repo_url = str(vault_cfg.online_update_repo_url or "").strip()
@@ -2041,8 +2366,8 @@ def build_ui(app_version: str = "unknown") -> None:
                 repo_url=repo_url,
                 manifest_path=vault_cfg.online_update_manifest_path,
                 repo_ref=vault_cfg.online_update_ref,
-                source_vendor=vault_cfg.printer_vendor,
-                source_model=vault_cfg.printer_model,
+                source_vendor=source_vendor,
+                source_model=source_model,
             )
         except Exception:
             startup_online_update_check_in_progress = False
@@ -2061,7 +2386,8 @@ def build_ui(app_version: str = "unknown") -> None:
             checked=checked,
         )
         status_label.set_text(message)
-        ui.notify(message, type="info")
+        # This coroutine runs via asyncio.create_task from a timer callback.
+        # Avoid ui.notify here because it requires an active NiceGUI slot/client context.
         try:
             await asyncio.to_thread(service.send_mainsail_notification, message=message)
         except Exception as exc:
@@ -2211,6 +2537,10 @@ def build_ui(app_version: str = "unknown") -> None:
         duplicate_prev_button.set_enabled(editing_enabled and duplicate_wizard_index > 0)
         duplicate_next_button.set_enabled(editing_enabled and duplicate_wizard_index < len(duplicate_wizard_groups) - 1)
         duplicate_apply_button.set_enabled(editing_enabled)
+        if off_printer_mode_enabled:
+            off_printer_manage_profiles_button.set_enabled(True)
+            off_printer_test_button.set_enabled(True)
+            off_printer_cfg_list_button.set_enabled(off_printer_profile_ready)
         viewer.set_editing_enabled(editing_enabled)
         _refresh_reload_buttons()
 
@@ -2240,23 +2570,38 @@ def build_ui(app_version: str = "unknown") -> None:
             if print_lock_popup_open:
                 print_lock_dialog.close()
                 print_lock_popup_open = False
+            if off_printer_mode_enabled and not off_printer_profile_ready:
+                status_label.set_text(t("Ready (waiting for active printer connection)."))
+                return
             if moonraker_state == "unknown":
                 status_label.set_text(t("Ready (Moonraker status unknown)."))
             else:
                 status_label.set_text(t("Ready (printer state: {state}).", state=moonraker_state))
+            _maybe_run_deferred_startup_scan("printer became idle")
 
     def refresh_print_state() -> None:
         """Poll Moonraker printer state and apply UI lock policy."""
         if remote_mode_enabled and not remote_api_connected:
+            _set_printer_connecting_modal(False)
             set_print_lock(
                 locked=False,
                 moonraker_state="unknown",
                 moonraker_message=t("Remote API disconnected."),
             )
             return
+        if off_printer_mode_enabled and not off_printer_profile_ready:
+            _set_printer_connecting_modal(False)
+            set_print_lock(
+                locked=False,
+                moonraker_state="unknown",
+                moonraker_message=t("Off-printer mode active but no printer connection is ready."),
+            )
+            return
         try:
             status = service.query_printer_status(timeout=1.5)
+            _set_printer_connecting_modal(False)
         except Exception as exc:
+            _set_printer_connecting_modal(True, str(exc))
             if remote_mode_enabled:
                 _set_remote_connection_state(False, str(exc))
             status = {
@@ -2269,6 +2614,335 @@ def build_ui(app_version: str = "unknown") -> None:
             moonraker_state=str(status.get("state", "unknown")),
             moonraker_message=str(status.get("message", "")),
         )
+
+    def test_off_printer_profile_connection() -> None:
+        """Run active SSH profile connectivity test and report status."""
+        if not off_printer_mode_enabled:
+            return
+        try:
+            result = service.test_active_ssh_connection()
+        except Exception as exc:
+            message = t("SSH profile test failed: {error}", error=exc)
+            status_label.set_text(message)
+            ui.notify(message, type="negative")
+            return
+
+        if bool(result.get("ok", False)):
+            elapsed_ms = _to_int(result.get("elapsed_ms", 0), default=0)
+            profile_name = str(result.get("profile_name", "")).strip() or t("unnamed")
+            message = t("SSH profile '{profile}' connected in {elapsed}ms.", profile=profile_name, elapsed=elapsed_ms)
+            status_label.set_text(message)
+            ui.notify(message, type="positive")
+            refresh_off_printer_profile_state()
+            return
+
+        error_text = str(result.get("error", "")).strip() or t("unknown error")
+        message = t("SSH profile test failed: {error}", error=error_text)
+        status_label.set_text(message)
+        ui.notify(message, type="warning")
+
+    def _set_auth_mode_fields() -> None:
+        """Update secret input label for currently selected auth mode."""
+        auth_mode = str(ssh_profile_auth_mode_select.value or "key").strip().lower()
+        if auth_mode == "password":
+            ssh_profile_secret_input.props("type=password")
+            ssh_profile_secret_mode_label.set_text(t("Secret input expects SSH password."))
+            ssh_profile_secret_input.update()
+            return
+        ssh_profile_secret_input.props("type=text")
+        ssh_profile_secret_mode_label.set_text(t("Secret input expects SSH key path."))
+        ssh_profile_secret_input.update()
+
+    def _refresh_ssh_profile_action_buttons() -> None:
+        """Enable profile actions only when a saved profile is selected."""
+        selected_option = str(ssh_profile_select.value or "").strip()
+        has_selection = selected_option in ssh_profile_option_ids
+        delete_ssh_profile_button.set_enabled(has_selection)
+        activate_ssh_profile_button.set_enabled(has_selection)
+
+    def _set_selected_profile_secret_state(profile: dict[str, object] | None) -> None:
+        """Show whether selected profile currently has stored credentials."""
+        if not isinstance(profile, dict) or not profile:
+            ssh_profile_secret_state_label.set_text(t("Secret status: set credentials when saving profile."))
+            ssh_profile_secret_state_label.classes(replace="text-xs text-grey-5")
+            return
+
+        auth_mode = str(profile.get("auth_mode", "key")).strip().lower() or "key"
+        has_secret = bool(profile.get("has_secret", False))
+        backend = str(profile.get("secret_backend", "")).strip()
+        backend_suffix = f" ({backend})" if backend else ""
+        if has_secret:
+            ssh_profile_secret_state_label.set_text(t("Secret status: configured") + backend_suffix)
+            ssh_profile_secret_state_label.classes(replace="text-xs text-positive")
+            return
+
+        secret_type_label = t("password") if auth_mode == "password" else t("key path")
+        ssh_profile_secret_state_label.set_text(
+            t("Secret status: missing {secret_type}; enter and save.", secret_type=secret_type_label)
+        )
+        ssh_profile_secret_state_label.classes(replace="text-xs text-warning")
+
+    def reset_ssh_profile_form_for_new() -> None:
+        """Reset dialog fields for creating a fresh SSH profile."""
+        ssh_profile_select.set_value("")
+        ssh_profile_name_input.set_value("")
+        ssh_profile_host_input.set_value("")
+        ssh_profile_port_input.set_value(22)
+        ssh_profile_username_input.set_value("")
+        ssh_profile_remote_dir_input.set_value("~/printer_data/config")
+        ssh_profile_moonraker_url_input.set_value("http://127.0.0.1:7125")
+        ssh_profile_auth_mode_select.set_value("key")
+        ssh_profile_secret_input.set_value("")
+        ssh_profile_active_toggle.set_value(True)
+        ssh_profile_error_label.set_text("")
+        ssh_profile_status_label.set_text(t("Enter details to create a new SSH profile."))
+        _set_selected_profile_secret_state(None)
+        _set_auth_mode_fields()
+        _refresh_ssh_profile_action_buttons()
+
+    def _load_selected_ssh_profile() -> None:
+        """Populate profile form from the selected saved profile."""
+        selected_option = str(ssh_profile_select.value or "").strip()
+        selected_id = ssh_profile_option_ids.get(selected_option, 0)
+        profile = ssh_profiles_by_id.get(int(selected_id), {}) if selected_id > 0 else {}
+        if not profile:
+            _refresh_ssh_profile_action_buttons()
+            return
+
+        ssh_profile_name_input.set_value(str(profile.get("profile_name", "")))
+        ssh_profile_host_input.set_value(str(profile.get("host", "")))
+        ssh_profile_port_input.set_value(_to_int(profile.get("port"), default=22))
+        ssh_profile_username_input.set_value(str(profile.get("username", "")))
+        ssh_profile_remote_dir_input.set_value(str(profile.get("remote_config_dir", "")))
+        ssh_profile_moonraker_url_input.set_value(str(profile.get("moonraker_url", "")))
+        auth_mode = str(profile.get("auth_mode", "key")).strip().lower() or "key"
+        if auth_mode not in {"key", "password"}:
+            auth_mode = "key"
+        ssh_profile_auth_mode_select.set_value(auth_mode)
+        _set_auth_mode_fields()
+        ssh_profile_active_toggle.set_value(bool(profile.get("is_active", False)))
+        _set_selected_profile_secret_state(profile)
+        _refresh_ssh_profile_action_buttons()
+
+    def refresh_ssh_profiles_dialog() -> None:
+        """Refresh saved SSH profiles and sync dialog controls."""
+        ssh_profile_error_label.set_text("")
+        ssh_profile_status_label.set_text("")
+        try:
+            profiles = service.list_ssh_profiles()
+        except Exception as exc:
+            ssh_profile_error_label.set_text(t("Failed to load SSH profiles: {error}", error=exc))
+            return
+
+        ssh_profile_option_ids.clear()
+        ssh_profiles_by_id.clear()
+
+        options: list[str] = []
+        selected_value = ""
+        for raw_profile in profiles:
+            if not isinstance(raw_profile, dict):
+                continue
+            profile_id = _to_int(raw_profile.get("id"), default=0)
+            if profile_id <= 0:
+                continue
+            ssh_profiles_by_id[profile_id] = raw_profile
+            profile_name = str(raw_profile.get("profile_name", "")).strip() or t("unnamed")
+            host = str(raw_profile.get("host", "")).strip() or "?"
+            port = _to_int(raw_profile.get("port"), default=22)
+            active_suffix = " *" if bool(raw_profile.get("is_active", False)) else ""
+            option_label = f"{profile_name} ({host}:{port}){active_suffix}"
+            options.append(option_label)
+            ssh_profile_option_ids[option_label] = profile_id
+            if bool(raw_profile.get("is_active", False)):
+                selected_value = option_label
+
+        if not selected_value and options:
+            selected_value = options[0]
+        ssh_profile_select.set_options(options, value=selected_value)
+        if selected_value:
+            _load_selected_ssh_profile()
+        else:
+            reset_ssh_profile_form_for_new()
+        _refresh_ssh_profile_action_buttons()
+
+    def save_ssh_profile_from_dialog() -> None:
+        """Persist one SSH profile and optional credentials from form values."""
+        if not off_printer_mode_enabled:
+            return
+        ssh_profile_error_label.set_text("")
+        ssh_profile_status_label.set_text("")
+
+        profile_name = str(ssh_profile_name_input.value or "").strip()
+        host = str(ssh_profile_host_input.value or "").strip()
+        username = str(ssh_profile_username_input.value or "").strip()
+        remote_config_dir = str(ssh_profile_remote_dir_input.value or "").strip()
+        moonraker_url = str(ssh_profile_moonraker_url_input.value or "").strip()
+        auth_mode = str(ssh_profile_auth_mode_select.value or "key").strip().lower() or "key"
+        port = _to_int(ssh_profile_port_input.value, default=22)
+        secret_value = str(ssh_profile_secret_input.value or "").strip()
+
+        if not profile_name:
+            ssh_profile_error_label.set_text(t("Profile name is required."))
+            return
+        if not host:
+            ssh_profile_error_label.set_text(t("Host is required."))
+            return
+        if not username:
+            ssh_profile_error_label.set_text(t("Username is required."))
+            return
+        if not remote_config_dir:
+            ssh_profile_error_label.set_text(t("Remote config directory is required."))
+            return
+        if port < 1 or port > 65535:
+            ssh_profile_error_label.set_text(t("Port must be between 1 and 65535."))
+            return
+        if auth_mode not in {"key", "password"}:
+            ssh_profile_error_label.set_text(t("Authentication mode must be key or password."))
+            return
+
+        parsed_url = urlparse(moonraker_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            ssh_profile_error_label.set_text(t("Moonraker URL must start with http:// or https:// and include a host."))
+            return
+
+        selected_option = str(ssh_profile_select.value or "").strip()
+        selected_id = ssh_profile_option_ids.get(selected_option, 0)
+        selected_profile = ssh_profiles_by_id.get(int(selected_id), {}) if selected_id > 0 else {}
+        selected_has_secret = bool(selected_profile.get("has_secret", False)) if isinstance(selected_profile, dict) else False
+        if not secret_value and not selected_has_secret:
+            secret_type_label = t("password") if auth_mode == "password" else t("key path")
+            ssh_profile_error_label.set_text(t("Enter SSH {secret_type} before saving.", secret_type=secret_type_label))
+            return
+
+        try:
+            result = service.save_ssh_profile(
+                profile_name=profile_name,
+                host=host,
+                port=port,
+                username=username,
+                remote_config_dir=remote_config_dir,
+                moonraker_url=moonraker_url,
+                auth_mode=auth_mode,
+                is_active=bool(ssh_profile_active_toggle.value),
+                secret_value=secret_value if secret_value else None,
+            )
+        except Exception as exc:
+            ssh_profile_error_label.set_text(t("Failed to save SSH profile: {error}", error=exc))
+            return
+
+        profile_id = _to_int(result.get("profile_id"), default=0)
+        backend = str(result.get("secret_backend", "")).strip()
+        backend_text = backend if backend else t("unchanged")
+        ssh_profile_status_label.set_text(
+            t("Profile saved. Secret backend: {backend}", backend=backend_text)
+        )
+        ssh_profile_secret_input.set_value("")
+        refresh_ssh_profiles_dialog()
+        if profile_id > 0:
+            for option_label, option_profile_id in ssh_profile_option_ids.items():
+                if option_profile_id == profile_id:
+                    ssh_profile_select.set_value(option_label)
+                    break
+        _load_selected_ssh_profile()
+        refresh_printer_profile_selector()
+        refresh_off_printer_profile_state()
+        refresh_print_state()
+        off_printer_profile_dialog.close()
+
+    def activate_selected_ssh_profile() -> None:
+        """Activate the profile selected in the management dialog."""
+        selected_option = str(ssh_profile_select.value or "").strip()
+        selected_id = ssh_profile_option_ids.get(selected_option, 0)
+        if selected_id <= 0:
+            ssh_profile_error_label.set_text(t("Select a profile to activate."))
+            return
+
+        ssh_profile_error_label.set_text("")
+        ssh_profile_status_label.set_text("")
+        try:
+            result = service.activate_ssh_profile(selected_id)
+        except Exception as exc:
+            ssh_profile_error_label.set_text(t("Failed to activate SSH profile: {error}", error=exc))
+            return
+        if not bool(result.get("ok", False)):
+            ssh_profile_error_label.set_text(t("Failed to activate SSH profile."))
+            return
+
+        profile = ssh_profiles_by_id.get(int(selected_id), {})
+        profile_name = str(profile.get("profile_name", "")).strip() if isinstance(profile, dict) else ""
+        service.ensure_printer_profile_for_ssh_profile(
+            ssh_profile_id=int(selected_id),
+            profile_name=profile_name or t("Printer"),
+            activate=True,
+        )
+
+        ssh_profile_status_label.set_text(t("Active SSH profile updated."))
+        refresh_ssh_profiles_dialog()
+        refresh_printer_profile_selector()
+        refresh_off_printer_profile_state()
+        refresh_print_state()
+
+    def delete_selected_ssh_profile() -> None:
+        """Delete selected profile from profile storage."""
+        selected_option = str(ssh_profile_select.value or "").strip()
+        selected_id = ssh_profile_option_ids.get(selected_option, 0)
+        if selected_id <= 0:
+            ssh_profile_error_label.set_text(t("Select a profile to delete."))
+            return
+
+        ssh_profile_error_label.set_text("")
+        ssh_profile_status_label.set_text("")
+        try:
+            result = service.delete_ssh_profile(selected_id)
+        except Exception as exc:
+            ssh_profile_error_label.set_text(t("Failed to delete SSH profile: {error}", error=exc))
+            return
+        if not bool(result.get("ok", False)):
+            ssh_profile_error_label.set_text(t("Failed to delete SSH profile."))
+            return
+
+        ssh_profile_status_label.set_text(t("SSH profile deleted."))
+        refresh_ssh_profiles_dialog()
+        refresh_off_printer_profile_state()
+        refresh_print_state()
+
+    def open_off_printer_profile_dialog() -> None:
+        """Open and initialize SSH profile management dialog."""
+        if not off_printer_mode_enabled:
+            return
+        refresh_ssh_profiles_dialog()
+        _set_auth_mode_fields()
+        off_printer_profile_dialog.open()
+
+    def open_remote_cfg_list_dialog() -> None:
+        """Load and display remote cfg file list for active SSH profile."""
+        if not off_printer_mode_enabled:
+            return
+
+        remote_cfg_list_error.set_text("")
+        remote_cfg_list_text.set_value("")
+        try:
+            result = service.list_active_remote_cfg_files()
+        except Exception as exc:
+            remote_cfg_list_subtitle.set_text(t("Failed to load remote cfg files."))
+            remote_cfg_list_error.set_text(t("{error}", error=exc))
+            ui.notify(t("Failed to load remote cfg files: {error}", error=exc), type="negative")
+            remote_cfg_list_dialog.open()
+            return
+
+        profile_name = str(result.get("profile_name", "")).strip() or t("unnamed")
+        count = _to_int(result.get("count", 0), default=0)
+        remote_cfg_list_title.set_text(t("Remote cfg files"))
+        remote_cfg_list_subtitle.set_text(
+            t("Profile: {profile} | Files: {count}", profile=profile_name, count=count)
+        )
+        files = result.get("files", [])
+        file_lines = []
+        if isinstance(files, list):
+            file_lines = [str(path) for path in files if str(path).strip()]
+        remote_cfg_list_text.set_value("\n".join(file_lines))
+        ui.notify(t("Loaded {count} remote cfg file(s).", count=count), type="info")
+        remote_cfg_list_dialog.open()
 
     def refresh_remote_health() -> None:
         """Poll host API health in remote mode and update connection indicators."""
@@ -2461,6 +3135,17 @@ def build_ui(app_version: str = "unknown") -> None:
     search_input.on_value_change(on_search_change)
     duplicate_warning_button.on_click(open_duplicate_wizard)
     backup_button.on_click(open_backup_dialog)
+    off_printer_manage_profiles_button.on_click(open_off_printer_profile_dialog)
+    off_printer_test_button.on_click(test_off_printer_profile_connection)
+    off_printer_cfg_list_button.on_click(open_remote_cfg_list_dialog)
+    ssh_profile_select.on_value_change(_load_selected_ssh_profile)
+    ssh_profile_auth_mode_select.on_value_change(_set_auth_mode_fields)
+    refresh_ssh_profiles_button.on_click(refresh_ssh_profiles_dialog)
+    new_ssh_profile_button.on_click(reset_ssh_profile_form_for_new)
+    delete_ssh_profile_button.on_click(delete_selected_ssh_profile)
+    activate_ssh_profile_button.on_click(activate_selected_ssh_profile)
+    save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
+    active_printer_select.on_value_change(on_active_printer_profile_change)
     with macro_actions_menu:
         ui.menu_item(t("Export macros"), on_click=open_export_dialog)
         ui.menu_item(t("Import macros"), on_click=open_import_dialog)
@@ -2487,14 +3172,16 @@ def build_ui(app_version: str = "unknown") -> None:
     prev_page_button.on_click(_go_prev_page)
     next_page_button.on_click(_go_next_page)
 
-    if _printer_profile_missing():
-        printer_vendor_input.set_value(str(vault_cfg.printer_vendor or "").strip())
-        printer_model_input.set_value(str(vault_cfg.printer_model or "").strip())
-        printer_profile_dialog.open()
+    refresh_printer_profile_selector()
+    if off_printer_mode_enabled and _printer_profile_missing():
+        status_label.set_text(t("No printer configured. Complete the connection wizard."))
+        open_off_printer_profile_dialog()
 
     if remote_mode_enabled:
         refresh_remote_health()
         _start_remote_event_listener()
+    if off_printer_mode_enabled:
+        refresh_off_printer_profile_state()
     refresh_print_state()
     if remote_mode_enabled:
         if remote_api_connected:
@@ -2502,8 +3189,14 @@ def build_ui(app_version: str = "unknown") -> None:
         else:
             status_label.set_text(t("Remote API disconnected. Showing cached data in read-only mode."))
     elif not printer_is_printing:
-        perform_index("startup")
+        if off_printer_mode_enabled and not off_printer_profile_ready:
+            deferred_startup_scan = True
+            refresh_data()
+        else:
+            perform_index("startup")
     else:
+        if off_printer_mode_enabled and not off_printer_profile_ready:
+            deferred_startup_scan = True
         refresh_data()
     ui.timer(0.5, lambda: asyncio.create_task(_check_online_updates_on_startup()), once=True)
     watcher.reset()
@@ -2511,6 +3204,7 @@ def build_ui(app_version: str = "unknown") -> None:
     ui.timer(0.5, _refresh_online_update_progress_ui)
     ui.timer(0.25, _drain_remote_events)
     ui.timer(2.0, check_config_changes)
+    ui.timer(5.0, refresh_off_printer_profile_state)
 
     def _flush_search() -> None:
         nonlocal _search_dirty

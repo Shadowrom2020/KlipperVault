@@ -154,14 +154,30 @@ setup_vscode_workspace_files() {
         local vscode_dir="$REPO_ROOT/.vscode"
         local settings_file="$vscode_dir/settings.json"
         local launch_file="$vscode_dir/launch.json"
+        local env_file="$vscode_dir/.env"
 
         echo "==> Configuring VS Code workspace files..."
         mkdir -p "$vscode_dir"
+
+        cat > "$env_file" <<ENV
+PYTHONUNBUFFERED=1
+PYTHONPATH=$REPO_ROOT:$REPO_ROOT/src
+KLIPPERVAULT_AUTO_UPDATE_VENV=0
+KLIPPERVAULT_RUNTIME_MODE=off_printer
+KLIPPERVAULT_CONFIG_DIR=$HOME/.config/klippervault
+KLIPPERVAULT_DB_PATH=$HOME/.local/share/klippervault/klipper_macros.db
+ENV
+        echo "    Wrote .vscode/.env"
 
         cat > "$settings_file" <<'JSON'
 {
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
     "python.terminal.activateEnvironment": true,
+    "python.envFile": "${workspaceFolder}/.vscode/.env",
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
     "python.analysis.extraPaths": [
         "${workspaceFolder}",
         "${workspaceFolder}/src"
@@ -175,97 +191,35 @@ JSON
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: KlipperVault GUI (local service)",
+            "name": "Python: KlipperVault GUI (off_printer debug)",
             "type": "python",
             "request": "launch",
             "python": "${config:python.defaultInterpreterPath}",
             "program": "${workspaceFolder}/klipper_vault_gui.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "justMyCode": true,
+            "envFile": "${workspaceFolder}/.vscode/.env",
+            "justMyCode": false,
             "env": {
                 "PYTHONUNBUFFERED": "1",
-                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
+                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0",
+                "KLIPPERVAULT_RUNTIME_MODE": "off_printer"
             }
         },
         {
-            "name": "Python: KlipperVault Host API",
+            "name": "Python: KlipperVault Host API (legacy)",
             "type": "python",
             "request": "launch",
             "python": "${config:python.defaultInterpreterPath}",
             "program": "${workspaceFolder}/klipper_vault.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.vscode/.env",
             "justMyCode": true,
             "env": {
                 "PYTHONUNBUFFERED": "1",
                 "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
             }
-        },
-        {
-            "name": "Python: KlipperVault GUI (remote host API)",
-            "type": "python",
-            "request": "launch",
-            "python": "${config:python.defaultInterpreterPath}",
-            "program": "${workspaceFolder}/klipper_vault_gui.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true,
-            "env": {
-                "PYTHONUNBUFFERED": "1",
-                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0",
-                "KLIPPERVAULT_REMOTE_API_URL": "http://127.0.0.1:10091",
-                "KLIPPERVAULT_REMOTE_API_TOKEN": ""
-            }
-        },
-        {
-            "name": "Python: Index Macros (CLI)",
-            "type": "python",
-            "request": "launch",
-            "python": "${config:python.defaultInterpreterPath}",
-            "program": "${workspaceFolder}/src/klipper_macro_indexer.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true,
-            "args": [
-                "--config-dir",
-                "${env:HOME}/printer_data/config",
-                "--db-path",
-                "${env:HOME}/printer_data/db/klipper_macros.db"
-            ],
-            "env": {
-                "PYTHONUNBUFFERED": "1"
-            }
-        },
-        {
-            "name": "Python: Index Macros (CLI, prune stale)",
-            "type": "python",
-            "request": "launch",
-            "python": "${config:python.defaultInterpreterPath}",
-            "program": "${workspaceFolder}/src/klipper_macro_indexer.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true,
-            "args": [
-                "--config-dir",
-                "${env:HOME}/printer_data/config",
-                "--db-path",
-                "${env:HOME}/printer_data/db/klipper_macros.db",
-                "--prune"
-            ],
-            "env": {
-                "PYTHONUNBUFFERED": "1"
-            }
-        }
-    ],
-    "compounds": [
-        {
-            "name": "Python: Complete App (Host API + Remote GUI)",
-            "configurations": [
-                "Python: KlipperVault Host API",
-                "Python: KlipperVault GUI (remote host API)"
-            ],
-            "stopAll": true
         }
     ]
 }
@@ -363,6 +317,10 @@ echo ""
 echo "==> Done! Development environment initialized."
 echo "==> Activate the environment with:"
 echo "    source .venv/bin/activate"
+echo ""
+echo "==> Debug defaults are in .vscode/.env"
+echo "==> VS Code launch target for deep debugging:"
+echo "    Python: KlipperVault GUI (off_printer debug)"
 echo ""
 echo "==> Then launch the app with:"
 echo "    python klipper_vault_gui.py"
