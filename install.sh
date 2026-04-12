@@ -3,7 +3,10 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="klipper-vault.service"
+HOST_API_SERVICE_NAME="klipper-vault-host-api.service"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+INSTALL_HOST_API_SERVICE="${INSTALL_HOST_API_SERVICE:-1}"
+INSTALL_GUI_SERVICE="${INSTALL_GUI_SERVICE:-0}"
 
 if [[ -n "${SUDO_USER:-}" ]]; then
   APP_USER="$SUDO_USER"
@@ -17,13 +20,17 @@ if [[ -z "$APP_HOME" ]]; then
   exit 1
 fi
 
-VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-venv}"
+VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-printer-venv}"
+LEGACY_VENV_DIR="${LEGACY_VENV_DIR:-$APP_HOME/klippervault-venv}"
+REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-$APP_DIR/requirements-printer.txt}"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+HOST_API_SERVICE_PATH="/etc/systemd/system/${HOST_API_SERVICE_NAME}"
 KLIPPER_CONFIG_DIR="${KLIPPER_CONFIG_DIR:-$APP_HOME/printer_data/config}"
 VAULT_CFG_PATH="${VAULT_CFG_PATH:-$KLIPPER_CONFIG_DIR/klippervault.cfg}"
 MAINSAIL_THEME_DIR="${MAINSAIL_THEME_DIR:-$KLIPPER_CONFIG_DIR/.theme}"
 MAINSAIL_NAV_FILE="${MAINSAIL_NAV_FILE:-$MAINSAIL_THEME_DIR/navi.json}"
 MOONRAKER_CONF_FILE="${MOONRAKER_CONF_FILE:-$KLIPPER_CONFIG_DIR/moonraker.conf}"
+INSTALL_MAINSAIL_NAV="${INSTALL_MAINSAIL_NAV:-$INSTALL_GUI_SERVICE}"
 MAINSAIL_NAV_TITLE="${MAINSAIL_NAV_TITLE:-KlipperVault}"
 MAINSAIL_NAV_TARGET="${MAINSAIL_NAV_TARGET:-_blank}"
 MAINSAIL_NAV_POSITION="${MAINSAIL_NAV_POSITION:-85}"
@@ -224,13 +231,26 @@ detect_repo_branch() {
 
 setup_mainsail_update_section() {
   local repo_origin repo_branch
+  local managed_services_csv=""
+  local -a managed_services=()
   repo_origin="$(detect_repo_origin)"
   repo_branch="$(detect_repo_branch)"
+
+  if [[ "$INSTALL_GUI_SERVICE" == "1" ]]; then
+    managed_services+=("klipper-vault")
+  fi
+  if [[ "$INSTALL_HOST_API_SERVICE" == "1" ]]; then
+    managed_services+=("klipper-vault-host-api")
+  fi
+  if [[ "${#managed_services[@]}" -eq 0 ]]; then
+    managed_services+=("klipper-vault-host-api")
+  fi
+  managed_services_csv="$(IFS=,; echo "${managed_services[*]}")"
 
   echo "Configuring moonraker.conf update section..."
   as_user mkdir -p "$KLIPPER_CONFIG_DIR"
 
-  as_user "$PYTHON_BIN" - "$MOONRAKER_CONF_FILE" "$UPDATE_MANAGER_NAME" "$APP_DIR" "$SERVICE_NAME" "$repo_origin" "$repo_branch" <<'PY'
+  as_user "$PYTHON_BIN" - "$MOONRAKER_CONF_FILE" "$UPDATE_MANAGER_NAME" "$APP_DIR" "$SERVICE_NAME" "$repo_origin" "$repo_branch" "$managed_services_csv" <<'PY'
 import pathlib
 import re
 import sys
@@ -241,6 +261,10 @@ app_dir = sys.argv[3]
 _ = sys.argv[4]
 repo_origin = sys.argv[5].strip()
 repo_branch = sys.argv[6].strip() or "main"
+managed_services_csv = sys.argv[7].strip()
+managed_services = [service.strip() for service in managed_services_csv.split(",") if service.strip()]
+if not managed_services:
+  managed_services = ["klipper-vault-host-api"]
 
 section_lines = [
     f"[update_manager {update_name}]",
@@ -253,7 +277,7 @@ if repo_origin:
 
 section_lines.extend([
     f"primary_branch: {repo_branch}",
-    "managed_services: klippervault",
+  f"managed_services: {', '.join(managed_services)}",
 ])
 
 section_text = "\n".join(section_lines) + "\n"
@@ -281,9 +305,59 @@ PY
   echo "Moonraker update section written: $MOONRAKER_CONF_FILE"
 }
 
+remove_mainsail_navigation_entry() {
+  if [[ ! -f "$MAINSAIL_NAV_FILE" ]]; then
+    return
+  fi
+
+  as_user "$PYTHON_BIN" - "$MAINSAIL_NAV_FILE" "$MAINSAIL_NAV_TITLE" <<'PY'
+import json
+import pathlib
+import sys
+
+nav_path = pathlib.Path(sys.argv[1])
+title = sys.argv[2]
+
+try:
+    loaded = json.loads(nav_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(loaded, list):
+    raise SystemExit(0)
+
+filtered = [item for item in loaded if not (isinstance(item, dict) and item.get("title") == title)]
+if len(filtered) != len(loaded):
+    nav_path.write_text(json.dumps(filtered, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+migrate_legacy_installation() {
+  if [[ "$VENV_DIR" != "$LEGACY_VENV_DIR" && ! -d "$VENV_DIR" && -d "$LEGACY_VENV_DIR" ]]; then
+    echo "Migrating legacy virtualenv from $LEGACY_VENV_DIR to $VENV_DIR"
+    as_root mv "$LEGACY_VENV_DIR" "$VENV_DIR"
+    as_root chown -R "$APP_USER":"$APP_USER" "$VENV_DIR"
+  fi
+
+  if [[ "$INSTALL_GUI_SERVICE" != "1" ]]; then
+    if as_root systemctl list-unit-files --type=service | grep -q "^${SERVICE_NAME}"; then
+      echo "Disabling legacy GUI service for printer-only install..."
+      as_root systemctl disable --now "$SERVICE_NAME" || true
+    fi
+    if [[ -f "$SERVICE_PATH" ]]; then
+      as_root rm -f "$SERVICE_PATH"
+    fi
+    if [[ "$INSTALL_MAINSAIL_NAV" != "1" ]]; then
+      remove_mainsail_navigation_entry
+    fi
+  fi
+}
+
 echo "Installing KlipperVault from: $APP_DIR"
 echo "Service user: $APP_USER"
 echo "Virtualenv: $VENV_DIR"
+echo "Requirements file: $REQUIREMENTS_FILE"
+echo "Install GUI service: $INSTALL_GUI_SERVICE"
 
 need_cmd "$PYTHON_BIN"
 need_cmd systemctl
@@ -298,10 +372,17 @@ if [[ ! -f "$APP_DIR/klipper_vault.py" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$APP_DIR/requirements.txt" ]]; then
-  echo "requirements.txt not found in $APP_DIR"
+if [[ "$INSTALL_GUI_SERVICE" == "1" && ! -f "$APP_DIR/klipper_vault_gui.py" ]]; then
+  echo "klipper_vault_gui.py not found in $APP_DIR"
   exit 1
 fi
+
+if [[ ! -f "$REQUIREMENTS_FILE" ]]; then
+  echo "Requirements file not found: $REQUIREMENTS_FILE"
+  exit 1
+fi
+
+migrate_legacy_installation
 
 # Ensure python venv support is present.
 if ! "$PYTHON_BIN" -m venv --help >/dev/null 2>&1; then
@@ -319,8 +400,9 @@ as_user "$VENV_DIR/bin/python" -m ensurepip --upgrade
 
 echo "Installing Python dependencies..."
 as_user "$VENV_DIR/bin/python" -m pip install --upgrade pip
-as_user "$VENV_DIR/bin/python" -m pip install -r "$APP_DIR/requirements.txt"
+as_user "$VENV_DIR/bin/python" -m pip install -r "$REQUIREMENTS_FILE"
 
+if [[ "$INSTALL_GUI_SERVICE" == "1" ]]; then
 echo "Writing systemd service: $SERVICE_PATH"
 TMP_SERVICE="$(mktemp)"
 cat > "$TMP_SERVICE" <<EOF
@@ -333,11 +415,12 @@ Wants=network-online.target klipper.service mainsail.service
 Type=simple
 User=$APP_USER
 WorkingDirectory=$APP_DIR
-ExecStart=$VENV_DIR/bin/python $APP_DIR/klipper_vault.py
+ExecStart=$VENV_DIR/bin/python $APP_DIR/klipper_vault_gui.py
 Restart=on-failure
 RestartSec=3
 Environment=PYTHONUNBUFFERED=1
 Environment=KLIPPERVAULT_AUTO_UPDATE_VENV=1
+Environment=KLIPPERVAULT_REQUIREMENTS_FILE=requirements.txt
 
 [Install]
 WantedBy=multi-user.target
@@ -345,14 +428,60 @@ EOF
 
 as_root install -m 0644 "$TMP_SERVICE" "$SERVICE_PATH"
 rm -f "$TMP_SERVICE"
+fi
+
+if [[ "$INSTALL_HOST_API_SERVICE" == "1" ]]; then
+  echo "Writing host API systemd service: $HOST_API_SERVICE_PATH"
+  TMP_HOST_API_SERVICE="$(mktemp)"
+  cat > "$TMP_HOST_API_SERVICE" <<EOF
+[Unit]
+Description=KlipperVault Host API Service
+After=network-online.target klipper.service mainsail.service
+Wants=network-online.target klipper.service mainsail.service
+
+[Service]
+Type=simple
+User=$APP_USER
+WorkingDirectory=$APP_DIR
+ExecStart=$VENV_DIR/bin/python $APP_DIR/klipper_vault.py
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+Environment=KLIPPERVAULT_AUTO_UPDATE_VENV=1
+Environment=KLIPPERVAULT_REQUIREMENTS_FILE=requirements-printer.txt
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  as_root install -m 0644 "$TMP_HOST_API_SERVICE" "$HOST_API_SERVICE_PATH"
+  rm -f "$TMP_HOST_API_SERVICE"
+fi
 
 echo "Reloading and enabling service..."
 as_root systemctl daemon-reload
-as_root systemctl enable --now "$SERVICE_NAME"
+if [[ "$INSTALL_GUI_SERVICE" == "1" ]]; then
+  as_root systemctl enable --now "$SERVICE_NAME"
+fi
+if [[ "$INSTALL_HOST_API_SERVICE" == "1" ]]; then
+  as_root systemctl enable --now "$HOST_API_SERVICE_NAME"
+fi
 
-setup_mainsail_navigation
+if [[ "$INSTALL_MAINSAIL_NAV" == "1" ]]; then
+  setup_mainsail_navigation
+fi
 setup_mainsail_update_section
 
 echo "Install complete."
-echo "Use: sudo systemctl restart $SERVICE_NAME"
-echo "Logs: sudo journalctl -u $SERVICE_NAME -f"
+if [[ "$INSTALL_GUI_SERVICE" == "1" ]]; then
+  echo "Use: sudo systemctl restart $SERVICE_NAME"
+fi
+if [[ "$INSTALL_HOST_API_SERVICE" == "1" ]]; then
+  echo "Use: sudo systemctl restart $HOST_API_SERVICE_NAME"
+fi
+if [[ "$INSTALL_GUI_SERVICE" == "1" ]]; then
+  echo "Logs: sudo journalctl -u $SERVICE_NAME -f"
+fi
+if [[ "$INSTALL_HOST_API_SERVICE" == "1" ]]; then
+  echo "Logs: sudo journalctl -u $HOST_API_SERVICE_NAME -f"
+fi

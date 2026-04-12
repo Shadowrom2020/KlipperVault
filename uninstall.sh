@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="klipper-vault.service"
+HOST_API_SERVICE_NAME="klipper-vault-host-api.service"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ -n "${SUDO_USER:-}" ]]; then
@@ -17,8 +18,9 @@ if [[ -z "$APP_HOME" ]]; then
   exit 1
 fi
 
-VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-venv}"
+VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-printer-venv}"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+HOST_API_SERVICE_PATH="/etc/systemd/system/${HOST_API_SERVICE_NAME}"
 REMOVE_VENV="${REMOVE_VENV:-0}"
 KLIPPER_CONFIG_DIR="${KLIPPER_CONFIG_DIR:-$APP_HOME/printer_data/config}"
 MAINSAIL_THEME_DIR="${MAINSAIL_THEME_DIR:-$KLIPPER_CONFIG_DIR/.theme}"
@@ -98,7 +100,9 @@ validate_venv_remove_target() {
       ;;
   esac
 
-  if [[ "$(basename -- "$resolved_target")" != "klippervault-venv" ]]; then
+  local base_name
+  base_name="$(basename -- "$resolved_target")"
+  if [[ "$base_name" != "klippervault-printer-venv" && "$base_name" != "klippervault-venv" ]]; then
     echo "Refusing to remove virtualenv with unexpected directory name: $resolved_target"
     return 1
   fi
@@ -192,6 +196,7 @@ PY
 echo "Uninstalling KlipperVault from: $APP_DIR"
 echo "Service user: $APP_USER"
 echo "Service file: $SERVICE_PATH"
+echo "Host API service file: $HOST_API_SERVICE_PATH"
 echo "Virtualenv: $VENV_DIR"
 
 need_cmd systemctl
@@ -209,11 +214,28 @@ else
   echo "Service unit $SERVICE_NAME is not registered; skipping stop/disable."
 fi
 
+if as_root systemctl list-unit-files --type=service | grep -q "^${HOST_API_SERVICE_NAME}"; then
+  echo "Stopping host API service..."
+  as_root systemctl stop "$HOST_API_SERVICE_NAME" || true
+
+  echo "Disabling host API service..."
+  as_root systemctl disable "$HOST_API_SERVICE_NAME" || true
+else
+  echo "Service unit $HOST_API_SERVICE_NAME is not registered; skipping stop/disable."
+fi
+
 if [[ -f "$SERVICE_PATH" ]]; then
   echo "Removing systemd service file..."
   as_root rm -f "$SERVICE_PATH"
 else
   echo "Service file not found; skipping remove."
+fi
+
+if [[ -f "$HOST_API_SERVICE_PATH" ]]; then
+  echo "Removing host API systemd service file..."
+  as_root rm -f "$HOST_API_SERVICE_PATH"
+else
+  echo "Host API service file not found; skipping remove."
 fi
 
 echo "Reloading systemd daemon..."

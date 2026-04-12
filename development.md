@@ -31,6 +31,13 @@ What it does:
 
 VS Code debug configs use `${workspaceFolder}/.venv/bin/python` so launch runs with the project virtualenv.
 
+Generated debug configurations include full app workflows:
+
+- `Python: KlipperVault GUI (local service)`
+- `Python: KlipperVault Host API`
+- `Python: KlipperVault GUI (remote host API)`
+- `Python: Complete App (Host API + Remote GUI)` (compound launch)
+
 Manual setup alternative:
 
 ```bash
@@ -44,19 +51,20 @@ pip install -r requirements.txt
 ## Run Locally
 
 ```bash
-./.venv/bin/python klipper_vault.py
+./.venv/bin/python klipper_vault_gui.py
 ```
 
 Use a custom test config tree:
 
 ```bash
-KLIPPER_CONFIG_DIR=/tmp/testcfg ./.venv/bin/python klipper_vault.py
+KLIPPER_CONFIG_DIR=/tmp/testcfg ./.venv/bin/python klipper_vault_gui.py
 ```
 
 ## Project Layout
 
 ```text
-klipper_vault.py                  Application entry point
+klipper_vault.py                  Host API entry point
+klipper_vault_gui.py              GUI entry point
 install.sh                        Systemd + virtualenv installer
 uninstall.sh                      Service removal helper
 VERSION                           App version string

@@ -17,7 +17,16 @@ _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
 _DEFAULT_ONLINE_UPDATE_REF = "main"
 _MOONRAKER_CONF_FILENAME = "moonraker.conf"
 _UPDATE_MANAGER_NAME = "klippervault"
-_MANAGED_SERVICE_NAME = "klippervault"
+_MANAGED_SERVICE_NAMES: tuple[str, ...] = (
+    "klipper-vault",
+    "klipper-vault-host-api",
+)
+_MANAGED_SERVICE_ALIASES: dict[str, str] = {
+    "klippervault": "klipper-vault",
+    "klippervault-host-api": "klipper-vault-host-api",
+    "klipper-vault.service": "klipper-vault",
+    "klipper-vault-host-api.service": "klipper-vault-host-api",
+}
 
 _DEFAULT_CONTENT = """\
 # KlipperVault configuration
@@ -54,6 +63,25 @@ online_update_ref: main
 # Developer mode: enables export of local macros to update repository bundles.
 # WARNING: This is intended for repository maintainers; keep disabled for normal use.
 developer: false
+
+# Host API service for remote GUI clients.
+# Keep disabled for local-only setups.
+enable_remote_api: false
+
+# Bind address and port for host API service.
+api_bind_host: 127.0.0.1
+api_port: 10091
+
+# Optional bearer token required by host API service.
+# Leave empty to disable auth (not recommended on shared networks).
+api_token:
+
+# Optional remote host API target for GUI client mode.
+# Example: http://printer-host.local:10091
+remote_api_url:
+
+# Optional bearer token used by GUI when connecting to remote API.
+remote_api_token:
 """
 
 
@@ -68,6 +96,12 @@ class VaultConfig:
     online_update_manifest_path: str = _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
     online_update_ref: str = _DEFAULT_ONLINE_UPDATE_REF
     developer: bool = False
+    enable_remote_api: bool = False
+    api_bind_host: str = "127.0.0.1"
+    api_port: int = 10091
+    api_token: str = ""
+    remote_api_url: str = ""
+    remote_api_token: str = ""
     printer_profile_prompt_required: bool = True
 
 
@@ -125,7 +159,7 @@ def _detect_printer_identity(config_dir: Path) -> tuple[str, str] | None:
 
 
 def ensure_moonraker_update_manager_managed_services(config_dir: Path) -> bool:
-    """Ensure Moonraker update_manager uses managed_services: klippervault.
+    """Ensure Moonraker update_manager references current KlipperVault services.
 
     Returns True when moonraker.conf was modified.
     """
@@ -146,7 +180,8 @@ def ensure_moonraker_update_manager_managed_services(config_dir: Path) -> bool:
     managed_services_match = managed_services_pattern.search(section_text)
 
     if managed_services_match is None:
-        updated_section = section_text.rstrip("\n") + f"\nmanaged_services: {_MANAGED_SERVICE_NAME}\n"
+        managed_services_text = ", ".join(_MANAGED_SERVICE_NAMES)
+        updated_section = section_text.rstrip("\n") + f"\nmanaged_services: {managed_services_text}\n"
     else:
         raw_services = managed_services_match.group(1)
         parsed_services = [
@@ -156,13 +191,13 @@ def ensure_moonraker_update_manager_managed_services(config_dir: Path) -> bool:
         ]
         normalized_services: list[str] = []
         for service in parsed_services:
-            if service == "klipper-vault":
-                service = _MANAGED_SERVICE_NAME
+            service = _MANAGED_SERVICE_ALIASES.get(service, service)
             if service not in normalized_services:
                 normalized_services.append(service)
 
-        if _MANAGED_SERVICE_NAME not in normalized_services:
-            normalized_services.append(_MANAGED_SERVICE_NAME)
+        for required_service in _MANAGED_SERVICE_NAMES:
+            if required_service not in normalized_services:
+                normalized_services.append(required_service)
 
         replacement_line = f"managed_services: {', '.join(normalized_services)}"
         updated_section = managed_services_pattern.sub(replacement_line, section_text, count=1)
@@ -215,6 +250,25 @@ def save(config_dir: Path, config: VaultConfig) -> None:
         "# Developer mode: enables export of local macros to update repository bundles.",
         "# WARNING: This is intended for repository maintainers; keep disabled for normal use.",
         f"developer: {'true' if config.developer else 'false'}",
+        "",
+        "# Host API service for remote GUI clients.",
+        "# Keep disabled for local-only setups.",
+        f"enable_remote_api: {'true' if config.enable_remote_api else 'false'}",
+        "",
+        "# Bind address and port for host API service.",
+        f"api_bind_host: {str(config.api_bind_host or '127.0.0.1').strip() or '127.0.0.1'}",
+        f"api_port: {max(1, min(65535, int(config.api_port)))}",
+        "",
+        "# Optional bearer token required by host API service.",
+        "# Leave empty to disable auth (not recommended on shared networks).",
+        f"api_token: {str(config.api_token or '').strip()}",
+        "",
+        "# Optional remote host API target for GUI client mode.",
+        "# Example: http://printer-host.local:10091",
+        f"remote_api_url: {str(config.remote_api_url or '').strip()}",
+        "",
+        "# Optional bearer token used by GUI when connecting to remote API.",
+        f"remote_api_token: {str(config.remote_api_token or '').strip()}",
         "",
     ]
     cfg_path.write_text("\n".join(lines), encoding="utf-8")
@@ -291,6 +345,38 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         dev_value = parser.get("vault", "developer").strip().lower()
         developer = dev_value in ("true", "1", "yes")
 
+    enable_remote_api = False
+    if parser.has_option("vault", "enable_remote_api"):
+        remote_api_value = parser.get("vault", "enable_remote_api").strip().lower()
+        enable_remote_api = remote_api_value in ("true", "1", "yes")
+
+    api_bind_host = "127.0.0.1"
+    if parser.has_option("vault", "api_bind_host"):
+        parsed_bind_host = parser.get("vault", "api_bind_host").strip()
+        if parsed_bind_host:
+            api_bind_host = parsed_bind_host
+
+    api_port = 10091
+    if parser.has_option("vault", "api_port"):
+        try:
+            parsed_api_port = int(parser.get("vault", "api_port"))
+            if 1 <= parsed_api_port <= 65535:
+                api_port = parsed_api_port
+        except ValueError:
+            pass
+
+    api_token = ""
+    if parser.has_option("vault", "api_token"):
+        api_token = parser.get("vault", "api_token").strip()
+
+    remote_api_url = ""
+    if parser.has_option("vault", "remote_api_url"):
+        remote_api_url = parser.get("vault", "remote_api_url").strip()
+
+    remote_api_token = ""
+    if parser.has_option("vault", "remote_api_token"):
+        remote_api_token = parser.get("vault", "remote_api_token").strip()
+
     detected_printer_identity = False
     if not printer_vendor or not printer_model:
         detected_identity = _detect_printer_identity(config_dir)
@@ -319,6 +405,12 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         online_update_manifest_path=online_update_manifest_path,
         online_update_ref=online_update_ref,
         developer=developer,
+        enable_remote_api=enable_remote_api,
+        api_bind_host=api_bind_host,
+        api_port=api_port,
+        api_token=api_token,
+        remote_api_url=remote_api_url,
+        remote_api_token=remote_api_token,
         printer_profile_prompt_required=printer_profile_prompt_required,
     )
 

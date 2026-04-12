@@ -621,12 +621,10 @@ class MacroGuiService:
         out_file: Path,
     ) -> dict[str, object]:
         """Export selected latest macros to a shareable JSON file."""
-        payload = export_macro_share_payload(
-            db_path=self._db_path,
+        payload = self.export_macro_share_payload_data(
             identities=identities,
             source_vendor=source_vendor,
             source_model=source_model,
-            now_ts=int(time.time()),
         )
         exported_macros = payload.get("macros", [])
         macro_count = len(exported_macros) if isinstance(exported_macros, list) else 0
@@ -649,6 +647,42 @@ class MacroGuiService:
         payload = json.loads(import_file.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("invalid macro share file")
+
+        result = self.import_macro_share_payload_data(
+            payload=payload,
+            target_vendor=target_vendor,
+            target_model=target_model,
+        )
+
+        return {
+            **result,
+            "file_path": str(import_file),
+        }
+
+    def export_macro_share_payload_data(
+        self,
+        *,
+        identities: list[tuple[str, str]],
+        source_vendor: str,
+        source_model: str,
+    ) -> dict[str, object]:
+        """Return share-file payload without writing to disk."""
+        return export_macro_share_payload(
+            db_path=self._db_path,
+            identities=identities,
+            source_vendor=source_vendor,
+            source_model=source_model,
+            now_ts=int(time.time()),
+        )
+
+    def import_macro_share_payload_data(
+        self,
+        *,
+        payload: dict[str, object],
+        target_vendor: str,
+        target_model: str,
+    ) -> dict[str, object]:
+        """Import macros from pre-loaded share payload data."""
 
         result = import_macro_share_payload(
             db_path=self._db_path,
@@ -675,7 +709,6 @@ class MacroGuiService:
             "source_vendor": source_vendor,
             "source_model": source_model,
             "printer_matches": printer_matches,
-            "file_path": str(import_file),
         }
 
     def check_online_updates(

@@ -169,6 +169,53 @@ def test_save_persists_developer_mode(tmp_path: Path) -> None:
     assert reloaded_config.developer is True
 
 
+def test_load_or_create_reads_remote_api_fields(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "klippervault.cfg"
+    cfg_path.write_text(
+        """
+[vault]
+enable_remote_api: true
+api_bind_host: 0.0.0.0
+api_port: 19091
+api_token: host-secret
+remote_api_url: http://printer-host.local:19091
+remote_api_token: gui-secret
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    config = load_or_create(tmp_path)
+
+    assert config.enable_remote_api is True
+    assert config.api_bind_host == "0.0.0.0"
+    assert config.api_port == 19091
+    assert config.api_token == "host-secret"
+    assert config.remote_api_url == "http://printer-host.local:19091"
+    assert config.remote_api_token == "gui-secret"
+
+
+def test_save_persists_remote_api_fields(tmp_path: Path) -> None:
+    save(
+        tmp_path,
+        VaultConfig(
+            enable_remote_api=True,
+            api_bind_host="0.0.0.0",
+            api_port=19091,
+            api_token="host-secret",
+            remote_api_url="http://printer-host.local:19091",
+            remote_api_token="gui-secret",
+        ),
+    )
+    config = load_or_create(tmp_path)
+
+    assert config.enable_remote_api is True
+    assert config.api_bind_host == "0.0.0.0"
+    assert config.api_port == 19091
+    assert config.api_token == "host-secret"
+    assert config.remote_api_url == "http://printer-host.local:19091"
+    assert config.remote_api_token == "gui-secret"
+
+
 def test_load_or_create_backfills_all_persisted_config_keys(tmp_path: Path) -> None:
     cfg_path = tmp_path / "klippervault.cfg"
     cfg_path.write_text(
@@ -210,8 +257,8 @@ value: 1
 
     assert changed is True
     cfg_text = moonraker_conf_path.read_text(encoding="utf-8")
-    assert "managed_services: klippervault" in cfg_text
-    assert "managed_services: klipper-vault" not in cfg_text
+    assert "managed_services: klipper-vault, klipper-vault-host-api" in cfg_text
+    assert "managed_services: klippervault" not in cfg_text
 
 
 def test_ensure_moonraker_update_manager_managed_services_adds_missing_line(tmp_path: Path) -> None:
@@ -229,7 +276,25 @@ path: /opt/klippervault
 
     assert changed is True
     cfg_text = moonraker_conf_path.read_text(encoding="utf-8")
-    assert "managed_services: klippervault" in cfg_text
+    assert "managed_services: klipper-vault, klipper-vault-host-api" in cfg_text
+
+
+def test_ensure_moonraker_update_manager_managed_services_normalizes_service_suffixes(tmp_path: Path) -> None:
+    moonraker_conf_path = tmp_path / "moonraker.conf"
+    moonraker_conf_path.write_text(
+        """
+[update_manager klippervault]
+type: git_repo
+managed_services: klipper-vault.service, klipper-vault-host-api.service
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    changed = ensure_moonraker_update_manager_managed_services(tmp_path)
+
+    assert changed is True
+    cfg_text = moonraker_conf_path.read_text(encoding="utf-8")
+    assert "managed_services: klipper-vault, klipper-vault-host-api" in cfg_text
 
 
 def test_ensure_moonraker_update_manager_managed_services_no_change_when_absent(tmp_path: Path) -> None:

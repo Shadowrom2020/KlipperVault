@@ -55,7 +55,10 @@ Dynamic Macros project:
 - Klipper config directory (typically `~/printer_data/config`)
 - Moonraker reachable at `http://127.0.0.1:7125` (default)
 
-Dependencies are defined in [requirements.txt](requirements.txt).
+Dependencies are split by runtime profile:
+
+- Printer host profile: [requirements-printer.txt](requirements-printer.txt)
+- Full GUI profile: [requirements.txt](requirements.txt)
 
 ## Default Paths
 
@@ -80,6 +83,12 @@ online_update_repo_url:
 online_update_manifest_path: updates/manifest.json
 online_update_ref: main
 developer: false
+enable_remote_api: false
+api_bind_host: 127.0.0.1
+api_port: 10091
+api_token:
+remote_api_url:
+remote_api_token:
 ```
 
 - `version_history_size`: max stored versions per macro
@@ -91,6 +100,12 @@ developer: false
 - `online_update_manifest_path`: path to manifest file inside the update repository (default: `updates/manifest.json`)
 - `online_update_ref`: branch, tag, or commit SHA for update checks (default: `main`)
 - `developer`: enable developer features (default: `false`) — see [Macro Developer Guide](Macro_Developer.md)
+- `enable_remote_api`: allow host API service for remote GUI clients (default: `false`)
+- `api_bind_host`: host API bind address (default: `127.0.0.1`)
+- `api_port`: host API port (default: `10091`)
+- `api_token`: bearer token required by host API when `api_bind_host` is not localhost
+- `remote_api_url`: optional remote API URL used by GUI mode (for example: `http://printer-host.local:10091`)
+- `remote_api_token`: optional bearer token used by GUI mode for remote API auth
 
 If vendor/model are missing, KlipperVault prompts for them and writes them back to config.
 
@@ -102,13 +117,13 @@ From repository root:
 sudo ./install.sh
 ```
 
-Installer summary:
+Installer summary (printer host default):
 
 1. Detect target user
-2. Create virtualenv
-3. Install Python dependencies
-4. Write and enable `klipper-vault.service`
-5. Add/update KlipperVault entry in Mainsail `.theme/navi.json`
+2. Migrate legacy installs (`klippervault-venv`, old GUI service/nav entries) when found
+3. Create printer virtualenv (`~/klippervault-printer-venv`)
+4. Install printer dependencies from `requirements-printer.txt`
+5. Write and enable `klipper-vault-host-api.service` (can be disabled with `INSTALL_HOST_API_SERVICE=0`)
 
 Uninstall:
 
@@ -122,15 +137,44 @@ sudo ./uninstall.sh --remove-venv
 Manual run:
 
 ```bash
+./.venv/bin/python klipper_vault_gui.py
+```
+
+Host API service mode (printer host):
+
+```bash
 ./.venv/bin/python klipper_vault.py
+```
+
+Remote GUI mode (client machine):
+
+```bash
+KLIPPERVAULT_REMOTE_API_URL=http://printer-host.local:10091 \
+KLIPPERVAULT_REMOTE_API_TOKEN=<token-if-configured> \
+./.venv/bin/python klipper_vault_gui.py
 ```
 
 Service management:
 
 ```bash
 sudo systemctl restart klipper-vault.service
+sudo systemctl restart klipper-vault-host-api.service
 sudo systemctl status klipper-vault.service
+sudo systemctl status klipper-vault-host-api.service
 sudo journalctl -u klipper-vault.service -f
+sudo journalctl -u klipper-vault-host-api.service -f
+```
+
+Install without host API service unit:
+
+```bash
+sudo INSTALL_HOST_API_SERVICE=0 ./install.sh
+```
+
+Install legacy local GUI service as well:
+
+```bash
+sudo INSTALL_GUI_SERVICE=1 INSTALL_MAINSAIL_NAV=1 REQUIREMENTS_FILE="$PWD/requirements.txt" ./install.sh
 ```
 
 ## Usage
@@ -180,6 +224,26 @@ Compatibility behavior:
 - Share files carry source printer vendor/model.
 - Import warns when source printer metadata is unknown or differs from local printer metadata.
 - Online updates use checksum comparison to detect changes; only changed macros appear in the update list.
+
+Remote host API typed endpoints (current):
+
+- `GET /api/v1/health`
+- `GET /api/v1/dashboard`
+- `GET /api/v1/macros/versions`
+- `GET /api/v1/backups`
+- `GET /api/v1/backups/{backup_id}/items`
+- `GET /api/v1/printer/status`
+- `GET /api/v1/duplicates`
+- `GET /api/v1/cfg-loading-overview`
+- `GET /api/v1/jobs/{job_id}`
+- `GET /api/v1/events` (SSE stream)
+- `POST /api/v1/index`
+- `POST /api/v1/jobs/online-check`
+- `POST /api/v1/jobs/create-pr`
+- `POST /api/v1/actions/{action}`
+- `POST /api/v1/share/export`
+- `POST /api/v1/share/import`
+- `POST /api/v1/online-update/export-zip`
 
 ## Safety Model
 

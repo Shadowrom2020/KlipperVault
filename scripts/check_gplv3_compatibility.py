@@ -40,16 +40,40 @@ REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
 
 
 def parse_requirement_names(requirements_file: Path) -> list[str]:
+    return _parse_requirement_names(requirements_file, visited=set())
+
+
+def _parse_requirement_names(requirements_file: Path, visited: set[Path]) -> list[str]:
+    resolved_requirements_file = requirements_file.resolve()
+    if resolved_requirements_file in visited:
+        return []
+    visited.add(resolved_requirements_file)
+
     names: list[str] = []
     for line in requirements_file.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            continue
+        include_target = _parse_requirements_include(stripped)
+        if include_target is not None:
+            include_path = (requirements_file.parent / include_target).resolve()
+            if include_path.exists() and include_path.is_file():
+                names.extend(_parse_requirement_names(include_path, visited=visited))
             continue
         match = REQ_NAME_RE.match(stripped)
         if not match:
             continue
         names.append(match.group(1))
     return names
+
+
+def _parse_requirements_include(line: str) -> str | None:
+    parts = line.split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    if parts[0] not in {"-r", "--requirement"}:
+        return None
+    return parts[1].strip()
 
 
 def normalize(name: str) -> str:

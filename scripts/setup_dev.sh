@@ -48,7 +48,7 @@ install_system_dependencies() {
 
     if have_cmd pacman; then
         as_root pacman -Sy --noconfirm \
-            base-devel git curl openssl zlib xz tk bzip2 libffi readline sqlite
+            base-devel git curl openssl zlib-ng-compat xz tk bzip2 libffi readline sqlite
         return
     fi
 
@@ -163,7 +163,8 @@ setup_vscode_workspace_files() {
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
     "python.terminal.activateEnvironment": true,
     "python.analysis.extraPaths": [
-        "${workspaceFolder}"
+        "${workspaceFolder}",
+        "${workspaceFolder}/src"
     ]
 }
 JSON
@@ -174,7 +175,21 @@ JSON
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: NiceGUI App (configured port)",
+            "name": "Python: KlipperVault GUI (local service)",
+            "type": "python",
+            "request": "launch",
+            "python": "${config:python.defaultInterpreterPath}",
+            "program": "${workspaceFolder}/klipper_vault_gui.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
+            }
+        },
+        {
+            "name": "Python: KlipperVault Host API",
             "type": "python",
             "request": "launch",
             "python": "${config:python.defaultInterpreterPath}",
@@ -183,7 +198,24 @@ JSON
             "cwd": "${workspaceFolder}",
             "justMyCode": true,
             "env": {
-                "PYTHONUNBUFFERED": "1"
+                "PYTHONUNBUFFERED": "1",
+                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
+            }
+        },
+        {
+            "name": "Python: KlipperVault GUI (remote host API)",
+            "type": "python",
+            "request": "launch",
+            "python": "${config:python.defaultInterpreterPath}",
+            "program": "${workspaceFolder}/klipper_vault_gui.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0",
+                "KLIPPERVAULT_REMOTE_API_URL": "http://127.0.0.1:10091",
+                "KLIPPERVAULT_REMOTE_API_TOKEN": ""
             }
         },
         {
@@ -225,6 +257,16 @@ JSON
                 "PYTHONUNBUFFERED": "1"
             }
         }
+    ],
+    "compounds": [
+        {
+            "name": "Python: Complete App (Host API + Remote GUI)",
+            "configurations": [
+                "Python: KlipperVault Host API",
+                "Python: KlipperVault GUI (remote host API)"
+            ],
+            "stopAll": true
+        }
     ]
 }
 JSON
@@ -244,6 +286,16 @@ echo ""
 
 if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
     echo "requirements.txt not found in $REPO_ROOT"
+    exit 1
+fi
+
+if [[ ! -f "$REPO_ROOT/klipper_vault.py" ]]; then
+    echo "klipper_vault.py not found in $REPO_ROOT"
+    exit 1
+fi
+
+if [[ ! -f "$REPO_ROOT/klipper_vault_gui.py" ]]; then
+    echo "klipper_vault_gui.py not found in $REPO_ROOT"
     exit 1
 fi
 
@@ -313,7 +365,7 @@ echo "==> Activate the environment with:"
 echo "    source .venv/bin/activate"
 echo ""
 echo "==> Then launch the app with:"
-echo "    python klipper_vault.py"
+echo "    python klipper_vault_gui.py"
 echo ""
 echo "==> To skip system dependencies next run:"
 echo "    INSTALL_SYSTEM_DEPS=0 ./scripts/setup_dev.sh"
