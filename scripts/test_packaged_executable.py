@@ -82,8 +82,8 @@ def test_executable_starts() -> None:
         
         # Check for expected startup markers in output
         # (process is still running but we can't easily read live output)
-        print("✓ Executable launched successfully")
-        print("✓ Process is running (startup phase)")
+        print("[PASS] Executable launched successfully")
+        print("[PASS] Process is running (startup phase)")
         
         # Terminate the process gracefully
         process.send_signal(signal.SIGTERM)
@@ -93,7 +93,7 @@ def test_executable_starts() -> None:
             process.kill()
             process.wait()
         
-        print("✓ Executable shut down cleanly")
+        print("[PASS] Executable shut down cleanly")
 
     except Exception as e:
         pytest.fail(f"Failed to test executable: {e}")
@@ -120,7 +120,7 @@ def test_executable_not_console() -> None:
         subsystem = pe.OPTIONAL_HEADER.Subsystem
         # 3 = Windows CUI (console), 2 = Windows GUI (windowed)
         if subsystem == 2:
-            print("✓ Executable is GUI (windowed)")
+            print("[PASS] Executable is GUI (windowed)")
         else:
             pytest.fail(f"Executable subsystem is {subsystem} (expected 2 for GUI)")
     except Exception as e:
@@ -156,15 +156,15 @@ def main() -> None:
         except BaseException as e:
             msg = str(e)
             if type(e).__name__ in ("_Skipped", "Skipped") or "skip" in type(e).__name__.lower():
-                print(f"⊘ SKIP: {msg}")
+                print(f"[SKIP] {msg}")
                 results.append((name, True))  # skips are not failures
             else:
-                print(f"✗ FAIL: {msg}")
+                print(f"[FAIL] {msg}")
                 results.append((name, False))
     
     print("\n=== Test Summary ===")
     for name, passed in results:
-        status = "✓ PASS" if passed else "✗ FAIL"
+        status = "[PASS]" if passed else "[FAIL]"
         print(f"{status}: {name}")
     
     failed = sum(1 for _, passed in results if not passed)
