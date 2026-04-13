@@ -961,7 +961,7 @@ def build_ui(app_version: str = "unknown") -> None:
             with ui.row().classes("gap-2"):
                 flat_dialog_button("Close", off_printer_profile_dialog.close)
                 refresh_ssh_profiles_button = ui.button(t("Refresh")).props("flat no-caps")
-                new_ssh_profile_button = ui.button(t("New profile")).props("flat no-caps")
+                new_ssh_profile_button = ui.button(t("Add printer")).props("flat no-caps")
             with ui.row().classes("gap-2"):
                 delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
                 activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")

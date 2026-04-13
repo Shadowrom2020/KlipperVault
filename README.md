@@ -176,6 +176,10 @@ KLIPPERVAULT_DB_PATH=$HOME/.local/share/klippervault/klipper_macros.db \
 ./.venv/bin/python klipper_vault_gui.py
 ```
 
+## Docker Deployment
+
+See [docker.md](docker.md) for Docker build, run, persistence, networking, and upgrade instructions.
+
 ## Usage
 
 Typical off-printer flow:
