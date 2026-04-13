@@ -23,7 +23,6 @@ DefaultDirName={autopf}\KlipperVault
 DefaultGroupName=KlipperVault
 OutputDir={#KV_OUTPUT_DIR}
 OutputBaseFilename=KlipperVault-{#KV_VERSION}-windows-x64
-SetupIconFile=assets\favicon.svg
 UninstallDisplayIcon={app}\KlipperVault.exe
 Compression=lzma
 SolidCompression=yes
