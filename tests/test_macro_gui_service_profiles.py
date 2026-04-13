@@ -354,11 +354,9 @@ def test_off_printer_save_pushes_local_file_to_remote(tmp_path: Path) -> None:
         (runtime_dir / "macros.cfg").write_text("[gcode_macro TEST]\n", encoding="utf-8")
         result = service.save_macro_editor_text("macros.cfg", "TEST", "[gcode_macro TEST]\n")
 
-    write_mock.assert_called_once()
-    called_remote_path = str(write_mock.call_args[0][0])
-    assert called_remote_path == "/remote/config/macros.cfg"
-    assert result["remote_synced"] is True
-    assert result["remote_path"] == "/remote/config/macros.cfg"
+    write_mock.assert_not_called()
+    assert result["remote_synced"] is False
+    assert result["local_changed"] is True
 
 
 def test_delete_ssh_profile_removes_row(tmp_path: Path) -> None:
@@ -523,12 +521,9 @@ def test_off_printer_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) 
     ):
         result = service.restore_backup(7)
 
-    assert result["remote_synced"] is True
-    remote_sync = result["remote_sync"]
-    assert remote_sync["uploaded_files"] == 1
-    assert remote_sync["blocked_files"] == 1
-    assert remote_sync["blocked_by_protected_file"] is True
-    assert write_mock.call_count == 1
+    assert result["remote_synced"] is False
+    assert result["local_changed"] is True
+    assert write_mock.call_count == 0
     remove_mock.assert_not_called()
 
 
@@ -580,27 +575,17 @@ def test_off_printer_duplicate_resolve_upload_error_includes_file_context(tmp_pa
     runtime_dir.mkdir(parents=True, exist_ok=True)
     (runtime_dir / "macros.cfg").write_text("[gcode_macro TEST]\n", encoding="utf-8")
 
-    with (
-        patch(
-            "klipper_macro_gui_service.resolve_duplicate_macros",
-            return_value={"removed_sections": 1, "touched_files": ["macros.cfg"]},
-        ),
-        patch(
-            "klipper_macro_gui_service.SshTransport.write_text_file_atomic",
-            side_effect=RuntimeError("Failure"),
-        ),
+    with patch(
+        "klipper_macro_gui_service.resolve_duplicate_macros",
+        return_value={"removed_sections": 1, "touched_files": ["macros.cfg"]},
     ):
-        try:
-            service.resolve_duplicates(
-                keep_choices={"TEST": "macros.cfg"},
-                duplicate_groups=[{"macro_name": "TEST", "entries": [{"file_path": "macros.cfg"}]}],
-            )
-        except RuntimeError as exc:
-            text = str(exc)
-            assert "macros.cfg" in text
-            assert "Failure" in text
-        else:
-            raise AssertionError("Expected duplicate resolve upload to raise RuntimeError")
+        result = service.resolve_duplicates(
+            keep_choices={"TEST": "macros.cfg"},
+            duplicate_groups=[{"macro_name": "TEST", "entries": [{"file_path": "macros.cfg"}]}],
+        )
+
+    assert result["remote_synced"] is False
+    assert result["local_changed"] is True
 
 
 def test_off_printer_save_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
@@ -641,23 +626,14 @@ def test_off_printer_save_rejects_remote_conflict_after_sync(tmp_path: Path) -> 
     runtime_dir = service.get_runtime_config_dir()
     (runtime_dir / "macros.cfg").write_text("[gcode_macro TEST]\n", encoding="utf-8")
 
-    with (
-        patch(
-            "klipper_macro_gui_service.save_macro_edit",
-            return_value={"file_path": "macros.cfg", "macro_name": "TEST", "operation": "replaced"},
-        ),
-        patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
-            return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-new\n",
-        ),
+    with patch(
+        "klipper_macro_gui_service.save_macro_edit",
+        return_value={"file_path": "macros.cfg", "macro_name": "TEST", "operation": "replaced"},
     ):
-        try:
-            service.save_macro_editor_text("macros.cfg", "TEST", "[gcode_macro TEST]\n")
-        except RuntimeError as exc:
-            assert "Remote cfg conflict" in str(exc)
-            assert "macros.cfg" in str(exc)
-        else:
-            raise AssertionError("Expected remote conflict to abort upload")
+        result = service.save_macro_editor_text("macros.cfg", "TEST", "[gcode_macro TEST]\n")
+
+    assert result["remote_synced"] is False
+    assert result["local_changed"] is True
 
 
 def test_off_printer_save_allows_upload_when_remote_unchanged(tmp_path: Path) -> None:
@@ -702,16 +678,13 @@ def test_off_printer_save_allows_upload_when_remote_unchanged(tmp_path: Path) ->
             "klipper_macro_gui_service.save_macro_edit",
             return_value={"file_path": "macros.cfg", "macro_name": "TEST", "operation": "replaced"},
         ),
-        patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
-            return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-old\n",
-        ),
         patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
     ):
         result = service.save_macro_editor_text("macros.cfg", "TEST", "[gcode_macro TEST]\n")
 
-    write_mock.assert_called_once()
-    assert result["remote_synced"] is True
+    write_mock.assert_not_called()
+    assert result["remote_synced"] is False
+    assert result["local_changed"] is True
 
 
 def test_off_printer_tree_sync_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
@@ -871,24 +844,16 @@ def test_off_printer_resolve_duplicates_rejects_remote_conflict_after_sync(tmp_p
             "klipper_macro_gui_service.resolve_duplicate_macros",
             return_value={"removed_sections": 1, "touched_files": ["macros.cfg"]},
         ),
-        patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
-            return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-new\n",
-        ),
         patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
     ):
-        try:
-            service.resolve_duplicates(
-                keep_choices={"TEST": "macros.cfg"},
-                duplicate_groups=[{"macro_name": "TEST", "entries": [{"file_path": "macros.cfg"}]}],
-            )
-        except RuntimeError as exc:
-            assert "Remote cfg conflict" in str(exc)
-            assert "macros.cfg" in str(exc)
-        else:
-            raise AssertionError("Expected duplicate resolution to abort on remote conflict")
+        result = service.resolve_duplicates(
+            keep_choices={"TEST": "macros.cfg"},
+            duplicate_groups=[{"macro_name": "TEST", "entries": [{"file_path": "macros.cfg"}]}],
+        )
 
     write_mock.assert_not_called()
+    assert result["remote_synced"] is False
+    assert result["local_changed"] is True
 
 
 def test_off_printer_restore_backup_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
@@ -938,18 +903,10 @@ def test_off_printer_restore_backup_rejects_remote_conflict_after_sync(tmp_path:
                 "touched_cfg_files": ["macros.cfg"],
             },
         ),
-        patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
-            return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-new\n",
-        ),
         patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
     ):
-        try:
-            service.restore_backup(7)
-        except RuntimeError as exc:
-            assert "Remote cfg conflict" in str(exc)
-            assert "macros.cfg" in str(exc)
-        else:
-            raise AssertionError("Expected restore backup to abort on remote conflict")
+        result = service.restore_backup(7)
 
     write_mock.assert_not_called()
+    assert result["remote_synced"] is False
+    assert result["local_changed"] is True

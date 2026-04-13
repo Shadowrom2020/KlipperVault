@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
-import ctypes
 from datetime import datetime
 import os
 
@@ -55,37 +53,12 @@ def _to_optional_int(value: object) -> int | None:
     return _to_int(value)
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    """Return bool environment toggle with common truthy/falsey strings."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in {"1", "true", "yes", "on"}:
-        return True
-    if value in {"0", "false", "no", "off"}:
-        return False
-    return default
-
-
-def _env_float(name: str, default: float, minimum: float) -> float:
-    """Return float environment value clamped to a minimum bound."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        parsed = float(raw.strip())
-    except ValueError:
-        return default
-    return max(minimum, parsed)
-
-
 def build_ui(app_version: str = "unknown") -> None:
     """Build the full NiceGUI interface and wire all callbacks."""
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
     db_path = Path(DEFAULT_DB_PATH).expanduser().resolve()
-    # Load (or create) klippervault.cfg once at startup. All subsequent indexing
-    # runs read settings from this object without re-reading the file.
+    # Load (or create) app settings from SQLite once at startup.
+    # All subsequent indexing runs read settings from this in-memory object.
     vault_cfg = _load_vault_config(config_dir, db_path)
     set_language(os.environ.get("KLIPPERVAULT_LANG", vault_cfg.ui_language))
     ui.page_title(t("Klipper Vault"))
@@ -104,13 +77,6 @@ def build_ui(app_version: str = "unknown") -> None:
         service=service,
         config_dir=config_dir,
         app_version=app_version,
-        memory_trim_enabled=_env_bool("KLIPPERVAULT_MEMORY_TRIM", True),
-        memory_trim_idle_seconds=_env_float("KLIPPERVAULT_MEMORY_TRIM_IDLE_SECONDS", 180.0, 15.0),
-        memory_trim_cooldown_seconds=_env_float("KLIPPERVAULT_MEMORY_TRIM_COOLDOWN_SECONDS", 60.0, 5.0),
-        memory_trim_no_clients_enabled=_env_bool("KLIPPERVAULT_MEMORY_TRIM_NO_CLIENTS", True),
-        memory_trim_no_clients_grace_seconds=_env_float(
-            "KLIPPERVAULT_MEMORY_TRIM_NO_CLIENTS_GRACE_SECONDS", 120.0, 10.0
-        ),
         off_printer_profile_ready=not off_printer_mode_enabled,
         list_page_size=max(50, _to_int(os.environ.get("KLIPPERVAULT_LIST_PAGE_SIZE", "200"), default=200)),
         last_activity_monotonic=time.monotonic(),
@@ -121,6 +87,16 @@ def build_ui(app_version: str = "unknown") -> None:
     with ui.header().classes("items-center gap-2 px-4 py-2 bg-grey-9 flex-wrap"):
         ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
         ui.space()
+        active_printer_select = (
+            ui.select(options=[], label=t("Active printer"))
+            .props("outlined dense options-dense")
+            .classes("w-64 min-w-[14rem]")
+        )
+        with ui.button(t("Printers"), icon="print").props("flat color=white") as printers_menu_button:
+            printers_menu_button.set_visibility(off_printer_mode_enabled)
+            with ui.menu():
+                off_printer_manage_profiles_button = ui.menu_item(t("Manage printer connections"))
+                off_printer_test_button = ui.menu_item(t("Test printer connection"))
         with ui.button(t("Macro actions"), icon="menu").props("flat color=white") as macro_actions_button:
             state.macro_actions_button = macro_actions_button
             with ui.menu() as macro_actions_menu:
@@ -147,91 +123,21 @@ def build_ui(app_version: str = "unknown") -> None:
         duplicate_warning_button.set_visibility(False)
         state.duplicate_warning_button = duplicate_warning_button
         
-        backup_button = ui.button(t("Backup"), icon="save").props("flat color=white")
-        state.backup_button = backup_button
+        save_config_button = ui.button(t("Save Config"), icon="cloud_upload").props("flat color=white")
+        state.save_config_button = save_config_button
         
         index_button = ui.button(t("Scan macros"), icon="search").props("flat color=white")
         state.index_button = index_button
+
+        settings_toolbar_button = ui.button(icon="settings").props("flat round color=white")
+        settings_toolbar_button.tooltip(t("Settings"))
 
     # All state is now managed through the UIState container.
     # Callbacks access state directly via closure capture of the state object.
 
     def _note_activity() -> None:
-        """Record runtime activity to detect idle windows for memory trim."""
+        """Record runtime activity for UI/background flow control."""
         state.last_activity_monotonic = time.monotonic()
-
-    def _trim_process_memory(reason: str, *, force: bool = False) -> None:
-        """Run conservative memory cleanup with cooldown safeguards."""
-        if not state.memory_trim_enabled:
-            return
-
-        now = time.monotonic()
-        if (not force) and (now - state.last_trim_monotonic) < state.memory_trim_cooldown_seconds:
-            return
-
-        collected = gc.collect()
-        malloc_trim_result = "unavailable"
-        try:
-            libc = ctypes.CDLL("libc.so.6")
-            malloc_trim = getattr(libc, "malloc_trim", None)
-            if malloc_trim is not None:
-                malloc_trim.argtypes = [ctypes.c_size_t]
-                malloc_trim.restype = ctypes.c_int
-                malloc_trim_result = str(int(malloc_trim(0)))
-        except Exception:
-            malloc_trim_result = "error"
-
-        state.last_trim_monotonic = now
-        print(
-            f"[KlipperVault] memory-trim: reason={reason} gc_collected={collected} malloc_trim={malloc_trim_result}",
-            flush=True,
-        )
-
-    def _is_any_client_connected() -> bool:
-        """Return True when at least one browser client is currently connected."""
-        return bool(state.connected_client_ids)
-
-    def _release_ui_caches_for_no_clients() -> None:
-        """Drop large UI caches when no browser is connected."""
-        state.cached_macros = []
-        state.cached_duplicate_names = set()
-        state._cached_versions = []
-        state._cached_versions_key = None
-        state.selected_key = None
-        try:
-            state.viewer.set_macro(None, [])
-        except RuntimeError as error:
-            # NiceGUI may tear down elements before disconnect callbacks finish.
-            text = str(error)
-            benign_disconnect_errors = (
-                "parent slot of the element has been deleted",
-                "The client this element belongs to has been deleted.",
-            )
-            if not any(marker in text for marker in benign_disconnect_errors):
-                raise
-
-    def _on_client_connect(client=None) -> None:
-        """Track connected clients and restore normal active behavior."""
-        client_id = getattr(client, "id", None)
-        if client_id is not None:
-            state.connected_client_ids.add(str(client_id))
-        state.no_clients_since = None
-        state.no_client_cache_released = False
-
-    def _on_client_disconnect(client=None) -> None:
-        """Track disconnected clients and start no-client idle window."""
-        client_id = getattr(client, "id", None)
-        if client_id is not None:
-            state.connected_client_ids.discard(str(client_id))
-        if not state.connected_client_ids and state.no_clients_since is None:
-            state.no_clients_since = time.monotonic()
-            if state.memory_trim_no_clients_enabled:
-                _release_ui_caches_for_no_clients()
-                state.no_client_cache_released = True
-                _trim_process_memory("disconnect", force=True)
-
-    app.on_connect(_on_client_connect)
-    app.on_disconnect(_on_client_disconnect)
 
     def flat_dialog_button(label_key: str, on_click) -> None:
         """Render a standard flat no-caps dialog action button."""
@@ -264,6 +170,25 @@ def build_ui(app_version: str = "unknown") -> None:
         if state.reload_dynamic_macros_button:
             state.reload_dynamic_macros_button.set_enabled(show_dynamic_reload)
             state.reload_dynamic_macros_button.set_visibility(show_dynamic_reload)
+
+    def _refresh_save_config_button() -> None:
+        """Enable Save Config only when local changes are pending and printer is idle."""
+        if state.save_config_button is None:
+            return
+        is_ready = _remote_actions_available()
+        can_upload_now = is_ready and (not state.printer_is_printing)
+        enabled = can_upload_now and state.has_unsynced_local_changes
+        state.save_config_button.set_enabled(enabled)
+
+    def _mark_local_changes_pending() -> None:
+        """Track that local cfg changes must be explicitly uploaded."""
+        state.has_unsynced_local_changes = True
+        _refresh_save_config_button()
+
+    def _mark_local_changes_saved() -> None:
+        """Clear pending local-change sync state after explicit remote upload."""
+        state.has_unsynced_local_changes = False
+        _refresh_save_config_button()
 
     def _remote_actions_available() -> bool:
         """Return True when backend actions are currently available."""
@@ -361,6 +286,7 @@ def build_ui(app_version: str = "unknown") -> None:
                 )
             label.classes(replace="text-xs text-negative")
         label.set_text(state.off_printer_profile_status_text)
+        _refresh_save_config_button()
 
     def refresh_off_printer_profile_state() -> None:
         """Refresh off-printer profile readiness state from local profile storage."""
@@ -440,16 +366,6 @@ def build_ui(app_version: str = "unknown") -> None:
             if Path(dynamic_file).name in normalized:
                 return True
         return False
-
-    with ui.dialog().props("persistent") as print_lock_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
-        ui.label(t("Printer is currently printing")).classes("text-lg font-semibold text-warning")
-        print_lock_label = ui.label(
-            t("Macro editing and auto file watching are disabled until the print job is finished.")
-        ).classes("text-sm text-grey-5")
-        with ui.row().classes("w-full justify-end mt-2"):
-            ui.button(t("OK"), on_click=print_lock_dialog.close).props("flat no-caps")
-        state.print_lock_dialog = print_lock_dialog
-        state.print_lock_label = print_lock_label
 
     with ui.dialog().props("persistent") as printer_connecting_dialog, ui.card().classes("w-[30rem] max-w-[94vw]"):
         ui.label(t("Connecting to printer...")).classes("text-lg font-semibold")
@@ -583,18 +499,6 @@ def build_ui(app_version: str = "unknown") -> None:
                 return vendor, model
         return "", ""
 
-    def _format_printer_profile_label() -> str:
-        """Format printer identity for status sidebar display."""
-        profile = service.get_active_printer_profile()
-        if not isinstance(profile, dict) or not profile:
-            return t("Active printer: not set")
-        profile_name = str(profile.get("profile_name", "")).strip() or t("unnamed")
-        vendor = str(profile.get("vendor", "")).strip()
-        model = str(profile.get("model", "")).strip()
-        if vendor and model:
-            return t("Active printer: {profile} ({vendor} {model})", profile=profile_name, vendor=vendor, model=model)
-        return t("Active printer: {profile}", profile=profile_name)
-
     def refresh_printer_profile_selector() -> None:
         """Refresh active-printer selector options from service state."""
         state.printer_profile_option_ids.clear()
@@ -634,7 +538,6 @@ def build_ui(app_version: str = "unknown") -> None:
         if not selected and options:
             selected = options[0]
         active_printer_select.set_options(options, value=selected)
-        printer_profile_label.set_text(_format_printer_profile_label())
 
     def on_active_printer_profile_change(_event) -> None:
         """Switch active printer profile and refresh scoped data."""
@@ -676,7 +579,6 @@ def build_ui(app_version: str = "unknown") -> None:
         if not bool(result.get("ok", False)):
             state.printer_profile_error.set_text(t("Failed to save printer profile."))
             return
-        printer_profile_label.set_text(_format_printer_profile_label())
         refresh_printer_profile_selector()
         state.printer_profile_error.set_text("")
         state.printer_profile_dialog.close()
@@ -789,7 +691,6 @@ def build_ui(app_version: str = "unknown") -> None:
                 prev_page_button.props("flat dense no-caps")
                 next_page_button = ui.button(t("Next"))
                 next_page_button.props("flat dense no-caps")
-                page_label = ui.label(t("Page {current} / {total}", current=1, total=1)).classes("text-xs text-grey-5")
             macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
             state.macro_search = search_input
             state.macro_list = macro_list
@@ -818,15 +719,8 @@ def build_ui(app_version: str = "unknown") -> None:
             off_printer_profile_label.set_visibility(off_printer_mode_enabled)
             state.off_printer_profile_label = off_printer_profile_label
             with ui.row().classes("items-center gap-2"):
-                off_printer_manage_profiles_button = ui.button(t("Manage printer connections")).props("flat dense no-caps")
-                off_printer_manage_profiles_button.set_visibility(off_printer_mode_enabled)
-                off_printer_test_button = ui.button(t("Test printer connection")).props("flat dense no-caps")
-                off_printer_test_button.set_visibility(off_printer_mode_enabled)
                 off_printer_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
                 off_printer_cfg_list_button.set_visibility(off_printer_mode_enabled)
-            printer_profile_label = ui.label(_format_printer_profile_label()).classes("text-sm text-grey-5")
-            active_printer_select = ui.select(options=[], label=t("Active printer")).props("outlined dense").classes("w-full mt-2")
-
             ui.separator().classes("my-2")
             ui.label(t("Backups")).classes("text-md font-semibold mb-1")
             backup_list = ui.list().props("separator").classes("w-full max-h-[46vh] overflow-y-auto")
@@ -1117,8 +1011,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def remove_deleted_macro_from_db(file_path: str, macro_name: str) -> None:
         """Permanently remove selected deleted macro from SQLite history."""
-        if blocked_by_print_state(status_message="Blocked: printer is currently printing. Editing is disabled."):
-            return
         if not file_path or not macro_name:
             status_label.set_text(t("Cannot remove deleted macro: missing identity."))
             return
@@ -1151,8 +1043,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def remove_inactive_macro_from_db(version_row: dict) -> None:
         """Permanently remove selected inactive macro version from SQLite history."""
-        if blocked_by_print_state(status_message="Blocked: printer is currently printing. Editing is disabled."):
-            return
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
         version = _to_int(version_row.get("version", 0) or 0)
@@ -1192,9 +1082,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def restore_macro_version_from_viewer(version_row: dict) -> None:
         """Restore selected macro version into cfg file, then rescan."""
-        if state.printer_is_printing and not _is_dynamic_version_row(version_row):
-            state.status_label.set_text(t("Blocked: printer is currently printing. Editing is disabled."))
-            return
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
         version = _to_int(version_row.get("version", 0) or 0)
@@ -1205,18 +1092,7 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         try:
-            if off_printer_mode_enabled:
-                result = _run_with_file_operation_modal(
-                    t("Uploading changed cfg file"),
-                    lambda: service.restore_version(
-                        file_path,
-                        macro_name,
-                        version,
-                        progress_callback=_set_file_operation_progress,
-                    ),
-                )
-            else:
-                result = service.restore_version(file_path, macro_name, version)
+            result = service.restore_version(file_path, macro_name, version)
         except Exception as exc:
             if _show_remote_conflict_guidance(operation_label=t("macro restore"), error=exc):
                 return
@@ -1225,12 +1101,13 @@ def build_ui(app_version: str = "unknown") -> None:
 
         action = t("Restored deleted macro") if is_deleted else t("Reverted macro")
         state.status_label.set_text(t(
-            "{action} '{macro_name}' from {file_path} to v{version}. Re-indexing...",
+            "{action} '{macro_name}' from {file_path} to v{version}. Local changes pending; click Save Config to upload.",
             action=action,
             macro_name=result["macro_name"],
             file_path=result["file_path"],
             version=result["version"],
-        ) + _remote_sync_status_suffix(result))
+        ))
+        _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro restore")
@@ -1239,9 +1116,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def save_macro_edit_from_viewer(version_row: dict, section_text: str) -> None:
         """Save edited macro text back into its source cfg file and re-index."""
-        if state.printer_is_printing and not _is_dynamic_version_row(version_row):
-            raise ValueError("Blocked: printer is currently printing. Editing is disabled.")
-
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
         selected_version = _to_int(version_row.get("version", 0) or 0)
@@ -1258,28 +1132,18 @@ def build_ui(app_version: str = "unknown") -> None:
             raise ValueError("Only the latest macro version can be edited.")
 
         try:
-            if off_printer_mode_enabled:
-                result = _run_with_file_operation_modal(
-                    t("Uploading changed cfg file"),
-                    lambda: service.save_macro_editor_text(
-                        file_path,
-                        macro_name,
-                        section_text,
-                        progress_callback=_set_file_operation_progress,
-                    ),
-                )
-            else:
-                result = service.save_macro_editor_text(file_path, macro_name, section_text)
+            result = service.save_macro_editor_text(file_path, macro_name, section_text)
         except Exception as exc:
             _show_remote_conflict_guidance(operation_label=t("macro edit"), error=exc)
             raise
 
         state.status_label.set_text(t(
-            "Saved macro '{macro_name}' in {file_path} ({operation}). Re-indexing...",
+            "Saved macro '{macro_name}' in {file_path} ({operation}). Local changes pending; click Save Config to upload.",
             macro_name=result["macro_name"],
             file_path=result["file_path"],
             operation=result["operation"],
-        ) + _remote_sync_status_suffix(result))
+        ))
+        _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro edit")
@@ -1288,9 +1152,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def _perform_delete_macro_source(version_row: dict) -> None:
         """Delete selected macro section from cfg file and re-index."""
-        if state.printer_is_printing and not _is_dynamic_version_row(version_row):
-            raise ValueError(t("Blocked: printer is currently printing. Editing is disabled."))
-
         file_path = str(version_row.get("file_path", ""))
         macro_name = str(version_row.get("macro_name", ""))
         selected_version = _to_int(version_row.get("version", 0) or 0)
@@ -1309,17 +1170,7 @@ def build_ui(app_version: str = "unknown") -> None:
             raise ValueError(t("Only the latest macro version can be deleted from cfg."))
 
         try:
-            if off_printer_mode_enabled:
-                result = _run_with_file_operation_modal(
-                    t("Uploading changed cfg file"),
-                    lambda: service.delete_macro_source(
-                        file_path,
-                        macro_name,
-                        progress_callback=_set_file_operation_progress,
-                    ),
-                )
-            else:
-                result = service.delete_macro_source(file_path, macro_name)
+            result = service.delete_macro_source(file_path, macro_name)
         except Exception as exc:
             raise ValueError(t("Failed to delete macro from cfg: {error}", error=exc)) from exc
 
@@ -1328,11 +1179,12 @@ def build_ui(app_version: str = "unknown") -> None:
             raise ValueError(t("Macro section not found in cfg file."))
 
         state.status_label.set_text(t(
-            "Deleted macro '{macro_name}' from {file_path} ({removed} section(s)). Re-indexing...",
+            "Deleted macro '{macro_name}' from {file_path} ({removed} section(s)). Local changes pending; click Save Config to upload.",
             macro_name=result["macro_name"],
             file_path=result["file_path"],
             removed=removed,
-        ) + _remote_sync_status_suffix(result))
+        ))
+        _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
         perform_index("macro delete")
@@ -1552,10 +1404,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def open_duplicate_wizard() -> None:
         """Open duplicate-resolution wizard from toolbar warning button."""
-        if state.printer_is_printing:
-            state.status_label.set_text(t("Blocked: printer is currently printing. Duplicate resolution is disabled."))
-            return
-
         state.duplicate_wizard_groups = service.list_duplicates()
         if not state.duplicate_wizard_groups:
             state.status_label.set_text(t("No duplicates found."))
@@ -1596,9 +1444,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def apply_duplicate_resolution() -> None:
         """Apply keep choices by deleting duplicate sections from cfg files."""
-        if state.printer_is_printing:
-            state.duplicate_wizard_error.set_text(t("Blocked while printer is printing."))
-            return
         if not state.duplicate_wizard_groups:
             state.duplicate_wizard_error.set_text(t("No duplicates loaded."))
             return
@@ -1618,17 +1463,7 @@ def build_ui(app_version: str = "unknown") -> None:
         }
 
         try:
-            if off_printer_mode_enabled:
-                result = _run_with_file_operation_modal(
-                    t("Uploading changed cfg files"),
-                    lambda: service.resolve_duplicates(
-                        keep_choices=keep_map,
-                        duplicate_groups=state.duplicate_wizard_groups,
-                        progress_callback=_set_file_operation_progress,
-                    ),
-                )
-            else:
-                result = service.resolve_duplicates(keep_choices=keep_map, duplicate_groups=state.duplicate_wizard_groups)
+            result = service.resolve_duplicates(keep_choices=keep_map, duplicate_groups=state.duplicate_wizard_groups)
         except Exception as exc:
             if _show_remote_conflict_guidance(
                 operation_label=t("duplicate resolution"),
@@ -1643,16 +1478,23 @@ def build_ui(app_version: str = "unknown") -> None:
         touched_files_raw = result.get("touched_files", [])
         touched_files_count = len(touched_files_raw) if isinstance(touched_files_raw, list) else 0
         state.status_label.set_text(t(
-            "Removed {removed_sections} duplicate section(s) in {file_count} file(s). Re-indexing...",
+            "Removed {removed_sections} duplicate section(s) in {file_count} file(s). Local changes pending; click Save Config to upload.",
             removed_sections=result["removed_sections"],
             file_count=touched_files_count,
-        ) + _remote_sync_status_suffix(result))
+        ))
+        _mark_local_changes_pending()
         touched_files = [str(path) for path in touched_files_raw] if isinstance(touched_files_raw, list) else []
         _mark_reload_required(is_dynamic=_files_include_dynamic_macros(touched_files))
         perform_index("duplicate wizard")
 
     def render_macro_list() -> None:
         """Render the left macro list with filters, badges, and selection state."""
+        # Memory-trim/no-client recovery can release cached list rows.
+        # If rows are known to exist, repopulate from DB before rendering.
+        if (not state.cached_macros) and state.total_macro_rows > 0 and (not state.is_indexing):
+            refresh_data()
+            return
+
         state.macro_list.clear()
         state.viewer.set_available_macros(state.cached_macros)
 
@@ -1667,6 +1509,23 @@ def build_ui(app_version: str = "unknown") -> None:
         )
         
         visible_macros = sort_macros(visible_macros, state.sort_order)
+        if (
+            state.sort_order == "load_order"
+            and state.printer_is_printing
+            and visible_macros
+            and all(_to_int(m.get("load_order_index", 999999), default=999999) >= 999999 for m in visible_macros)
+        ):
+            # During active prints, remote parse-order metadata can be temporarily unavailable.
+            # Fall back to deterministic file/line order so "Load order" still works.
+            visible_macros = sorted(
+                visible_macros,
+                key=lambda m: (
+                    0 if bool(m.get("is_loaded", True)) else 1,
+                    str(m.get("file_path", "")),
+                    _to_int(m.get("line_number", 999999), default=999999),
+                    str(m.get("display_name") or m.get("macro_name", "")).lower(),
+                ),
+            )
         query = state.search_query.strip().lower()
         filter_active = bool(query) or state.show_duplicates_only or state.show_new_only or state.active_filter != "all"
         macro_count_label.set_text(
@@ -1676,7 +1535,6 @@ def build_ui(app_version: str = "unknown") -> None:
         )
 
         total_pages = max(1, (max(state.total_macro_rows, 1) + state.list_page_size - 1) // state.list_page_size)
-        page_label.set_text(t("Page {current} / {total}", current=state.list_page_index + 1, total=total_pages))
         prev_page_button.set_enabled(state.list_page_index > 0)
         next_page_button.set_enabled((state.list_page_index + 1) < total_pages)
 
@@ -1750,8 +1608,7 @@ def build_ui(app_version: str = "unknown") -> None:
             prefer_latest=prefer_latest,
             prefer_active=prefer_active,
         )
-        # While printing, allow editing only for dynamic macros.
-        state.viewer.set_editing_enabled((not state.printer_is_printing) or bool(selected_macro.get("is_dynamic", False)))
+        state.viewer.set_editing_enabled(_remote_actions_available())
 
     def render_backup_list() -> None:
         """Render right-panel backup entries and attach action handlers."""
@@ -1832,26 +1689,12 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def perform_restore() -> None:
         """Restore backup to DB and cfg files, then rescan to reflect on-disk state."""
-        if blocked_by_print_state(
-            status_message="Blocked: printer is currently printing. Restore is disabled.",
-            local_error_label=state.restore_error_label,
-        ):
-            return
         if state.restore_target_id is None:
             state.restore_error_label.set_text(t("No backup selected."))
             return
 
         try:
-            if off_printer_mode_enabled:
-                result = _run_with_file_operation_modal(
-                    t("Uploading changed cfg files"),
-                    lambda: service.restore_backup(
-                        state.restore_target_id,
-                        progress_callback=_set_file_operation_progress,
-                    ),
-                )
-            else:
-                result = service.restore_backup(state.restore_target_id)
+            result = service.restore_backup(state.restore_target_id)
         except Exception as exc:
             if _show_remote_conflict_guidance(
                 operation_label=t("backup restore"),
@@ -1869,25 +1712,24 @@ def build_ui(app_version: str = "unknown") -> None:
         if rewritten > 0:
             state.status_label.set_text(
                 t(
-                    "Restored backup '{backup_name}' at {restored_at} with {macro_count} macro(s); rewrote {cfg_file_count} cfg file(s). Re-indexing...",
+                    "Restored backup '{backup_name}' at {restored_at} with {macro_count} macro(s); rewrote {cfg_file_count} cfg file(s). Local changes pending; click Save Config to upload.",
                     backup_name=result["backup_name"],
                     restored_at=restored_label,
                     macro_count=result["macro_count"],
                     cfg_file_count=rewritten,
                 )
-                + _remote_sync_status_suffix(result)
             )
         else:
             state.status_label.set_text(
                 t(
                     "Restored backup '{backup_name}' at {restored_at} with {macro_count} macro(s). "
-                    "No cfg snapshot was stored in this backup; only DB state was restored. Re-indexing...",
+                    "No cfg snapshot was stored in this backup; only DB state was restored. Local changes pending; click Save Config to upload.",
                     backup_name=result["backup_name"],
                     restored_at=restored_label,
                     macro_count=result["macro_count"],
                 )
-                + _remote_sync_status_suffix(result)
             )
+        _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=False)
         perform_index("backup restore")
 
@@ -2566,29 +2408,17 @@ def build_ui(app_version: str = "unknown") -> None:
 
         activate_identities = [
             identity
-            for identity, checkbox in online_update_activate_checkboxes.items()
+            for identity, checkbox in state.online_update_activate_checkboxes.items()
             if bool(getattr(checkbox, "value", False))
         ]
 
         try:
-            if off_printer_mode_enabled:
-                result = _run_with_file_operation_modal(
-                    t("Uploading changed cfg files"),
-                    lambda: service.import_online_updates(
-                        updates=state.pending_online_updates,
-                        activate_identities=activate_identities,
-                        repo_url=vault_cfg.online_update_repo_url,
-                        repo_ref=vault_cfg.online_update_ref,
-                        progress_callback=_set_file_operation_progress,
-                    ),
-                )
-            else:
-                result = service.import_online_updates(
-                    updates=state.pending_online_updates,
-                    activate_identities=activate_identities,
-                    repo_url=vault_cfg.online_update_repo_url,
-                    repo_ref=vault_cfg.online_update_ref,
-                )
+            result = service.import_online_updates(
+                updates=state.pending_online_updates,
+                activate_identities=activate_identities,
+                repo_url=vault_cfg.online_update_repo_url,
+                repo_ref=vault_cfg.online_update_ref,
+            )
         except Exception as exc:
             online_update_error_label.set_text(t("Import updates failed: {error}", error=exc))
             status_label.set_text(t("Import updates failed: {error}", error=exc))
@@ -2611,6 +2441,7 @@ def build_ui(app_version: str = "unknown") -> None:
         )
         if activated > 0:
             _mark_reload_required(is_dynamic=False)
+            _mark_local_changes_pending()
 
         # Re-index immediately only when every imported update was activated.
         # Otherwise keep imported-but-not-activated rows visible as inactive.
@@ -2639,9 +2470,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def run_index() -> None:
         """Manual scan button handler."""
-        if state.printer_is_printing:
-            status_label.set_text(t("Blocked: printer is currently printing. Manual scan is disabled."))
-            return
         perform_index("manual")
 
     def restart_klipper() -> None:
@@ -2679,70 +2507,94 @@ def build_ui(app_version: str = "unknown") -> None:
             t("Dynamic macro reload requested. The reload button will reappear after another dynamic macro change.")
         )
 
+    def save_config_to_printer() -> None:
+        """Explicitly upload local cfg changes to printer via SFTP when printer is idle."""
+        if not off_printer_mode_enabled:
+            status_label.set_text(t("Save Config is only available in off-printer mode."))
+            return
+        if not state.off_printer_profile_ready:
+            status_label.set_text(t("Cannot save config: configure and activate a printer connection first."))
+            return
+        if state.printer_is_printing:
+            status_label.set_text(t("Blocked: printer is currently printing. Save Config is disabled."))
+            _refresh_save_config_button()
+            return
+        if not state.has_unsynced_local_changes:
+            status_label.set_text(t("No local config changes pending upload."))
+            _refresh_save_config_button()
+            return
+
+        try:
+            result = _run_with_file_operation_modal(
+                t("Uploading local cfg files to printer"),
+                lambda: service.save_config_to_remote(progress_callback=_set_file_operation_progress),
+            )
+        except Exception as exc:
+            status_label.set_text(t("Save Config failed: {error}", error=exc))
+            return
+
+        uploaded = _to_int(result.get("uploaded_files", 0), default=0)
+        removed = _to_int(result.get("removed_remote_files", 0), default=0)
+        blocked = _to_int(result.get("blocked_files", 0), default=0)
+        status_label.set_text(
+            t(
+                "Save Config complete: {uploaded} uploaded, {removed} removed, {blocked} blocked.",
+                uploaded=uploaded,
+                removed=removed,
+                blocked=blocked,
+            )
+        )
+        _mark_local_changes_saved()
+        _append_restart_policy_from_result(result)
+
+    def _append_restart_policy_from_result(result: dict[str, object]) -> None:
+        """Apply restart/dynamic-reload markers from service result payload."""
+        if bool(result.get("restart_required", False)):
+            _mark_reload_required(is_dynamic=False)
+            return
+        if bool(result.get("dynamic_reload_required", False)):
+            _mark_reload_required(is_dynamic=True)
+
     def set_print_lock(locked: bool, moonraker_state: str, moonraker_message: str) -> None:
         """Toggle UI mutation lock while printer is actively printing."""
         state.printer_is_printing = locked
         state.printer_state = moonraker_state
         state.printer_is_busy = moonraker_state not in {"standby", "ready", "complete", "cancelled"}
-        selected_macro_dynamic = False
-        if state.selected_key:
-            for macro in state.cached_macros:
-                if macro_key(macro) == state.selected_key:
-                    selected_macro_dynamic = bool(macro.get("is_dynamic", False))
-                    break
-        editing_enabled = ((not locked) or selected_macro_dynamic) and _remote_actions_available()
+        local_actions_enabled = _remote_actions_available()
 
-        index_button.set_enabled(editing_enabled)
-        backup_button.set_enabled(editing_enabled)
-        macro_actions_button.set_enabled(editing_enabled)
-        duplicate_warning_button.set_enabled(editing_enabled)
-        purge_deleted_button.set_enabled(editing_enabled and state.deleted_macro_count > 0)
-        create_backup_button.set_enabled(editing_enabled)
-        confirm_export_button.set_enabled(editing_enabled)
-        confirm_import_button.set_enabled(editing_enabled)
-        confirm_create_pr_button.set_enabled(editing_enabled)
-        confirm_online_update_button.set_enabled(editing_enabled and bool(state.pending_online_updates))
-        confirm_restore_button.set_enabled(editing_enabled)
-        confirm_delete_button.set_enabled(editing_enabled)
-        duplicate_compare_button.set_enabled(editing_enabled)
-        duplicate_prev_button.set_enabled(editing_enabled and state.duplicate_wizard_index > 0)
+        index_button.set_enabled(local_actions_enabled)
+        macro_actions_button.set_enabled(local_actions_enabled)
+        duplicate_warning_button.set_enabled(local_actions_enabled)
+        purge_deleted_button.set_enabled(local_actions_enabled and state.deleted_macro_count > 0)
+        create_backup_button.set_enabled(local_actions_enabled)
+        confirm_export_button.set_enabled(local_actions_enabled)
+        confirm_import_button.set_enabled(local_actions_enabled)
+        confirm_create_pr_button.set_enabled(local_actions_enabled)
+        confirm_online_update_button.set_enabled(local_actions_enabled and bool(state.pending_online_updates))
+        confirm_restore_button.set_enabled(local_actions_enabled)
+        confirm_delete_button.set_enabled(local_actions_enabled)
+        duplicate_compare_button.set_enabled(local_actions_enabled)
+        duplicate_prev_button.set_enabled(local_actions_enabled and state.duplicate_wizard_index > 0)
         duplicate_next_button.set_enabled(
-            editing_enabled and state.duplicate_wizard_index < len(state.duplicate_wizard_groups) - 1
+            local_actions_enabled and state.duplicate_wizard_index < len(state.duplicate_wizard_groups) - 1
         )
-        duplicate_apply_button.set_enabled(editing_enabled)
+        duplicate_apply_button.set_enabled(local_actions_enabled)
         if off_printer_mode_enabled:
             off_printer_manage_profiles_button.set_enabled(True)
             off_printer_test_button.set_enabled(True)
             off_printer_cfg_list_button.set_enabled(state.off_printer_profile_ready)
-        state.viewer.set_editing_enabled(editing_enabled)
+        state.viewer.set_editing_enabled(local_actions_enabled)
         _refresh_reload_buttons()
+        _refresh_save_config_button()
 
         if locked:
-            if moonraker_message:
-                print_lock_label.set_text(
-                    t(
-                        "Macro editing and auto file watching are disabled until the print job is finished. "
-                        "Moonraker message: {moonraker_message}",
-                        moonraker_message=moonraker_message,
-                    )
-                )
-            else:
-                print_lock_label.set_text(
-                    t("Macro editing and auto file watching are disabled until the print job is finished.")
-                )
-            if not state.print_lock_popup_open:
-                print_lock_dialog.open()
-                state.print_lock_popup_open = True
             status_label.set_text(
                 t(
-                    "Printing in progress ({state}). File watcher paused and editing disabled.",
+                    "Printing in progress ({state}). Local edits are allowed; Save Config upload is disabled.",
                     state=moonraker_state,
                 )
             )
         else:
-            if state.print_lock_popup_open:
-                print_lock_dialog.close()
-                state.print_lock_popup_open = False
             if off_printer_mode_enabled and not state.off_printer_profile_ready:
                 status_label.set_text(t("Ready (waiting for active printer connection)."))
                 return
@@ -3109,28 +2961,11 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def check_config_changes() -> None:
         """Timer callback: auto-rescan when cfg files change."""
-        if state.memory_trim_no_clients_enabled and not _is_any_client_connected():
-            if state.no_clients_since is None:
-                state.no_clients_since = time.monotonic()
-            if not state.no_client_cache_released:
-                _release_ui_caches_for_no_clients()
-                state.no_client_cache_released = True
-            if (time.monotonic() - state.no_clients_since) >= state.memory_trim_no_clients_grace_seconds:
-                _trim_process_memory("no-clients")
-            return
-
-        state.no_clients_since = None
-        state.no_client_cache_released = False
         refresh_print_state()
         if state.printer_is_printing:
-            _trim_process_memory("printing")
             return
         if state.is_indexing:
             return
-
-        # Treat printer standby/ready/complete/cancelled as idle-capable state.
-        if (not state.printer_is_busy) and ((time.monotonic() - state.last_activity_monotonic) >= state.memory_trim_idle_seconds):
-            _trim_process_memory("idle")
 
     def toggle_duplicates_filter() -> None:
         """Toggle duplicate-only filter and rerender list."""
@@ -3190,7 +3025,6 @@ def build_ui(app_version: str = "unknown") -> None:
     active_filter_button.on_click(cycle_active_filter)
     state.macro_search.on_value_change(on_search_change)
     duplicate_warning_button.on_click(open_duplicate_wizard)
-    backup_button.on_click(open_backup_dialog)
     off_printer_manage_profiles_button.on_click(open_off_printer_profile_dialog)
     off_printer_test_button.on_click(test_off_printer_profile_connection)
     off_printer_cfg_list_button.on_click(open_remote_cfg_list_dialog)
@@ -3203,7 +3037,7 @@ def build_ui(app_version: str = "unknown") -> None:
     save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
     active_printer_select.on_value_change(on_active_printer_profile_change)
     with macro_actions_menu:
-        ui.menu_item(t("Settings"), on_click=open_app_settings_dialog)
+        ui.menu_item(t("Backup"), on_click=open_backup_dialog)
         ui.menu_item(t("Export macros"), on_click=open_export_dialog)
         ui.menu_item(t("Import macros"), on_click=open_import_dialog)
         ui.menu_item(t("Loading order overview"), on_click=open_load_order_overview_dialog)
@@ -3226,6 +3060,8 @@ def build_ui(app_version: str = "unknown") -> None:
     confirm_macro_delete_button.on_click(confirm_macro_delete)
 
     index_button.on_click(run_index)
+    save_config_button.on_click(save_config_to_printer)
+    settings_toolbar_button.on_click(open_app_settings_dialog)
     prev_page_button.on_click(_go_prev_page)
     next_page_button.on_click(_go_next_page)
 
@@ -3237,6 +3073,7 @@ def build_ui(app_version: str = "unknown") -> None:
     if off_printer_mode_enabled:
         refresh_off_printer_profile_state()
     refresh_print_state()
+    _refresh_save_config_button()
     if not state.printer_is_printing:
         if off_printer_mode_enabled and not state.off_printer_profile_ready:
             state.deferred_startup_scan = True

@@ -191,7 +191,7 @@ JSON
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: KlipperVault GUI (off_printer debug)",
+            "name": "Python: KlipperVault GUI (primary launcher)",
             "type": "python",
             "request": "launch",
             "python": "${config:python.defaultInterpreterPath}",
@@ -204,6 +204,21 @@ JSON
                 "PYTHONUNBUFFERED": "1",
                 "KLIPPERVAULT_AUTO_UPDATE_VENV": "0",
                 "KLIPPERVAULT_RUNTIME_MODE": "off_printer"
+            }
+        },
+        {
+            "name": "Python: KlipperVault Legacy On-Printer Cleanup",
+            "type": "python",
+            "request": "launch",
+            "python": "${config:python.defaultInterpreterPath}",
+            "program": "${workspaceFolder}/klipper_vault.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.vscode/.env",
+            "justMyCode": false,
+            "env": {
+                "PYTHONUNBUFFERED": "1",
+                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
             }
         }
     ]
@@ -305,10 +320,13 @@ echo "    source .venv/bin/activate"
 echo ""
 echo "==> Debug defaults are in .vscode/.env"
 echo "==> VS Code launch target for deep debugging:"
-echo "    Python: KlipperVault GUI (off_printer debug)"
+echo "    Python: KlipperVault GUI (primary launcher)"
 echo ""
 echo "==> Then launch the app with:"
 echo "    python klipper_vault_gui.py"
+echo ""
+echo "==> Legacy on-printer cleanup helper (deprecated-runtime shutdown):"
+echo "    python klipper_vault.py"
 echo ""
 echo "==> To skip system dependencies next run:"
 echo "    INSTALL_SYSTEM_DEPS=0 ./scripts/setup_dev.sh"

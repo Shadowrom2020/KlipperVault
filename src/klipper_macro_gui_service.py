@@ -352,37 +352,16 @@ class MacroGuiService:
         return self._active_cache_dir
 
     def _append_restart_policy_result(self, result: dict[str, object], *, uploaded_files: int) -> None:
-        """Apply upload-triggered restart policy metadata for off-printer mode."""
+        """Apply upload metadata without triggering automatic Klipper restarts."""
         if int(uploaded_files) <= 0:
             result["klipper_restarted"] = False
             result["restart_deferred"] = False
             result["restart_message"] = "No restart was triggered because no permitted cfg file was uploaded."
             return
 
-        try:
-            status = self.query_printer_status(timeout=1.5)
-        except Exception:
-            status = {"is_printing": False}
-
-        if bool(status.get("is_printing", False)):
-            result["klipper_restarted"] = False
-            result["restart_deferred"] = True
-            result["restart_message"] = "Printer is printing. Restart skipped; restart Klipper manually after the print."
-            return
-
-        try:
-            restart_result = self.restart_klipper(timeout=3.0)
-            result["restart_result"] = restart_result
-            result["klipper_restarted"] = bool(restart_result.get("ok", False))
-            result["restart_deferred"] = False
-            if bool(restart_result.get("ok", False)):
-                result["restart_message"] = "Klipper restart requested automatically after upload."
-            else:
-                result["restart_message"] = "Klipper restart request failed after upload."
-        except Exception as exc:
-            result["klipper_restarted"] = False
-            result["restart_deferred"] = False
-            result["restart_message"] = f"Klipper restart request failed after upload: {exc}"
+        result["klipper_restarted"] = False
+        result["restart_deferred"] = True
+        result["restart_message"] = "Config uploaded. Restart Klipper manually when you are ready."
 
     def list_printer_profiles(self) -> list[dict[str, object]]:
         """Return configured printer profiles."""
@@ -1402,9 +1381,8 @@ class MacroGuiService:
         file_path: str,
         macro_name: str,
         version: int,
-        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
-        """Restore a historical macro version back into cfg files."""
+        """Restore a historical macro version back into local cfg files."""
         if _cfg_is_protected(file_path):
             raise ValueError(self._protected_file_block_message(file_path))
 
@@ -1416,14 +1394,8 @@ class MacroGuiService:
             version=version,
             printer_profile_id=self._active_printer_profile_id,
         )
-        if self._runtime_mode == "off_printer":
-            remote_sync = self._push_local_cfg_files_to_active_remote([file_path], progress_callback=progress_callback)
-            result["remote_sync"] = remote_sync
-            remote_paths = remote_sync.get("uploaded_paths")
-            if isinstance(remote_paths, list) and remote_paths:
-                result["remote_path"] = str(remote_paths[0])
-            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
-            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
+        result["remote_synced"] = False
+        result["local_changed"] = True
         return result
 
     def save_macro_editor_text(
@@ -1431,9 +1403,8 @@ class MacroGuiService:
         file_path: str,
         macro_name: str,
         section_text: str,
-        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
-        """Save edited macro text back into its cfg file."""
+        """Save edited macro text back into its local cfg file."""
         if _cfg_is_protected(file_path):
             raise ValueError(self._protected_file_block_message(file_path))
 
@@ -1443,23 +1414,16 @@ class MacroGuiService:
             macro_name=macro_name,
             section_text=section_text,
         )
-        if self._runtime_mode == "off_printer":
-            remote_sync = self._push_local_cfg_files_to_active_remote([file_path], progress_callback=progress_callback)
-            result["remote_sync"] = remote_sync
-            remote_paths = remote_sync.get("uploaded_paths")
-            if isinstance(remote_paths, list) and remote_paths:
-                result["remote_path"] = str(remote_paths[0])
-            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
-            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
+        result["remote_synced"] = False
+        result["local_changed"] = True
         return result
 
     def delete_macro_source(
         self,
         file_path: str,
         macro_name: str,
-        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
-        """Delete one macro section from its source cfg file."""
+        """Delete one macro section from its local source cfg file."""
         if _cfg_is_protected(file_path):
             raise ValueError(self._protected_file_block_message(file_path))
 
@@ -1468,14 +1432,8 @@ class MacroGuiService:
             file_path=file_path,
             macro_name=macro_name,
         )
-        if self._runtime_mode == "off_printer":
-            remote_sync = self._push_local_cfg_files_to_active_remote([file_path], progress_callback=progress_callback)
-            result["remote_sync"] = remote_sync
-            remote_paths = remote_sync.get("uploaded_paths")
-            if isinstance(remote_paths, list) and remote_paths:
-                result["remote_path"] = str(remote_paths[0])
-            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
-            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
+        result["remote_synced"] = False
+        result["local_changed"] = True
         return result
 
     def list_duplicates(self) -> list[dict[str, object]]:
@@ -1486,22 +1444,15 @@ class MacroGuiService:
         self,
         keep_choices: dict[str, str],
         duplicate_groups: list[dict[str, object]],
-        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
-        """Apply duplicate-resolution choices to cfg files."""
+        """Apply duplicate-resolution choices to local cfg files."""
         result = resolve_duplicate_macros(
             config_dir=self._resolve_runtime_config_dir(),
             keep_choices=keep_choices,
             duplicate_groups=duplicate_groups,
         )
-        if self._runtime_mode == "off_printer":
-            touched_files = [str(path) for path in _as_list(result.get("touched_files", [])) if _as_text(path)]
-            remote_sync = self._push_local_cfg_files_to_active_remote(touched_files, progress_callback=progress_callback)
-            result["remote_sync"] = remote_sync
-            remote_uploaded_paths = remote_sync.get("uploaded_paths")
-            result["remote_uploaded_paths"] = list(remote_uploaded_paths) if isinstance(remote_uploaded_paths, list) else []
-            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
-            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
+        result["remote_synced"] = False
+        result["local_changed"] = True
         return result
 
     def create_backup(self, name: str) -> dict[str, object]:
@@ -1525,9 +1476,8 @@ class MacroGuiService:
     def restore_backup(
         self,
         backup_id: int,
-        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
-        """Restore selected backup state to db/cfg."""
+        """Restore selected backup state to db/local cfg files."""
         result = restore_macro_backup(
             db_path=self._db_path,
             backup_id=backup_id,
@@ -1535,16 +1485,33 @@ class MacroGuiService:
             config_source=self._runtime_local_config_source(),
             printer_profile_id=self._active_printer_profile_id,
         )
-        if self._runtime_mode == "off_printer":
-            touched_cfg_files = [
-                _as_text(path)
-                for path in _as_list(result.get("touched_cfg_files", []))
-                if _as_text(path)
-            ]
-            remote_sync = self._push_local_cfg_files_to_active_remote(touched_cfg_files, progress_callback=progress_callback)
-            result["remote_sync"] = remote_sync
-            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
-            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
+        result["remote_synced"] = False
+        result["local_changed"] = True
+        return result
+
+    def save_config_to_remote(
+        self,
+        *,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+    ) -> dict[str, object]:
+        """Explicitly sync local cfg tree to remote printer config via SFTP."""
+        if self._runtime_mode != "off_printer":
+            return {
+                "ok": False,
+                "uploaded_files": 0,
+                "removed_remote_files": 0,
+                "uploaded_paths": [],
+                "removed_remote_paths": [],
+                "blocked_files": 0,
+                "blocked_paths": [],
+                "blocked_by_protected_file": False,
+            }
+
+        self._emit_operation_progress(progress_callback, "upload", 0, 1)
+        result = self._sync_local_cfg_tree_to_active_remote(prune_remote_missing=False)
+        self._emit_operation_progress(progress_callback, "upload", 1, 1)
+        result["remote_synced"] = bool(_as_int(result.get("uploaded_files", 0), default=0) > 0)
+        self._append_restart_policy_result(result, uploaded_files=_as_int(result.get("uploaded_files", 0), default=0))
         return result
 
     def delete_backup(self, backup_id: int) -> dict[str, object]:
@@ -1738,7 +1705,6 @@ class MacroGuiService:
         activate_identities: list[str],
         repo_url: str,
         repo_ref: str,
-        progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
         """Import online updates and optionally activate selected imported versions."""
         import_result = import_online_macro_updates(
@@ -1746,6 +1712,7 @@ class MacroGuiService:
             updates=updates,
             repo_url=repo_url,
             repo_ref=repo_ref,
+            printer_profile_id=(int(self._active_printer_profile_id) if int(self._active_printer_profile_id) > 0 else None),
             now_ts=int(time.time()),
         )
 
@@ -1777,14 +1744,9 @@ class MacroGuiService:
             "imported_items": imported_items,
         }
 
-        if self._runtime_mode == "off_printer" and activated_files:
-            remote_sync = self._push_local_cfg_files_to_active_remote(
-                activated_files,
-                progress_callback=progress_callback,
-            )
-            result["remote_sync"] = remote_sync
-            result["remote_synced"] = bool(_as_int(remote_sync.get("uploaded_files", 0), default=0) > 0)
-            self._append_restart_policy_result(result, uploaded_files=_as_int(remote_sync.get("uploaded_files", 0), default=0))
+        if activated_files:
+            result["remote_synced"] = False
+            result["local_changed"] = True
 
         return result
 

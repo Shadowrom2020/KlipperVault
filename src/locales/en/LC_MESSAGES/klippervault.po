@@ -287,22 +287,6 @@ msgstr "unnamed"
 msgid "{profile} (missing credentials)"
 msgstr "{profile} (missing credentials)"
 
-#: src/klipper_macro_gui.py:445
-msgid "Printer is currently printing"
-msgstr "Printer is currently printing"
-
-#: src/klipper_macro_gui.py:447 src/klipper_macro_gui.py:2731
-msgid ""
-"Macro editing and auto file watching are disabled until the print job is "
-"finished."
-msgstr ""
-"Macro editing and auto file watching are disabled until the print job is "
-"finished."
-
-#: src/klipper_macro_gui.py:450
-msgid "OK"
-msgstr "OK"
-
 #: src/klipper_macro_gui.py:455
 msgid "Connecting to printer..."
 msgstr ""
@@ -397,20 +381,6 @@ msgstr "No online updates were imported."
 #, fuzzy
 msgid "Developer mode"
 msgstr "Developer"
-
-#: src/klipper_macro_gui.py:590
-msgid "Active printer: not set"
-msgstr "Active printer: not set"
-
-#: src/klipper_macro_gui.py:595
-#, python-brace-format
-msgid "Active printer: {profile} ({vendor} {model})"
-msgstr "Active printer: {profile} ({vendor} {model})"
-
-#: src/klipper_macro_gui.py:596
-#, python-brace-format
-msgid "Active printer: {profile}"
-msgstr "Active printer: {profile}"
 
 #: src/klipper_macro_gui.py:604
 #, python-brace-format
@@ -522,11 +492,6 @@ msgstr "Prev"
 #: src/klipper_macro_gui.py:790 src/klipper_macro_gui.py:1012
 msgid "Next"
 msgstr "Next"
-
-#: src/klipper_macro_gui.py:792 src/klipper_macro_gui.py:1679
-#, python-brace-format
-msgid "Page {current} / {total}"
-msgstr "Page {current} / {total}"
 
 #: src/klipper_macro_gui.py:801
 msgid "Stored macro statistics"

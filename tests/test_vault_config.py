@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 from klipper_vault_config import VaultConfig, load_or_create, save
 
@@ -21,7 +22,7 @@ def test_load_or_create_bootstraps_defaults_in_db(tmp_path: Path) -> None:
     assert not (tmp_path / "klippervault.cfg").exists()
 
 
-def test_load_or_create_migrates_legacy_cfg_once(tmp_path: Path) -> None:
+def test_load_or_create_ignores_legacy_cfg_file(tmp_path: Path) -> None:
     cfg_path = tmp_path / "klippervault.cfg"
     db_path = tmp_path / "vault.db"
     cfg_path.write_text(
@@ -42,32 +43,24 @@ developer: true
         encoding="utf-8",
     )
 
-    migrated = load_or_create(tmp_path, db_path)
-    assert migrated.version_history_size == 7
-    assert migrated.port == 10100
-    assert migrated.ui_language == "de"
-    assert migrated.printer_vendor == "RatRig"
-    assert migrated.printer_model == "V-Core 3"
-    assert migrated.online_update_repo_url == "https://github.com/example/macros"
-    assert migrated.online_update_manifest_path == "vault/manifest.json"
-    assert migrated.online_update_ref == "stable"
-    assert migrated.developer is True
-
-    cfg_path.unlink()
-    reloaded = load_or_create(tmp_path, db_path)
-    assert reloaded.version_history_size == 7
-    assert reloaded.port == 10100
-    assert reloaded.ui_language == "de"
-    assert reloaded.developer is True
+    loaded = load_or_create(tmp_path, db_path)
+    assert loaded.version_history_size == 5
+    assert loaded.port == 10090
+    assert loaded.ui_language == "en"
+    assert loaded.printer_vendor == ""
+    assert loaded.printer_model == ""
+    assert loaded.developer is False
 
 
 def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
     db_path = tmp_path / "vault.db"
-    cfg_path = tmp_path / "klippervault.cfg"
-    cfg_path.write_text(
-        "[vault]\nversion_history_size: 0\nport: 70000\nui_language: DE\n",
-        encoding="utf-8",
-    )
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE vault_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)")
+        conn.execute("INSERT INTO vault_settings(key, value, updated_at) VALUES ('version_history_size', '0', 1)")
+        conn.execute("INSERT INTO vault_settings(key, value, updated_at) VALUES ('port', '70000', 1)")
+        conn.execute("INSERT INTO vault_settings(key, value, updated_at) VALUES ('ui_language', 'DE', 1)")
+        conn.commit()
 
     config = load_or_create(tmp_path, db_path)
 

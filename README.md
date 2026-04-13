@@ -6,6 +6,46 @@ KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definiti
 
 **[📸 View UI Overview with Screenshots](overview.md)**
 
+## Deprecation Notice: On-Printer Runtime Removed
+
+Support for running KlipperVault directly on the printer host has been removed.
+
+- Removed behavior: local/on-printer runtime mode and local printer-host execution workflow.
+- Supported behavior: remote-only `off_printer` mode using SSH/SFTP + Moonraker API.
+
+If you still have an older on-printer installation, remove it to avoid port conflicts,
+stale services, and accidental execution of unsupported code paths.
+
+### Uninstall Old On-Printer Versions (Detailed)
+
+Run the helper script from the repository root on the printer host (for example via SSH):
+
+```bash
+chmod +x ./remove.sh
+./remove.sh
+```
+
+What `remove.sh` handles automatically:
+
+1. Stops and disables legacy services (`klippervault.service`, `klipper-vault.service`).
+2. Removes legacy service unit files from `/etc/systemd/system`.
+3. Removes old app directories and virtual environments.
+4. Removes legacy on-printer config/database artifacts.
+5. Removes old launcher shortcuts in the installer user's home directory.
+6. Prints a verification summary of any remaining paths.
+
+Optional script modes:
+
+```bash
+# Preview actions without applying changes
+./remove.sh --dry-run
+
+# Keep old launcher shortcuts, remove everything else
+./remove.sh --keep-shortcuts
+```
+
+After cleanup, use this repository from a remote PC/server only, then follow the normal installation and remote profile setup flow.
+
 ## Overview
 
 KlipperVault runs remotely on a PC/server, syncs Klipper cfg files over SSH/SFTP, indexes every `[gcode_macro ...]` section in SQLite, and presents the results in a NiceGUI interface.

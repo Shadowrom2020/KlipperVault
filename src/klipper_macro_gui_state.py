@@ -20,11 +20,6 @@ class UIState:
     service: object  # MacroGuiService
     config_dir: object  # Path
     app_version: str = "unknown"
-    memory_trim_enabled: bool = True
-    memory_trim_idle_seconds: float = 180.0
-    memory_trim_cooldown_seconds: float = 60.0
-    memory_trim_no_clients_enabled: bool = True
-    memory_trim_no_clients_grace_seconds: float = 120.0
 
     # ─── Macro List State ────────────────────────────────────────────────────
     selected_key: str | None = None
@@ -60,6 +55,7 @@ class UIState:
     restart_required: bool = False
     dynamic_reload_required: bool = False
     print_lock_popup_open: bool = False
+    has_unsynced_local_changes: bool = False
 
     # ─── Off-Printer State ───────────────────────────────────────────────────
     off_printer_profile_ready: bool = True
@@ -70,12 +66,8 @@ class UIState:
 
     printer_connecting_modal_open: bool = False
 
-    # ─── Memory Management & Activity Tracking ──────────────────────────────
+    # ─── Activity Tracking ──────────────────────────────────────────────────
     last_activity_monotonic: float = 0.0
-    last_trim_monotonic: float = 0.0
-    connected_client_ids: set[str] = field(default_factory=set)
-    no_clients_since: float | None = None
-    no_client_cache_released: bool = False
 
     # ─── Online Updates & Imports ────────────────────────────────────────────
     uploaded_import_bytes: bytes | None = None
@@ -101,6 +93,7 @@ class UIState:
     duplicate_warning_button: ui.button | None = None
     backup_button: ui.button | None = None
     index_button: ui.button | None = None
+    save_config_button: ui.button | None = None
 
     # Status/Connection labels
     status_label: ui.label | None = None

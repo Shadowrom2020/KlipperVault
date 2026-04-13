@@ -288,22 +288,6 @@ msgstr "Macro sans nom"
 msgid "{profile} (missing credentials)"
 msgstr ""
 
-#: src/klipper_macro_gui.py:445
-msgid "Printer is currently printing"
-msgstr "L'imprimante est en cours d'impression"
-
-#: src/klipper_macro_gui.py:447 src/klipper_macro_gui.py:2731
-msgid ""
-"Macro editing and auto file watching are disabled until the print job is "
-"finished."
-msgstr ""
-"La modification des macros et la surveillance automatique des fichiers "
-"sont désactivées jusqu'à la fin du travail d'impression."
-
-#: src/klipper_macro_gui.py:450
-msgid "OK"
-msgstr "OK"
-
 #: src/klipper_macro_gui.py:455
 msgid "Connecting to printer..."
 msgstr ""
@@ -399,21 +383,6 @@ msgstr "Aucune mise à jour en ligne n'a été importée."
 #, fuzzy
 msgid "Developer mode"
 msgstr "Développeur"
-
-#: src/klipper_macro_gui.py:590
-#, fuzzy
-msgid "Active printer: not set"
-msgstr "Profil d'imprimante : non défini"
-
-#: src/klipper_macro_gui.py:595
-#, fuzzy, python-brace-format
-msgid "Active printer: {profile} ({vendor} {model})"
-msgstr "Profil d'imprimante : {vendor} {model}"
-
-#: src/klipper_macro_gui.py:596
-#, fuzzy, python-brace-format
-msgid "Active printer: {profile}"
-msgstr "Configuration du profil d'imprimante"
 
 #: src/klipper_macro_gui.py:604
 #, fuzzy, python-brace-format
@@ -527,11 +496,6 @@ msgstr "Précédent"
 #: src/klipper_macro_gui.py:790 src/klipper_macro_gui.py:1012
 msgid "Next"
 msgstr "Suivant"
-
-#: src/klipper_macro_gui.py:792 src/klipper_macro_gui.py:1679
-#, python-brace-format
-msgid "Page {current} / {total}"
-msgstr "Éléments : {visible} / {total}"
 
 #: src/klipper_macro_gui.py:801
 msgid "Stored macro statistics"

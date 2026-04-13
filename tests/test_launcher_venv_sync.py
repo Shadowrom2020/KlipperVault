@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-import klipper_vault
+import klipper_vault_gui as klipper_vault
 
 
 def test_sync_venv_requirements_skips_when_hash_matches(tmp_path: Path, monkeypatch) -> None:

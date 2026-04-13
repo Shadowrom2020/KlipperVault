@@ -65,6 +65,11 @@ def _should_index_cfg_file(path: Path) -> bool:
     return path.name.lower() not in _IGNORED_CFG_FILE_NAMES
 
 
+def _is_ignored_cfg_basename(path_expr: str) -> bool:
+    """Return True when a cfg path expression targets an ignored filename."""
+    return posixpath.basename(str(path_expr or "").strip()).lower() in _IGNORED_CFG_FILE_NAMES
+
+
 def _iter_cfg_glob_matches(path_expr: str, base_dir: Path) -> Iterable[Path]:
     """Expand one cfg path expression into matching existing .cfg files."""
     expr = str(path_expr or "").strip().strip('"').strip("'")
@@ -190,7 +195,10 @@ def _list_cfg_files_from_source(config_source: ConfigSource) -> List[str]:
             continue
         if not rel_text.lower().endswith(".cfg"):
             continue
-        normalized_paths.add(_normalize_source_cfg_path(rel_text))
+        normalized = _normalize_source_cfg_path(rel_text)
+        if posixpath.basename(normalized).lower() in _IGNORED_CFG_FILE_NAMES:
+            continue
+        normalized_paths.add(normalized)
     return sorted(normalized_paths)
 
 
@@ -215,7 +223,16 @@ def _resolve_source_include_paths(
             f"Include file '{include_pattern}' does not exist relative to '{source_rel_path}'"
         )
 
-    matches = sorted(path for path in available_cfg_paths if fnmatch.fnmatch(path, include_pattern))
+    # Explicit references to ignored cfg files are treated as intentional no-ops.
+    if _is_ignored_cfg_basename(include_pattern):
+        return []
+
+    matches = sorted(
+        path
+        for path in available_cfg_paths
+        if fnmatch.fnmatch(path, include_pattern)
+        and not _is_ignored_cfg_basename(path)
+    )
     if not matches and not glob.has_magic(include_pattern):
         raise FileNotFoundError(
             f"Include file '{include_pattern}' does not exist relative to '{source_rel_path}'"
@@ -777,7 +794,13 @@ def _resolve_klipper_include(source_filename: str, include_spec: str) -> List[Pa
     """Resolve one Klipper include expression to sorted cfg paths."""
     dirname = os.path.dirname(source_filename)
     include_glob = os.path.join(dirname, include_spec.strip())
-    include_filenames = glob.glob(include_glob)
+    if _is_ignored_cfg_basename(include_glob):
+        return []
+
+    include_filenames = [
+        path for path in glob.glob(include_glob)
+        if _should_index_cfg_file(Path(path))
+    ]
     if not include_filenames and not glob.has_magic(include_glob):
         raise FileNotFoundError(f"Include file '{include_glob}' does not exist")
     return [Path(name) for name in sorted(include_filenames)]
@@ -2048,6 +2071,16 @@ def load_macro_list(
         except (FileNotFoundError, OSError, ValueError):
             pass
 
+    # Some synthetic rows (for example imported online updates pending activation)
+    # may carry placeholder line numbers that do not exist in the current parse map.
+    # Keep load-order sorting stable by falling back to path+macro lookup.
+    load_order_name_map: Dict[tuple[str, str], int] = {}
+    for (mapped_file_path, mapped_macro_name, _mapped_line), mapped_index in load_order_map.items():
+        key = (os.path.normpath(str(mapped_file_path)), str(mapped_macro_name))
+        previous = load_order_name_map.get(key)
+        if previous is None or int(mapped_index) < int(previous):
+            load_order_name_map[key] = int(mapped_index)
+
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         if include_macro_body:
             body_columns = "m.gcode, m.variables_json"
@@ -2095,51 +2128,56 @@ def load_macro_list(
             latest_args + (printer_profile_id, printer_profile_id, printer_profile_id, printer_profile_id, limit, offset),
         ).fetchall()
 
-    return [
-        {
-            "macro_name": str(macro_name),
-            "file_path": str(file_path),
-            "version": int(version),
-            "indexed_at": int(indexed_at),
-            "line_number": int(line_number),
-            "description": description,
-            "rename_existing": rename_existing,
-            "gcode": gcode,
-            "variables_json": str(variables_json),
-            "is_active": bool(is_active),
-            "runtime_macro_name": str(runtime_macro_name or macro_name),
-            "renamed_from": renamed_from,
-            "display_name": str(runtime_macro_name or macro_name),
-            "is_deleted": bool(is_deleted),
-            "is_loaded": bool(is_loaded),
-            "is_dynamic": bool(is_dynamic),
-            "is_new": bool(has_new_version),
-            "version_count": int(version_count),
-            "load_order_index": load_order_map.get(
-                (os.path.normpath(str(file_path)), str(macro_name), int(line_number)),
-                999999,
-            ),
-        }
-        for (
-            macro_name,
-            file_path,
-            version,
-            indexed_at,
-            line_number,
-            description,
-            rename_existing,
-            gcode,
-            variables_json,
-            is_active,
-            runtime_macro_name,
-            renamed_from,
-            is_deleted,
-            is_loaded,
-            is_dynamic,
-            has_new_version,
-            version_count,
-        ) in rows
-    ]
+    result_rows: List[Dict[str, object]] = []
+    for (
+        macro_name,
+        file_path,
+        version,
+        indexed_at,
+        line_number,
+        description,
+        rename_existing,
+        gcode,
+        variables_json,
+        is_active,
+        runtime_macro_name,
+        renamed_from,
+        is_deleted,
+        is_loaded,
+        is_dynamic,
+        has_new_version,
+        version_count,
+    ) in rows:
+        normalized_file_path = os.path.normpath(str(file_path))
+        load_order_index = load_order_map.get((normalized_file_path, str(macro_name), int(line_number)))
+        if load_order_index is None:
+            load_order_index = load_order_name_map.get((normalized_file_path, str(macro_name)), 999999)
+
+        result_rows.append(
+            {
+                "macro_name": str(macro_name),
+                "file_path": str(file_path),
+                "version": int(version),
+                "indexed_at": int(indexed_at),
+                "line_number": int(line_number),
+                "description": description,
+                "rename_existing": rename_existing,
+                "gcode": gcode,
+                "variables_json": str(variables_json),
+                "is_active": bool(is_active),
+                "runtime_macro_name": str(runtime_macro_name or macro_name),
+                "renamed_from": renamed_from,
+                "display_name": str(runtime_macro_name or macro_name),
+                "is_deleted": bool(is_deleted),
+                "is_loaded": bool(is_loaded),
+                "is_dynamic": bool(is_dynamic),
+                "is_new": bool(has_new_version),
+                "version_count": int(version_count),
+                "load_order_index": int(load_order_index),
+            }
+        )
+
+    return result_rows
 
 
 def load_macro_versions(

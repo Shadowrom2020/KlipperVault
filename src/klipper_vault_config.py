@@ -5,14 +5,12 @@
 
 from __future__ import annotations
 
-import configparser
 from dataclasses import dataclass, fields as dataclass_fields
 from pathlib import Path
 import time
 
 from klipper_vault_db import open_sqlite_connection
 
-_CFG_FILENAME = "klippervault.cfg"
 _SETTINGS_TABLE = "vault_settings"
 _DEFAULT_ONLINE_UPDATE_REPO_URL = "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
 _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
@@ -33,35 +31,9 @@ class VaultConfig:
     printer_profile_prompt_required: bool = True
 
 
-def _persisted_config_keys() -> set[str]:
-    """Return config keys that should be stored in persistent settings."""
-    return {
-        field.name
-        for field in dataclass_fields(VaultConfig)
-        if field.name != "printer_profile_prompt_required"
-    }
-
-
-def _missing_persisted_config_keys(parser: configparser.ConfigParser) -> set[str]:
-    """Return persisted config keys missing from the [vault] section."""
-    return {
-        key for key in _persisted_config_keys() if not parser.has_option("vault", key)
-    }
-
-
-def _get_stripped(
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    *,
-    default: str,
-    lower: bool = False,
-    require_non_empty: bool = False,
-) -> str:
-    """Read one config option as stripped text with optional normalization."""
-    if not parser.has_option(section, option):
-        return default
-    value = parser.get(section, option).strip()
+def _read_str(rows: dict[str, str], key: str, *, default: str, lower: bool = False, require_non_empty: bool = False) -> str:
+    """Read one string setting with optional normalization rules."""
+    value = str(rows.get(key, default)).strip()
     if lower:
         value = value.lower()
     if require_non_empty and not value:
@@ -69,65 +41,28 @@ def _get_stripped(
     return value
 
 
-def _get_int_in_range(
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    *,
-    default: int,
-    minimum: int,
-    maximum: int,
-    clamp_below_minimum: bool = False,
-    clamp_above_maximum: bool = False,
-) -> int:
-    """Read one config option as int constrained to an inclusive range."""
-    if not parser.has_option(section, option):
+def _read_int(rows: dict[str, str], key: str, *, default: int, minimum: int, maximum: int, clamp_below_minimum: bool = False) -> int:
+    """Read one integer setting constrained to an inclusive range."""
+    raw = str(rows.get(key, "")).strip()
+    if not raw:
         return default
     try:
-        value = int(parser.get(section, option))
+        value = int(raw)
     except ValueError:
         return default
     if value < minimum and clamp_below_minimum:
         return minimum
-    if value > maximum and clamp_above_maximum:
-        return maximum
     if minimum <= value <= maximum:
         return value
     return default
 
 
-def _get_bool(
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    *,
-    default: bool,
-) -> bool:
-    """Read one config option as a legacy-compatible boolean toggle."""
-    if not parser.has_option(section, option):
+def _read_bool(rows: dict[str, str], key: str, *, default: bool) -> bool:
+    """Read one boolean setting from sqlite text payload."""
+    raw = str(rows.get(key, "")).strip().lower()
+    if not raw:
         return default
-    value = parser.get(section, option).strip().lower()
-    return value in ("true", "1", "yes")
-
-
-def _get_enum(
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    *,
-    default: str,
-    allowed: set[str],
-) -> str:
-    """Read one config option constrained to a predefined set of values."""
-    value = _get_stripped(
-        parser,
-        section,
-        option,
-        default=default,
-        lower=True,
-        require_non_empty=True,
-    )
-    return value if value in allowed else default
+    return raw in {"true", "1", "yes"}
 
 
 def _default_db_path(config_dir: Path) -> Path:
@@ -224,66 +159,49 @@ def _persist_config(conn, config: VaultConfig) -> None:
 
 def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
     """Build normalized VaultConfig from SQLite settings rows."""
-    parser = configparser.ConfigParser()
-    parser.add_section("vault")
-    for key, value in rows.items():
-        parser.set("vault", key, value)
-
-    version_history_size = _get_int_in_range(
-        parser,
-        "vault",
+    version_history_size = _read_int(
+        rows,
         "version_history_size",
         default=5,
         minimum=1,
         maximum=2_147_483_647,
         clamp_below_minimum=True,
     )
-    port = _get_int_in_range(
-        parser,
-        "vault",
+    port = _read_int(
+        rows,
         "port",
         default=10090,
         minimum=1,
         maximum=65535,
     )
-    ui_language = _get_stripped(
-        parser,
-        "vault",
+    ui_language = _read_str(
+        rows,
         "ui_language",
         default="en",
         lower=True,
         require_non_empty=True,
     )
-    runtime_mode = _get_enum(
-        parser,
-        "vault",
-        "runtime_mode",
-        default="off_printer",
-        allowed={"off_printer"},
-    )
-    printer_vendor = _get_stripped(parser, "vault", "printer_vendor", default="")
-    printer_model = _get_stripped(parser, "vault", "printer_model", default="")
-    online_update_repo_url = _get_stripped(
-        parser,
-        "vault",
+    runtime_mode = "off_printer"
+    printer_vendor = _read_str(rows, "printer_vendor", default="")
+    printer_model = _read_str(rows, "printer_model", default="")
+    online_update_repo_url = _read_str(
+        rows,
         "online_update_repo_url",
         default=_DEFAULT_ONLINE_UPDATE_REPO_URL,
     )
-    online_update_manifest_path = _get_stripped(
-        parser,
-        "vault",
+    online_update_manifest_path = _read_str(
+        rows,
         "online_update_manifest_path",
         default=_DEFAULT_ONLINE_UPDATE_MANIFEST_PATH,
         require_non_empty=True,
     )
-    online_update_ref = _get_stripped(
-        parser,
-        "vault",
+    online_update_ref = _read_str(
+        rows,
         "online_update_ref",
         default=_DEFAULT_ONLINE_UPDATE_REF,
         require_non_empty=True,
     )
-    developer = _get_bool(parser, "vault", "developer", default=False)
+    developer = _read_bool(rows, "developer", default=False)
 
     return _normalized_config(
         VaultConfig(
@@ -301,21 +219,6 @@ def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
     )
 
 
-def _load_legacy_cfg(config_dir: Path) -> VaultConfig | None:
-    """Load legacy cfg settings when a file exists; return None otherwise."""
-    cfg_path = config_dir / _CFG_FILENAME
-    if not cfg_path.exists():
-        return None
-
-    parser = configparser.ConfigParser()
-    parser.read(str(cfg_path), encoding="utf-8")
-    return _config_from_rows({
-        key: parser.get("vault", key)
-        for key in _persisted_config_keys()
-        if parser.has_option("vault", key)
-    })
-
-
 def save(config_dir: Path, config: VaultConfig, db_path: Path | None = None) -> None:
     """Persist VaultConfig into SQLite-backed app settings."""
     target_db_path = Path(db_path) if db_path is not None else _default_db_path(config_dir)
@@ -325,7 +228,7 @@ def save(config_dir: Path, config: VaultConfig, db_path: Path | None = None) -> 
 
 
 def load_or_create(config_dir: Path, db_path: Path | None = None) -> VaultConfig:
-    """Load app settings from SQLite and migrate legacy cfg values when needed."""
+    """Load app settings from SQLite and bootstrap defaults when empty."""
     target_db_path = Path(db_path) if db_path is not None else _default_db_path(config_dir)
     with open_sqlite_connection(target_db_path, ensure_schema=ensure_settings_schema) as conn:
         rows = _settings_rows(conn)
@@ -335,8 +238,7 @@ def load_or_create(config_dir: Path, db_path: Path | None = None) -> VaultConfig
             conn.commit()
             return config
 
-        migrated = _load_legacy_cfg(config_dir)
-        config = migrated if migrated is not None else VaultConfig()
+        config = VaultConfig()
         config = _normalized_config(config)
         _persist_config(conn, config)
         conn.commit()

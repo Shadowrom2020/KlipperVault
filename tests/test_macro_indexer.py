@@ -1160,3 +1160,78 @@ def test_run_indexing_from_source_treats_dynamicmacros_configs_as_loaded(tmp_pat
         assert rows_by_path["generated.cfg"]["is_active"] is True
         assert rows_by_path["orphan.cfg"]["is_loaded"] is False
         assert rows_by_path["orphan.cfg"]["is_dynamic"] is False
+
+
+def test_run_indexing_from_source_ignores_dot_dynamicmacros_cfg(tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        db_path = tmp_path / "db" / "vault.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [include loaded.cfg]
+                """,
+        )
+        _write(
+                config_dir / "loaded.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="loaded"
+                """,
+        )
+        _write(
+                config_dir / ".dynamicmacros.cfg",
+                """
+                [gcode_macro SHOULD_BE_IGNORED]
+                gcode:
+                    RESPOND MSG="ignored"
+                """,
+        )
+
+        source = LocalConfigSource(root_dir=config_dir)
+        result = run_indexing_from_source(source, db_path)
+        macros = load_macro_list(db_path)
+
+        assert result["cfg_files_scanned"] == 2
+        assert {row["macro_name"] for row in macros} == {"HELLO"}
+
+
+def test_load_order_from_source_stays_available_with_ignored_dot_dynamicmacros_include(tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        db_path = tmp_path / "db" / "vault.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [include .dynamicmacros.cfg]
+                [include macros.cfg]
+
+                [gcode_macro ROOT]
+                gcode:
+                    RESPOND MSG="root"
+                """,
+        )
+        _write(
+                config_dir / "macros.cfg",
+                """
+                [gcode_macro CHILD]
+                gcode:
+                    RESPOND MSG="child"
+                """,
+        )
+        _write(
+                config_dir / ".dynamicmacros.cfg",
+                """
+                [gcode_macro IGNORED]
+                gcode:
+                    RESPOND MSG="ignored"
+                """,
+        )
+
+        source = LocalConfigSource(root_dir=config_dir)
+        run_indexing_from_source(source, db_path)
+        macros = load_macro_list(db_path, config_source=source)
+        by_name = {row["macro_name"]: row for row in macros}
+
+        assert set(by_name) == {"CHILD", "ROOT"}
+        assert by_name["CHILD"]["load_order_index"] == 0
+        assert by_name["ROOT"]["load_order_index"] == 1
