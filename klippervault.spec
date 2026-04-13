@@ -71,7 +71,6 @@ if sys.platform == "darwin":
             "NSHighResolutionCapable": "True",
         },
     )
-    coll = COLLECT(app, name="dist")
 else:
     coll = COLLECT(
         exe,
