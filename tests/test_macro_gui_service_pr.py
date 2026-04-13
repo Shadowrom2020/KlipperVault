@@ -10,6 +10,7 @@ def _service() -> MacroGuiService:
         db_path=Path("/tmp/test.db"),
         config_dir=Path("/tmp/config"),
         version_history_size=5,
+        moonraker_base_url="http://moonraker.local:7125",
     )
 
 

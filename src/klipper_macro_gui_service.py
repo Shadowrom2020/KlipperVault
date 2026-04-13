@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
 import shutil
 import tempfile
 import atexit
@@ -34,6 +35,7 @@ from klipper_macro_indexer import (
     delete_macro_from_cfg,
     export_macro_share_payload,
     get_cfg_loading_overview,
+    get_cfg_loading_overview_from_source,
     import_macro_share_payload,
     load_duplicate_macro_groups,
     load_macro_list,
@@ -46,12 +48,14 @@ from klipper_macro_indexer import (
     restore_macro_version,
     resolve_duplicate_macros,
     run_indexing,
+    run_indexing_from_source,
     save_macro_edit,
 )
 from klipper_macro_online_update import (
     check_online_macro_updates,
     import_online_macro_updates,
 )
+from klipper_vault_config_source import LocalConfigSource, SshConfigSource
 from klipper_vault_db import open_sqlite_connection
 from klipper_vault_remote_profiles import (
     delete_ssh_host_profile,
@@ -255,19 +259,18 @@ class MacroGuiService:
         db_path: Path,
         config_dir: Path,
         version_history_size: int,
-        runtime_mode: str = "auto",
-        moonraker_base_url: str = "http://127.0.0.1:7125",
+        runtime_mode: str = "off_printer",
+        moonraker_base_url: str = "",
     ) -> None:
         self._db_path = db_path
         self._config_dir = config_dir
         self._version_history_size = version_history_size
-        self._runtime_mode = _as_text(runtime_mode).lower() or "auto"
-        if self._runtime_mode not in {"auto", "on_printer", "off_printer"}:
-            self._runtime_mode = "auto"
+        self._runtime_mode = "off_printer"
         self._moonraker_base_url = moonraker_base_url.rstrip("/")
         self._cache_base_dir = Path(tempfile.gettempdir()) / "klippervault"
         self._active_cache_dir: Path | None = None
         self._active_cache_printer_profile_id: int | None = None
+        self._remote_cfg_checksums: dict[str, str] = {}
         self._credential_store = CredentialStore(self._db_path)
         atexit.register(self.cleanup_runtime_cache)
         # Prepare off-printer profile/credential tables before SSH features are wired into UI.
@@ -311,6 +314,20 @@ class MacroGuiService:
             shutil.rmtree(self._active_cache_dir, ignore_errors=True)
         self._active_cache_dir = None
         self._active_cache_printer_profile_id = None
+        self._remote_cfg_checksums = {}
+
+    @staticmethod
+    def _text_checksum(text: str) -> str:
+        """Return stable checksum for cfg content comparisons."""
+        return hashlib.sha256(str(text).encode("utf-8", errors="ignore")).hexdigest()
+
+    @staticmethod
+    def _remote_conflict_message(rel_path: str, reason: str) -> str:
+        """Build a user-actionable message for stale remote cfg conflict detection."""
+        return (
+            f"Remote cfg conflict for '{rel_path}': {reason}. "
+            "Sync remote config again, review differences, and retry the change."
+        )
 
     def _cache_dir_for_profile(self, profile_id: int) -> Path:
         """Create a deterministic per-printer cache directory under system temp."""
@@ -320,10 +337,6 @@ class MacroGuiService:
 
     def _resolve_runtime_config_dir(self) -> Path:
         """Resolve effective config root based on current runtime mode/profile."""
-        if self._runtime_mode != "off_printer":
-            self._config_dir.mkdir(parents=True, exist_ok=True)
-            return self._config_dir
-
         profile_id = int(self._active_printer_profile_id)
         if self._active_cache_printer_profile_id != profile_id:
             self.cleanup_runtime_cache()
@@ -336,8 +349,6 @@ class MacroGuiService:
 
     def _append_restart_policy_result(self, result: dict[str, object], *, uploaded_files: int) -> None:
         """Apply upload-triggered restart policy metadata for off-printer mode."""
-        if self._runtime_mode != "off_printer":
-            return
         if int(uploaded_files) <= 0:
             result["klipper_restarted"] = False
             result["restart_deferred"] = False
@@ -491,8 +502,6 @@ class MacroGuiService:
 
     def _refresh_moonraker_base_url_from_active_profile(self) -> None:
         """Refresh Moonraker base URL from active off-printer profile when available."""
-        if self._runtime_mode != "off_printer":
-            return
         active_printer = get_active_printer_profile(self._db_path)
         profile_moonraker_url = _as_text(active_printer.ssh_moonraker_url) if active_printer is not None else ""
         profile_ssh_host = _as_text(active_printer.ssh_host) if active_printer is not None else ""
@@ -832,6 +841,20 @@ class MacroGuiService:
         )
         return transport, active_profile
 
+    def _runtime_local_config_source(self) -> LocalConfigSource:
+        """Return local config source for the current runtime cache directory."""
+        runtime_config_dir = self._resolve_runtime_config_dir()
+        runtime_config_dir.mkdir(parents=True, exist_ok=True)
+        return LocalConfigSource(root_dir=runtime_config_dir)
+
+    def _active_remote_config_source(self) -> tuple[SshConfigSource, dict[str, object]]:
+        """Return SSH-backed config source for the active remote profile."""
+        transport, profile = self._active_ssh_transport()
+        remote_config_dir = _as_text(profile.get("remote_config_dir", ""))
+        if not remote_config_dir:
+            raise RuntimeError("Active SSH profile is missing remote config directory")
+        return SshConfigSource(transport=transport, remote_root=remote_config_dir), profile
+
     def test_active_ssh_connection(self) -> dict[str, object]:
         """Validate active off-printer SSH profile connectivity."""
         transport, profile = self._active_ssh_transport()
@@ -875,55 +898,38 @@ class MacroGuiService:
         progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
         """Mirror active profile remote cfg files into local config directory."""
-        transport, profile = self._active_ssh_transport()
-        remote_config_dir = _as_text(profile.get("remote_config_dir", ""))
-        if not remote_config_dir:
-            raise RuntimeError("Active SSH profile is missing remote config directory")
-
+        remote_source, profile = self._active_remote_config_source()
         runtime_config_dir = self._resolve_runtime_config_dir()
-        runtime_config_dir.mkdir(parents=True, exist_ok=True)
-        remote_root = self._normalize_remote_root(remote_config_dir, _as_text(profile.get("username", "")))
-        remote_files = transport.list_cfg_files(remote_config_dir)
+        local_source = self._runtime_local_config_source()
+        remote_config_dir = _as_text(profile.get("remote_config_dir", ""))
+        remote_files = remote_source.list_cfg_files()
         self._emit_operation_progress(progress_callback, "download", 0, len(remote_files) or 1)
         mirrored_rel_paths: set[str] = set()
+        mirrored_checksums: dict[str, str] = {}
         synced_files = 0
 
-        for idx, remote_file in enumerate(remote_files, start=1):
-            try:
-                remote_path = PurePosixPath(_as_text(remote_file))
-                rel_posix = str(remote_path.relative_to(remote_root))
-            except Exception:
-                self._emit_operation_progress(progress_callback, "download", idx, len(remote_files) or 1)
-                continue
-
+        for idx, rel_posix in enumerate(remote_files, start=1):
             if not rel_posix.lower().endswith(".cfg"):
                 self._emit_operation_progress(progress_callback, "download", idx, len(remote_files) or 1)
                 continue
 
-            local_rel_path = Path(rel_posix)
-            local_target = (runtime_config_dir / local_rel_path).resolve()
-            try:
-                local_target.relative_to(runtime_config_dir)
-            except ValueError:
-                self._emit_operation_progress(progress_callback, "download", idx, len(remote_files) or 1)
-                continue
-
-            local_target.parent.mkdir(parents=True, exist_ok=True)
-            local_target.write_text(transport.read_text_file(str(remote_path)), encoding="utf-8")
+            remote_text = remote_source.read_text(rel_posix)
+            local_source.write_text(rel_posix, remote_text)
             mirrored_rel_paths.add(rel_posix)
+            mirrored_checksums[rel_posix] = self._text_checksum(remote_text)
             synced_files += 1
             self._emit_operation_progress(progress_callback, "download", idx, len(remote_files) or 1)
 
         removed_local_files = 0
         if prune_missing:
-            for local_cfg in runtime_config_dir.rglob("*.cfg"):
-                rel_local = local_cfg.relative_to(runtime_config_dir).as_posix()
+            for rel_local in local_source.list_cfg_files():
                 if rel_local in mirrored_rel_paths:
                     continue
-                local_cfg.unlink(missing_ok=True)
-                removed_local_files += 1
+                if local_source.remove(rel_local):
+                    removed_local_files += 1
 
         self._emit_operation_progress(progress_callback, "download", len(remote_files) or 1, len(remote_files) or 1)
+        self._remote_cfg_checksums = mirrored_checksums
 
         return {
             "ok": True,
@@ -951,29 +957,35 @@ class MacroGuiService:
             }
 
         transport, profile = self._active_ssh_transport()
-        remote_config_dir = _as_text(profile.get("remote_config_dir", ""))
-        if not remote_config_dir:
-            raise RuntimeError("Active SSH profile is missing remote config directory")
+        remote_source, profile = self._active_remote_config_source()
 
         if not rel_path:
             raise ValueError("file_path is required")
 
-        runtime_config_dir = self._resolve_runtime_config_dir()
-        local_cfg = (runtime_config_dir / rel_path).resolve()
-        try:
-            local_cfg.relative_to(runtime_config_dir)
-        except ValueError as exc:
-            raise ValueError(f"invalid cfg file path outside config directory: {file_path}") from exc
+        local_source = self._runtime_local_config_source()
 
         self._emit_operation_progress(progress_callback, "upload", 0, 1)
-        payload = local_cfg.read_text(encoding="utf-8")
-        remote_path = self._build_remote_cfg_path(remote_config_dir, _as_text(profile.get("username", "")), rel_path)
+        payload = local_source.read_text(rel_path)
+        remote_path = self._build_remote_cfg_path(
+            _as_text(profile.get("remote_config_dir", "")),
+            _as_text(profile.get("username", "")),
+            rel_path,
+        )
+
+        expected_remote_checksum = self._remote_cfg_checksums.get(rel_path)
+        if expected_remote_checksum:
+            remote_current_text = remote_source.read_text(rel_path)
+            remote_current_checksum = self._text_checksum(remote_current_text)
+            if remote_current_checksum != expected_remote_checksum:
+                raise RuntimeError(self._remote_conflict_message(rel_path, "remote file changed since last sync"))
+
         try:
-            transport.write_text_file_atomic(remote_path, payload)
+            remote_source.write_text(rel_path, payload)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to upload cfg file '{rel_path}' to '{remote_path}': {exc}"
             ) from exc
+        self._remote_cfg_checksums[rel_path] = self._text_checksum(payload)
         self._emit_operation_progress(progress_callback, "upload", 1, 1)
         return {
             "uploaded": True,
@@ -1024,43 +1036,50 @@ class MacroGuiService:
 
     def _sync_local_cfg_tree_to_active_remote(self, *, prune_remote_missing: bool) -> dict[str, object]:
         """Upload all local cfg files and optionally remove remote cfg files not present locally."""
-        transport, profile = self._active_ssh_transport()
-        remote_config_dir = _as_text(profile.get("remote_config_dir", ""))
-        if not remote_config_dir:
-            raise RuntimeError("Active SSH profile is missing remote config directory")
+        remote_source, profile = self._active_remote_config_source()
 
         uploaded_paths: list[str] = []
         blocked_paths: list[str] = []
         local_rel_paths: set[str] = set()
-        runtime_config_dir = self._resolve_runtime_config_dir()
-        for local_cfg in runtime_config_dir.rglob("*.cfg"):
-            rel_path = local_cfg.relative_to(runtime_config_dir).as_posix()
+        local_source = self._runtime_local_config_source()
+        for rel_path in local_source.list_cfg_files():
+            local_rel_paths.add(rel_path)
             if _cfg_is_protected(rel_path):
                 blocked_paths.append(rel_path)
                 continue
-            remote_path = self._build_remote_cfg_path(
-                remote_config_dir,
-                _as_text(profile.get("username", "")),
-                rel_path,
-            )
-            payload = local_cfg.read_text(encoding="utf-8")
-            transport.write_text_file_atomic(remote_path, payload)
-            uploaded_paths.append(remote_path)
-            local_rel_paths.add(rel_path)
+            push_result = self._push_local_cfg_file_to_active_remote(rel_path)
+            remote_path = _as_text(push_result.get("remote_path", ""))
+            if remote_path:
+                uploaded_paths.append(remote_path)
 
         removed_remote_paths: list[str] = []
         if prune_remote_missing:
-            remote_root = self._normalize_remote_root(remote_config_dir, _as_text(profile.get("username", "")))
-            remote_paths = transport.list_cfg_files(remote_config_dir)
-            for remote_path in remote_paths:
-                try:
-                    rel_posix = str(PurePosixPath(_as_text(remote_path)).relative_to(remote_root))
-                except Exception:
-                    continue
+            for rel_posix in remote_source.list_cfg_files():
                 if rel_posix in local_rel_paths:
                     continue
-                if transport.remove_file(_as_text(remote_path)):
-                    removed_remote_paths.append(_as_text(remote_path))
+                if _cfg_is_protected(rel_posix):
+                    continue
+                if self._remote_cfg_checksums:
+                    expected_remote_checksum = self._remote_cfg_checksums.get(rel_posix)
+                    if not expected_remote_checksum:
+                        raise RuntimeError(
+                            self._remote_conflict_message(rel_posix, "remote file appeared after last sync")
+                        )
+                    remote_current_text = remote_source.read_text(rel_posix)
+                    remote_current_checksum = self._text_checksum(remote_current_text)
+                    if remote_current_checksum != expected_remote_checksum:
+                        raise RuntimeError(
+                            self._remote_conflict_message(rel_posix, "remote file changed since last sync")
+                        )
+                if remote_source.remove(rel_posix):
+                    self._remote_cfg_checksums.pop(rel_posix, None)
+                    removed_remote_paths.append(
+                        self._build_remote_cfg_path(
+                            _as_text(profile.get("remote_config_dir", "")),
+                            _as_text(profile.get("username", "")),
+                            rel_posix,
+                        )
+                    )
 
         return {
             "ok": True,
@@ -1300,8 +1319,8 @@ class MacroGuiService:
         def _parse_progress(current: int, total: int) -> None:
             self._emit_operation_progress(progress_callback, "parse", current, total)
 
-        result = run_indexing(
-            config_dir=runtime_config_dir,
+        result = run_indexing_from_source(
+            config_source=self._runtime_local_config_source(),
             db_path=self._db_path,
             max_versions=self._version_history_size,
             printer_profile_id=self._active_printer_profile_id,
@@ -1314,6 +1333,9 @@ class MacroGuiService:
 
     def load_cfg_loading_overview(self) -> dict[str, object]:
         """Load cfg parse-order overview for Klipper and KlipperVault."""
+        if self._runtime_mode == "off_printer":
+            remote_source, _ = self._active_remote_config_source()
+            return get_cfg_loading_overview_from_source(remote_source)
         return get_cfg_loading_overview(self._resolve_runtime_config_dir())
 
     def load_dashboard(self, *, limit: int = 500, offset: int = 0) -> tuple[dict[str, object], list[dict[str, object]]]:
@@ -1324,7 +1346,7 @@ class MacroGuiService:
                 self._db_path,
                 limit=limit,
                 offset=offset,
-                config_dir=self._resolve_runtime_config_dir(),
+                config_source=self._runtime_local_config_source(),
                 include_macro_body=False,
                 printer_profile_id=self._active_printer_profile_id,
             ),
@@ -1484,6 +1506,7 @@ class MacroGuiService:
             db_path=self._db_path,
             backup_name=name,
             config_dir=self._resolve_runtime_config_dir(),
+            config_source=self._runtime_local_config_source(),
             printer_profile_id=self._active_printer_profile_id,
         )
 
@@ -1505,6 +1528,7 @@ class MacroGuiService:
             db_path=self._db_path,
             backup_id=backup_id,
             config_dir=self._resolve_runtime_config_dir(),
+            config_source=self._runtime_local_config_source(),
             printer_profile_id=self._active_printer_profile_id,
         )
         if self._runtime_mode == "off_printer":

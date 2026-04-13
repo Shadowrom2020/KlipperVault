@@ -332,9 +332,7 @@ def create_printer_profile(
     """Create one printer profile row and return its id."""
     now = int(time.time())
     normalized_name = str(profile_name or "").strip() or "Printer"
-    normalized_connection_type = str(connection_type or "off_printer").strip().lower() or "off_printer"
-    if normalized_connection_type not in {"off_printer", "on_printer", "auto"}:
-        normalized_connection_type = "off_printer"
+    normalized_connection_type = "off_printer"
 
     with open_sqlite_connection(db_path, ensure_schema=ensure_printer_profile_schema) as conn:
         if is_active:

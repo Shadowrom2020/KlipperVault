@@ -6,7 +6,9 @@ from klipper_macro_online_update import import_online_macro_updates
 from klipper_macro_indexer import (
     export_macro_share_payload,
     get_cfg_load_order,
+    get_cfg_load_order_from_source,
     get_cfg_loading_overview,
+    get_cfg_loading_overview_from_source,
     import_macro_share_payload,
     load_duplicate_macro_groups,
     load_macro_list,
@@ -16,7 +18,9 @@ from klipper_macro_indexer import (
     remove_inactive_macro_version,
     restore_macro_version,
     run_indexing,
+    run_indexing_from_source,
 )
+from klipper_vault_config_source import LocalConfigSource
 from klipper_vault_db import open_sqlite_connection
 
 
@@ -988,3 +992,171 @@ def test_load_macro_list_attaches_true_macro_load_order_when_config_dir_given(tm
         "AFTER_INCLUDE_MACRO",
         "PRINTER_TAIL_MACRO",
     ]
+
+
+def test_load_macro_list_attaches_load_order_with_config_source(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [gcode_macro ROOT_MACRO]
+                gcode:
+                    RESPOND MSG="root"
+
+                [include macros.cfg]
+                """,
+        )
+        _write(
+                config_dir / "macros.cfg",
+                """
+                [gcode_macro INCLUDED_MACRO]
+                gcode:
+                    RESPOND MSG="included"
+                """,
+        )
+        run_indexing(config_dir, db_path)
+
+        source = LocalConfigSource(root_dir=config_dir)
+        macros = load_macro_list(db_path, config_source=source)
+        by_name = {row["macro_name"]: row for row in macros}
+
+        assert by_name["ROOT_MACRO"]["load_order_index"] == 0
+        assert by_name["INCLUDED_MACRO"]["load_order_index"] == 1
+
+
+def test_get_cfg_load_order_from_source_matches_path_order(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [include extras/b.cfg]
+        [include extras/a.cfg]
+        """,
+    )
+    _write(tmp_path / "extras" / "a.cfg", "[printer]\n")
+    _write(tmp_path / "extras" / "b.cfg", "[printer]\n")
+
+    source = LocalConfigSource(root_dir=tmp_path)
+    order = get_cfg_load_order_from_source(source)
+
+    assert [path.name for path in order] == ["printer.cfg", "b.cfg", "a.cfg"]
+
+
+def test_get_cfg_loading_overview_from_source_reports_expected_order(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [include macros.cfg]
+        """,
+    )
+    _write(
+        tmp_path / "macros.cfg",
+        """
+        [gcode_macro PRINT_START]
+        gcode:
+          RESPOND MSG="ok"
+        """,
+    )
+
+    source = LocalConfigSource(root_dir=tmp_path)
+    overview = get_cfg_loading_overview_from_source(source)
+
+    assert [row["file_path"] for row in overview["klipper_order"]] == ["printer.cfg", "macros.cfg"]
+    assert overview["klipper_macro_count"] == 1
+    assert overview["klipper_macro_order"][0]["macro_name"] == "PRINT_START"
+
+
+def test_get_cfg_loading_overview_from_source_preserves_duplicate_include_entries_like_klipper(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [include extras/a.cfg]
+        [include extras/b.cfg]
+        """,
+    )
+    _write(
+        tmp_path / "extras" / "a.cfg",
+        """
+        [include common.cfg]
+        """,
+    )
+    _write(
+        tmp_path / "extras" / "b.cfg",
+        """
+        [include common.cfg]
+        """,
+    )
+    _write(tmp_path / "extras" / "common.cfg", "[printer]\n")
+
+    source = LocalConfigSource(root_dir=tmp_path)
+    overview = get_cfg_loading_overview_from_source(source)
+
+    assert [row["file_path"] for row in overview["klipper_order"]] == [
+        "printer.cfg",
+        "extras/a.cfg",
+        "extras/common.cfg",
+        "extras/b.cfg",
+        "extras/common.cfg",
+    ]
+
+
+def test_run_indexing_from_source_indexes_cfg_tree(tmp_path: Path) -> None:
+    config_dir = tmp_path / "cfg"
+    db_path = tmp_path / "db" / "vault.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [gcode_macro PRINT_START]
+        gcode:
+          RESPOND MSG="from-source"
+        """,
+    )
+
+    source = LocalConfigSource(root_dir=config_dir)
+    result = run_indexing_from_source(source, db_path)
+    macros = load_macro_list(db_path)
+
+    assert result["cfg_files_scanned"] == 1
+    assert result["macros_inserted"] == 1
+    assert len(macros) == 1
+    assert macros[0]["macro_name"] == "PRINT_START"
+
+
+def test_run_indexing_from_source_treats_dynamicmacros_configs_as_loaded(tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        db_path = tmp_path / "db" / "vault.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [dynamicmacros]
+                configs: generated.cfg
+                """,
+        )
+        _write(
+                config_dir / "generated.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="generated"
+                """,
+        )
+        _write(
+                config_dir / "orphan.cfg",
+                """
+                [gcode_macro BYE]
+                gcode:
+                    RESPOND MSG="orphan"
+                """,
+        )
+
+        source = LocalConfigSource(root_dir=config_dir)
+        result = run_indexing_from_source(source, db_path)
+        macros = load_macro_list(db_path)
+        rows_by_path = {row["file_path"]: row for row in macros}
+
+        assert result["cfg_files_scanned"] == 3
+        assert rows_by_path["generated.cfg"]["is_loaded"] is True
+        assert rows_by_path["generated.cfg"]["is_dynamic"] is True
+        assert rows_by_path["generated.cfg"]["is_active"] is True
+        assert rows_by_path["orphan.cfg"]["is_loaded"] is False
+        assert rows_by_path["orphan.cfg"]["is_dynamic"] is False

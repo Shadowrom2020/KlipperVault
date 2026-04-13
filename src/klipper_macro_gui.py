@@ -10,7 +10,7 @@ import gc
 import ctypes
 from datetime import datetime
 import os
-from queue import Empty, SimpleQueue
+
 from pathlib import Path
 import threading
 import tempfile
@@ -29,13 +29,11 @@ from klipper_macro_gui_logic import (
     sort_macros,
 )
 from klipper_macro_gui_service import MacroGuiService
-from klipper_macro_gui_remote_service import RemoteMacroGuiService
 from klipper_macro_gui_state import UIState
 from klipper_macro_viewer import MacroViewer, format_ts as _format_ts
-from klipper_macro_watcher import ConfigWatcher
 from klipper_type_utils import to_dict_list as _as_dict_list
 from klipper_type_utils import to_int as _to_int
-from klipper_vault_config import _detect_printer_identity, load_or_create as _load_vault_config
+from klipper_vault_config import load_or_create as _load_vault_config
 from klipper_vault_paths import DEFAULT_CONFIG_DIR, DEFAULT_DB_PATH
 from klipper_vault_i18n import set_language, t
 
@@ -91,37 +89,15 @@ def build_ui(app_version: str = "unknown") -> None:
     vault_cfg = _load_vault_config(config_dir)
     set_language(os.environ.get("KLIPPERVAULT_LANG", vault_cfg.ui_language))
     ui.page_title(t("Klipper Vault"))
-    runtime_mode = str(
-        os.environ.get("KLIPPERVAULT_RUNTIME_MODE", vault_cfg.runtime_mode)
-    ).strip().lower()
-    if runtime_mode not in {"auto", "on_printer", "off_printer"}:
-        runtime_mode = "auto"
-
-    remote_api_url = str(
-        os.environ.get("KLIPPERVAULT_REMOTE_API_URL", vault_cfg.remote_api_url)
-    ).strip()
-    remote_api_token = str(
-        os.environ.get("KLIPPERVAULT_REMOTE_API_TOKEN", vault_cfg.remote_api_token)
-    ).strip()
-
-    # Legacy host-api mode stays available until the full SSH migration lands,
-    # but off_printer explicitly disables this transport.
-    remote_mode_enabled = bool(remote_api_url) and runtime_mode != "off_printer"
-    off_printer_mode_enabled = runtime_mode == "off_printer"
-    if remote_mode_enabled:
-        service = RemoteMacroGuiService(
-            base_url=remote_api_url,
-            api_token=remote_api_token,
-            timeout=_env_float("KLIPPERVAULT_REMOTE_API_TIMEOUT", 120.0, 1.0),
-        )
-    else:
-        service = MacroGuiService(
-            db_path=db_path,
-            config_dir=config_dir,
-            version_history_size=vault_cfg.version_history_size,
-            runtime_mode=runtime_mode,
-            moonraker_base_url=os.environ.get("MOONRAKER_BASE_URL", "http://127.0.0.1:7125"),
-        )
+    runtime_mode = "off_printer"
+    off_printer_mode_enabled = True
+    service = MacroGuiService(
+        db_path=db_path,
+        config_dir=config_dir,
+        version_history_size=vault_cfg.version_history_size,
+        runtime_mode=runtime_mode,
+        moonraker_base_url=os.environ.get("MOONRAKER_BASE_URL", ""),
+    )
 
     # ── Initialize UIState container ─────────────────────────────────────────
     state = UIState(
@@ -138,7 +114,6 @@ def build_ui(app_version: str = "unknown") -> None:
         off_printer_profile_ready=not off_printer_mode_enabled,
         list_page_size=max(50, _to_int(os.environ.get("KLIPPERVAULT_LIST_PAGE_SIZE", "200"), default=200)),
         last_activity_monotonic=time.monotonic(),
-        watcher=ConfigWatcher(config_dir),
         duplicate_compare_view=MacroCompareView(),
     )
 
@@ -292,9 +267,8 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def _remote_actions_available() -> bool:
         """Return True when backend actions are currently available."""
-        remote_ready = (not remote_mode_enabled) or state.remote_api_connected
         off_printer_ready = (not off_printer_mode_enabled) or state.off_printer_profile_ready
-        return remote_ready and off_printer_ready
+        return off_printer_ready
 
     def _remote_sync_status_suffix(result: dict[str, object]) -> str:
         """Build a compact status suffix for off-printer remote sync metadata."""
@@ -384,25 +358,6 @@ def build_ui(app_version: str = "unknown") -> None:
         _set_off_printer_profile_state(True, profile_name)
         if not was_ready and state.off_printer_profile_ready:
             _maybe_run_deferred_startup_scan("printer connection became ready")
-
-    def _set_remote_connection_state(connected: bool, detail: str = "") -> None:
-        """Update remote connectivity indicators used for degraded read-only mode."""
-        state.remote_api_connected = connected
-        detail_text = str(detail or "").strip()
-        label = state.remote_connection_label
-        if label is None:
-            return
-        if connected:
-            state.remote_api_status_text = t("Remote API connected")
-            if detail_text:
-                state.remote_api_status_text = t("Remote API connected: {detail}", detail=detail_text)
-            label.classes(replace="text-xs text-positive")
-        else:
-            state.remote_api_status_text = t("Remote API disconnected")
-            if detail_text:
-                state.remote_api_status_text = t("Remote API disconnected: {detail}", detail=detail_text)
-            label.classes(replace="text-xs text-negative")
-        label.set_text(state.remote_api_status_text)
 
     def _mark_reload_required(*, is_dynamic: bool = False) -> None:
         """Mark pending runtime action after macro-affecting changes."""
@@ -716,9 +671,6 @@ def build_ui(app_version: str = "unknown") -> None:
             ui.label(t("Status")).classes("text-md font-semibold mb-1")
             status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
             state.status_label = status_label
-            remote_connection_label = ui.label("").classes("text-xs text-grey-5")
-            remote_connection_label.set_visibility(remote_mode_enabled)
-            state.remote_connection_label = remote_connection_label
             off_printer_profile_label = ui.label("").classes("text-xs text-grey-5")
             off_printer_profile_label.set_visibility(off_printer_mode_enabled)
             state.off_printer_profile_label = off_printer_profile_label
@@ -1776,8 +1728,6 @@ def build_ui(app_version: str = "unknown") -> None:
         try:
             stats, state.cached_macros = service.load_dashboard(limit=state.list_page_size, offset=state.list_page_index * state.list_page_size)
         except Exception as exc:
-            if remote_mode_enabled:
-                _set_remote_connection_state(False, str(exc))
             state.status_label.set_text(t("Data refresh failed: {error}", error=exc))
             return
         state.total_macro_rows = _to_int(stats.get("total_macros", len(state.cached_macros)), default=len(state.cached_macros))
@@ -1788,8 +1738,6 @@ def build_ui(app_version: str = "unknown") -> None:
             try:
                 stats, state.cached_macros = service.load_dashboard(limit=state.list_page_size, offset=state.list_page_index * state.list_page_size)
             except Exception as exc:
-                if remote_mode_enabled:
-                    _set_remote_connection_state(False, str(exc))
                 state.status_label.set_text(t("Data refresh failed: {error}", error=exc))
                 return
             state.total_macro_rows = _to_int(stats.get("total_macros", len(state.cached_macros)), default=len(state.cached_macros))
@@ -1863,16 +1811,9 @@ def build_ui(app_version: str = "unknown") -> None:
                 vendor = str(active_profile.get("vendor", "")).strip()
                 model = str(active_profile.get("model", "")).strip()
                 if not vendor or not model:
-                    detected = _detect_printer_identity(runtime_config_dir)
-                    if detected is not None:
-                        service.update_active_printer_identity(vendor=detected[0], model=detected[1])
-                        refresh_printer_profile_selector()
-                    else:
-                        state.printer_vendor_input.set_value(vendor)
-                        state.printer_model_input.set_value(model)
-                        state.printer_profile_dialog.open()
-            state.watcher.config_dir = runtime_config_dir
-            state.watcher.reset()
+                    state.printer_vendor_input.set_value(vendor)
+                    state.printer_model_input.set_value(model)
+                    state.printer_profile_dialog.open()
         except FileNotFoundError as exc:
             state.status_label.set_text(t("Error: {error}", error=exc))
         except Exception as exc:
@@ -2622,14 +2563,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def refresh_print_state() -> None:
         """Poll Moonraker printer state and apply UI lock policy."""
-        if remote_mode_enabled and not state.remote_api_connected:
-            _set_printer_connecting_modal(False)
-            set_print_lock(
-                locked=False,
-                moonraker_state="unknown",
-                moonraker_message=t("Remote API disconnected."),
-            )
-            return
         if off_printer_mode_enabled and not state.off_printer_profile_ready:
             _set_printer_connecting_modal(False)
             set_print_lock(
@@ -2643,8 +2576,6 @@ def build_ui(app_version: str = "unknown") -> None:
             _set_printer_connecting_modal(False)
         except Exception as exc:
             _set_printer_connecting_modal(True, str(exc))
-            if remote_mode_enabled:
-                _set_remote_connection_state(False, str(exc))
             status = {
                 "is_printing": False,
                 "state": "unknown",
@@ -2985,83 +2916,6 @@ def build_ui(app_version: str = "unknown") -> None:
         ui.notify(t("Loaded {count} remote cfg file(s).", count=count), type="info")
         remote_cfg_list_dialog.open()
 
-    def refresh_remote_health() -> None:
-        """Poll host API health in remote mode and update connection indicators."""
-        if not remote_mode_enabled:
-            return
-        try:
-            health = service.query_health()
-            last_index_at = _to_optional_int(health.get("last_index_at"))
-            if last_index_at is None:
-                detail = t("last scan unknown")
-            else:
-                detail = t("last scan {value}", value=_format_ts(last_index_at))
-            _set_remote_connection_state(True, detail)
-        except Exception as exc:
-            _set_remote_connection_state(False, str(exc))
-
-    def _enqueue_remote_event(event: dict[str, object]) -> None:
-        """Push one remote SSE event into the UI-safe processing queue."""
-        event_id = _to_int(event.get("id", 0), default=0)
-        if event_id > 0:
-            state.remote_last_event_id = max(state.remote_last_event_id, event_id)
-        state.remote_event_queue.put(event)
-
-    def _start_remote_event_listener() -> None:
-        """Start background SSE listener for remote mode updates."""
-        if not remote_mode_enabled:
-            return
-        if state.remote_event_listener_thread is not None and state.remote_event_listener_thread.is_alive():
-            return
-
-        state.remote_event_stop.clear()
-
-        def _worker() -> None:
-            try:
-                service.stream_events(
-                    on_event=_enqueue_remote_event,
-                    stop_requested=state.remote_event_stop.is_set,
-                    last_event_id=state.remote_last_event_id,
-                )
-            except Exception:
-                # Health polling handles disconnected-state messaging.
-                return
-
-        state.remote_event_listener_thread = threading.Thread(
-            target=_worker,
-            name="klippervault-remote-events",
-            daemon=True,
-        )
-        state.remote_event_listener_thread.start()
-
-    def _drain_remote_events() -> None:
-        """Drain queued remote events on the UI thread and trigger refreshes."""
-        if not remote_mode_enabled:
-            return
-
-        processed_any = False
-        while True:
-            try:
-                event = state.remote_event_queue.get_nowait()
-            except Empty:
-                break
-
-            processed_any = True
-            event_type = str(event.get("type", "")).strip()
-            if event_type:
-                _set_remote_connection_state(True)
-
-            if event_type in {
-                "index.completed",
-                "job.completed",
-                "action.completed",
-            }:
-                state.remote_data_dirty = True
-
-        if processed_any and state.remote_data_dirty and (not state.is_indexing) and state.remote_api_connected:
-            state.remote_data_dirty = False
-            refresh_data()
-
     def check_config_changes() -> None:
         """Timer callback: auto-rescan when cfg files change."""
         if state.memory_trim_no_clients_enabled and not _is_any_client_connected():
@@ -3076,29 +2930,11 @@ def build_ui(app_version: str = "unknown") -> None:
 
         state.no_clients_since = None
         state.no_client_cache_released = False
-        refresh_remote_health()
         refresh_print_state()
-        if remote_mode_enabled:
-            if not state.remote_api_connected:
-                state.status_label.set_text(t("Remote API disconnected. Showing cached data in read-only mode."))
-                return
-            if state.remote_data_dirty and (not state.is_indexing):
-                state.remote_data_dirty = False
-                refresh_data()
-                return
-            if not state.is_indexing:
-                refresh_data()
-            return
         if state.printer_is_printing:
             _trim_process_memory("printing")
             return
         if state.is_indexing:
-            return
-        state.watcher.config_dir = service.get_runtime_config_dir()
-        changed = state.watcher.poll_changed()
-        if changed:
-            _note_activity()
-            perform_index("watcher")
             return
 
         # Treat printer standby/ready/complete/cancelled as idle-capable state.
@@ -3206,18 +3042,10 @@ def build_ui(app_version: str = "unknown") -> None:
         status_label.set_text(t("No printer configured. Complete the connection wizard."))
         open_off_printer_profile_dialog()
 
-    if remote_mode_enabled:
-        refresh_remote_health()
-        _start_remote_event_listener()
     if off_printer_mode_enabled:
         refresh_off_printer_profile_state()
     refresh_print_state()
-    if remote_mode_enabled:
-        if state.remote_api_connected:
-            refresh_data()
-        else:
-            status_label.set_text(t("Remote API disconnected. Showing cached data in read-only mode."))
-    elif not state.printer_is_printing:
+    if not state.printer_is_printing:
         if off_printer_mode_enabled and not state.off_printer_profile_ready:
             state.deferred_startup_scan = True
             refresh_data()
@@ -3228,10 +3056,8 @@ def build_ui(app_version: str = "unknown") -> None:
             state.deferred_startup_scan = True
         refresh_data()
     ui.timer(0.5, lambda: asyncio.create_task(_check_online_updates_on_startup()), once=True)
-    state.watcher.reset()
     ui.timer(0.5, _refresh_create_pr_progress_ui)
     ui.timer(0.5, _refresh_online_update_progress_ui)
-    ui.timer(0.25, _drain_remote_events)
     ui.timer(2.0, check_config_changes)
     ui.timer(5.0, refresh_off_printer_profile_state)
 

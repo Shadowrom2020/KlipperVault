@@ -22,9 +22,6 @@ def main() -> None:
     _sync_venv_requirements_if_needed()
 
     from klipper_macro_gui import build_ui
-    from klipper_vault_config import (
-        ensure_moonraker_update_manager_managed_services as _ensure_moonraker_update_manager_managed_services,
-    )
     from klipper_vault_config import load_or_create as _load_vault_config
     from klipper_vault_i18n import t
     from klipper_vault_paths import DEFAULT_CONFIG_DIR
@@ -36,7 +33,6 @@ def main() -> None:
 
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
     vault_cfg = _load_vault_config(config_dir)
-    _ensure_moonraker_update_manager_managed_services(config_dir)
     favicon_path = REPO_ROOT / "assets" / "favicon.svg"
     build_ui(app_version=_load_app_version())
     # Intentional: the web UI must be reachable from other devices on the LAN.

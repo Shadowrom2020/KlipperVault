@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import fnmatch
 import glob
 import hashlib
 import json
 import os
+import posixpath
 import re
 import sqlite3
 import time
@@ -24,6 +26,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
 from klipper_macro_backup import ensure_backup_schema
+from klipper_vault_config_source import ConfigSource
 from klipper_vault_db import open_sqlite_connection
 
 
@@ -168,6 +171,305 @@ def get_cfg_load_order(config_dir: Path) -> List[Path]:
     return ordered
 
 
+def _normalize_source_cfg_path(rel_path: str) -> str:
+    """Normalize and validate one source-relative cfg path."""
+    normalized = posixpath.normpath(str(rel_path or "").strip().replace("\\", "/").lstrip("/"))
+    if normalized in {"", ".", ".."} or normalized.startswith("../"):
+        raise ValueError(f"invalid cfg path from source: {rel_path}")
+    if not normalized.lower().endswith(".cfg"):
+        raise ValueError(f"cfg path must end with .cfg: {rel_path}")
+    return normalized
+
+
+def _list_cfg_files_from_source(config_source: ConfigSource) -> List[str]:
+    """Return sorted, unique normalized .cfg paths from one config source."""
+    normalized_paths: set[str] = set()
+    for rel_path in config_source.list_cfg_files():
+        rel_text = str(rel_path or "").strip()
+        if not rel_text:
+            continue
+        if not rel_text.lower().endswith(".cfg"):
+            continue
+        normalized_paths.add(_normalize_source_cfg_path(rel_text))
+    return sorted(normalized_paths)
+
+
+def _resolve_source_include_paths(
+    source_rel_path: str,
+    include_spec: str,
+    available_cfg_paths: set[str],
+) -> List[str]:
+    """Resolve one source include expression using source-relative glob matching."""
+    clean_spec = str(include_spec or "").strip().strip('"').strip("'")
+    if not clean_spec:
+        return []
+
+    if clean_spec.startswith("/"):
+        include_pattern = posixpath.normpath(clean_spec.lstrip("/"))
+    else:
+        base_dir = posixpath.dirname(source_rel_path)
+        include_pattern = posixpath.normpath(posixpath.join(base_dir, clean_spec))
+
+    if include_pattern in {"", ".", ".."} or include_pattern.startswith("../"):
+        raise FileNotFoundError(
+            f"Include file '{include_pattern}' does not exist relative to '{source_rel_path}'"
+        )
+
+    matches = sorted(path for path in available_cfg_paths if fnmatch.fnmatch(path, include_pattern))
+    if not matches and not glob.has_magic(include_pattern):
+        raise FileNotFoundError(
+            f"Include file '{include_pattern}' does not exist relative to '{source_rel_path}'"
+        )
+    return matches
+
+
+def _iter_included_files_from_source(
+    file_path: str,
+    file_text: str,
+    available_cfg_paths: set[str],
+) -> Iterable[tuple[str, bool]]:
+    """Yield cfg files referenced by [include] and [dynamicmacros] in source text."""
+    current_section_type: Optional[str] = None
+    for raw_line in str(file_text or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section_name = line[1:-1].strip()
+            section_type, section_arg = _section_parts(section_name)
+            current_section_type = section_type
+            if section_type == "include" and section_arg:
+                for cfg in _resolve_source_include_paths(file_path, section_arg, available_cfg_paths):
+                    yield cfg, False
+            continue
+
+        if current_section_type != "dynamicmacros":
+            continue
+
+        pair = _parse_key_value(raw_line)
+        if not pair:
+            continue
+        key, value = pair
+        if key != "configs" or not value:
+            continue
+        for part in str(value).split(","):
+            for cfg in _resolve_source_include_paths(file_path, part, available_cfg_paths):
+                yield cfg, True
+
+
+def _resolve_cfg_file_sets_from_source(config_source: ConfigSource) -> tuple[List[str], set[str], set[str]]:
+    """Return (scan_order, loaded_set, dynamic_loaded_set) for cfg files from source."""
+    all_cfg = _list_cfg_files_from_source(config_source)
+    if not all_cfg:
+        return [], set(), set()
+
+    cfg_set = set(all_cfg)
+    root_cfg = "printer.cfg"
+    if root_cfg not in cfg_set:
+        return all_cfg, set(all_cfg), set()
+
+    loaded: List[str] = []
+    visited: set[str] = set()
+    dynamic_loaded: set[str] = set()
+
+    def visit(rel_path: str) -> None:
+        if rel_path in visited:
+            return
+        visited.add(rel_path)
+        loaded.append(rel_path)
+        file_text = config_source.read_text(rel_path)
+        for included, is_dynamic_source in _iter_included_files_from_source(rel_path, file_text, cfg_set):
+            if is_dynamic_source:
+                dynamic_loaded.add(included)
+            visit(included)
+
+    visit(root_cfg)
+
+    ordered = list(loaded)
+    for cfg in all_cfg:
+        if cfg not in visited:
+            ordered.append(cfg)
+    return ordered, visited, dynamic_loaded
+
+
+def _iter_cfg_sections_from_text(file_text: str) -> Iterable[tuple[str, int, List[str]]]:
+    """Yield cfg sections from raw cfg text as (section_name, line_number, raw_lines)."""
+    current_section: Optional[str] = None
+    current_section_line = 0
+    current_body: List[str] = []
+
+    for line_number, line in enumerate(str(file_text or "").splitlines(keepends=True), start=1):
+        if _is_section_header_line(line):
+            if current_section is not None:
+                yield current_section, current_section_line, current_body
+            current_section = line.strip()[1:-1].strip()
+            current_section_line = line_number
+            current_body = [line]
+            continue
+
+        if current_section is not None:
+            current_body.append(line)
+
+    if current_section is not None:
+        yield current_section, current_section_line, current_body
+
+
+def _parse_macros_from_source_text(
+    rel_path: str,
+    file_text: str,
+    *,
+    is_loaded: bool,
+    is_dynamic: bool,
+) -> List[MacroRecord]:
+    """Parse all [gcode_macro ...] sections from source-provided cfg text."""
+    results: List[MacroRecord] = []
+    for section_name, section_line, body_lines in _iter_cfg_sections_from_text(file_text):
+        record = _build_macro_record(
+            file_path=Path(rel_path),
+            base_dir=Path("."),
+            section_name=section_name,
+            section_line=section_line,
+            body_lines=body_lines,
+            is_loaded=is_loaded,
+            is_dynamic=is_dynamic,
+        )
+        if record is not None:
+            results.append(record)
+    return results
+
+
+def _collect_loaded_macro_records_in_order_from_source(
+    config_source: ConfigSource,
+    cfg_paths: set[str],
+) -> tuple[List[MacroRecord], set[str], set[str]]:
+    """Return loaded macro records in true Klipper parse order from a config source."""
+    root_cfg = "printer.cfg"
+    if root_cfg not in cfg_paths:
+        return [], set(), set()
+
+    ordered_records: List[MacroRecord] = []
+    loaded_paths: set[str] = set()
+    dynamic_paths: set[str] = set()
+
+    def visit(rel_path: str, visiting: set[str], *, is_dynamic_source: bool = False) -> None:
+        if rel_path in visiting:
+            raise ValueError(f"Recursive include of config file '{rel_path}'")
+
+        loaded_paths.add(rel_path)
+        if is_dynamic_source:
+            dynamic_paths.add(rel_path)
+
+        visiting.add(rel_path)
+        try:
+            file_text = config_source.read_text(rel_path)
+            for section_name, section_line, body_lines in _iter_cfg_sections_from_text(file_text):
+                section_type, section_arg = _section_parts(section_name)
+
+                if section_type == "include" and section_arg:
+                    for included_path in _resolve_source_include_paths(rel_path, section_arg, cfg_paths):
+                        visit(included_path, visiting)
+                    continue
+
+                if section_type == "dynamicmacros":
+                    for raw_line in body_lines[1:]:
+                        pair = _parse_key_value(raw_line)
+                        if not pair:
+                            continue
+                        key, value = pair
+                        if key != "configs" or not value:
+                            continue
+                        for part in str(value).split(","):
+                            for included_path in _resolve_source_include_paths(rel_path, part, cfg_paths):
+                                visit(included_path, visiting, is_dynamic_source=True)
+                    continue
+
+                record = _build_macro_record(
+                    file_path=Path(rel_path),
+                    base_dir=Path("."),
+                    section_name=section_name,
+                    section_line=section_line,
+                    body_lines=body_lines,
+                    is_loaded=True,
+                    is_dynamic=is_dynamic_source,
+                )
+                if record is not None:
+                    ordered_records.append(record)
+        finally:
+            visiting.remove(rel_path)
+
+    visit(root_cfg, set())
+    return ordered_records, loaded_paths, dynamic_paths
+
+
+def _collect_macro_records_in_order_from_source(
+    config_source: ConfigSource,
+) -> tuple[List[MacroRecord], set[str], set[str], List[str]]:
+    """Return all macro records from source with loaded macros in true parse order."""
+    cfg_files = _list_cfg_files_from_source(config_source)
+    cfg_set = set(cfg_files)
+    loaded_records, loaded_paths, dynamic_paths = _collect_loaded_macro_records_in_order_from_source(
+        config_source,
+        cfg_set,
+    )
+
+    ordered_records = list(loaded_records)
+    for rel_path in cfg_files:
+        if rel_path in loaded_paths:
+            continue
+        file_text = config_source.read_text(rel_path)
+        ordered_records.extend(
+            _parse_macros_from_source_text(
+                rel_path,
+                file_text,
+                is_loaded=False,
+                is_dynamic=False,
+            )
+        )
+
+    return ordered_records, loaded_paths, dynamic_paths, cfg_files
+
+
+def _get_klipper_parse_order_from_source(config_source: ConfigSource, cfg_paths: set[str]) -> List[str]:
+    """Return cfg parse order from source using Klipper include semantics."""
+    root_cfg = "printer.cfg"
+    if root_cfg not in cfg_paths:
+        return []
+
+    order: List[str] = []
+
+    def _parse_file(rel_path: str, visiting: set[str]) -> None:
+        if rel_path in visiting:
+            raise ValueError(f"Recursive include of config file '{rel_path}'")
+        visiting.add(rel_path)
+        order.append(rel_path)
+
+        try:
+            data = config_source.read_text(rel_path)
+        except Exception as exc:
+            visiting.remove(rel_path)
+            raise FileNotFoundError(f"Unable to open config file {rel_path}") from exc
+
+        for line in data.split("\n"):
+            hash_pos = line.find("#")
+            if hash_pos >= 0:
+                line = line[:hash_pos]
+            section_match = configparser.RawConfigParser.SECTCRE.match(line)
+            header = section_match and section_match.group("header")
+            if header and header.startswith("include "):
+                include_spec = header[8:].strip()
+                for include_rel in _resolve_source_include_paths(rel_path, include_spec, cfg_paths):
+                    _parse_file(include_rel, visiting)
+
+        visiting.remove(rel_path)
+
+    _parse_file(root_cfg, set())
+    return order
+
+
+def get_cfg_load_order_from_source(config_source: ConfigSource) -> List[Path]:
+    """Resolve cfg load order for a generic config source."""
+    ordered, _, _ = _resolve_cfg_file_sets_from_source(config_source)
+    return [Path(path) for path in ordered]
+
+
 def _get_klipper_parse_order(config_dir: Path) -> List[Path]:
     """Return cfg parse order using Klipper's include semantics from configfile.py."""
     root_cfg = config_dir / "printer.cfg"
@@ -219,6 +521,35 @@ def get_cfg_loading_overview(config_dir: Path) -> Dict[str, object]:
         except ValueError:
             display_path = str(cfg_path)
         rows.append({"order": idx, "file_path": display_path})
+
+    macro_rows: List[Dict[str, object]] = []
+    for idx, record in enumerate(loaded_macro_records, start=1):
+        macro_rows.append(
+            {
+                "order": idx,
+                "macro_name": record.macro_name,
+                "file_path": record.file_path,
+                "line_number": record.line_number,
+            }
+        )
+
+    return {
+        "klipper_order": rows,
+        "klipper_count": len(rows),
+        "klipper_macro_order": macro_rows,
+        "klipper_macro_count": len(macro_rows),
+    }
+
+
+def get_cfg_loading_overview_from_source(config_source: ConfigSource) -> Dict[str, object]:
+    """Return cfg parse overview for a generic config source."""
+    cfg_paths = set(_list_cfg_files_from_source(config_source))
+    klipper_order = _get_klipper_parse_order_from_source(config_source, cfg_paths)
+    loaded_macro_records, _, _ = _collect_loaded_macro_records_in_order_from_source(config_source, cfg_paths)
+
+    rows: List[Dict[str, object]] = []
+    for idx, rel_path in enumerate(klipper_order, start=1):
+        rows.append({"order": idx, "file_path": rel_path})
 
     macro_rows: List[Dict[str, object]] = []
     for idx, record in enumerate(loaded_macro_records, start=1):
@@ -537,6 +868,15 @@ def _collect_macro_records_in_order(config_dir: Path) -> tuple[List[MacroRecord]
 def _build_macro_load_order_map(config_dir: Path) -> Dict[tuple[str, str, int], int]:
     """Return global macro parse-order indices keyed by latest macro identity."""
     ordered_records, _, _ = _collect_macro_records_in_order(config_dir)
+    order_map: Dict[tuple[str, str, int], int] = {}
+    for idx, record in enumerate(ordered_records):
+        order_map[(os.path.normpath(record.file_path), record.macro_name, record.line_number)] = idx
+    return order_map
+
+
+def _build_macro_load_order_map_from_source(config_source: ConfigSource) -> Dict[tuple[str, str, int], int]:
+    """Return macro parse-order indices for a generic config source."""
+    ordered_records, _, _, _ = _collect_macro_records_in_order_from_source(config_source)
     order_map: Dict[tuple[str, str, int], int] = {}
     for idx, record in enumerate(ordered_records):
         order_map[(os.path.normpath(record.file_path), record.macro_name, record.line_number)] = idx
@@ -1205,6 +1545,52 @@ def run_indexing(
     }
 
 
+def run_indexing_from_source(
+    config_source: ConfigSource,
+    db_path: Path,
+    max_versions: int = _MAX_VERSIONS,
+    printer_profile_id: int = 1,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> Dict[str, object]:
+    """Index cfg files from a generic config source into SQLite."""
+    if progress_callback is not None:
+        progress_callback(0, 4)
+
+    cfg_files, _, _ = _resolve_cfg_file_sets_from_source(config_source)
+    if progress_callback is not None:
+        progress_callback(1, 4)
+
+    all_records, _, _, _ = _collect_macro_records_in_order_from_source(config_source)
+    if progress_callback is not None:
+        progress_callback(2, 4)
+
+    now_ts = int(time.time())
+    with open_sqlite_connection(
+        db_path,
+        ensure_schema=ensure_schema,
+        pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
+    ) as conn:
+        inserted, unchanged, dynamic_inserted = index_macros(
+            conn,
+            all_records,
+            now_ts,
+            printer_profile_id=int(printer_profile_id),
+            max_versions=max_versions,
+        )
+        conn.commit()
+
+    if progress_callback is not None:
+        progress_callback(4, 4)
+
+    return {
+        "cfg_files_scanned": len(cfg_files),
+        "macros_inserted": inserted,
+        "dynamic_macros_inserted": dynamic_inserted,
+        "macros_unchanged": unchanged,
+        "db_path": str(db_path),
+    }
+
+
 _SHARE_FORMAT = "klippervault.macro-share.v1"
 
 
@@ -1625,12 +2011,13 @@ def load_macro_list(
     limit: int = 1000,
     offset: int = 0,
     config_dir: Path | None = None,
+    config_source: ConfigSource | None = None,
     include_macro_body: bool = True,
     printer_profile_id: int | None = None,
 ) -> List[Dict[str, object]]:
     """Return latest version row for each macro (list view payload).
 
-    When *config_dir* is given, each row is enriched with a
+    When *config_dir* or *config_source* is given, each row is enriched with a
     ``load_order_index`` reflecting the true macro-level parse order Klipper
     would use, including nested includes spliced inline. Macros not present in
     the current config traversal receive index 999999 and sort to the end.
@@ -1650,7 +2037,12 @@ def load_macro_list(
         latest_args = (int(printer_profile_id),)
 
     load_order_map: Dict[tuple[str, str, int], int] = {}
-    if config_dir is not None:
+    if config_source is not None:
+        try:
+            load_order_map = _build_macro_load_order_map_from_source(config_source)
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+    elif config_dir is not None:
         try:
             load_order_map = _build_macro_load_order_map(config_dir)
         except (FileNotFoundError, OSError, ValueError):
@@ -2402,13 +2794,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--config-dir",
-        default="~/printer_data/config",
-        help="Path to Klipper config directory (default: ~/printer_data/config)",
+        default="~/.config/klippervault",
+        help="Path to local runtime config cache directory (default: ~/.config/klippervault)",
     )
     parser.add_argument(
         "--db-path",
-        default="~/printer_data/db/klipper_macros.db",
-        help="Path to SQLite DB file (default: ~/printer_data/db/klipper_macros.db)",
+        default="~/.local/share/klippervault/klipper_macros.db",
+        help="Path to SQLite DB file (default: ~/.local/share/klippervault/klipper_macros.db)",
     )
     return parser
 

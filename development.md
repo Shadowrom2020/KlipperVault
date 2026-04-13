@@ -34,9 +34,6 @@ VS Code debug configs use `${workspaceFolder}/.venv/bin/python` so launch runs w
 Generated debug configurations include full app workflows:
 
 - `Python: KlipperVault GUI (local service)`
-- `Python: KlipperVault Host API`
-- `Python: KlipperVault GUI (remote host API)`
-- `Python: Complete App (Host API + Remote GUI)` (compound launch)
 
 Manual setup alternative:
 
@@ -69,7 +66,7 @@ Notes:
 - Mutating operations (edit/delete/restore/duplicate resolve/backup restore) sync changed cfg content back to remote over SSH.
 - Manual/startup scan is intentionally blocked until an active SSH profile with credentials is configured.
 
-Legacy host API run (still available for compatibility):
+Primary launcher:
 
 ```bash
 ./.venv/bin/python klipper_vault.py
@@ -78,10 +75,10 @@ Legacy host API run (still available for compatibility):
 ## Project Layout
 
 ```text
-klipper_vault.py                  Host API entry point
-klipper_vault_gui.py              GUI entry point
-install.sh                        Systemd + virtualenv installer
-uninstall.sh                      Service removal helper
+klipper_vault.py                  Primary GUI entry point
+klipper_vault_gui.py              Dedicated GUI entry point wrapper
+install.sh                        Remote-host virtualenv installer
+uninstall.sh                      Remote-host uninstall helper
 VERSION                           App version string
 src/
   klipper_macro_gui.py            NiceGUI page and UI wiring
@@ -90,7 +87,6 @@ src/
   klipper_macro_explainer.py      G-code explanation heuristics
   klipper_macro_explainer_view.py Reusable explanation panel and macro popup
   klipper_macro_gui_service.py    Service layer for UI actions
-  klipper_macro_gui_remote_service.py Remote host-API client (legacy compatibility)
   klipper_macro_indexer.py        Parser, indexer, versioning, cfg rewrites
   klipper_macro_backup.py         Backup and restore support
   klipper_macro_compare.py        Version compare UI
@@ -104,12 +100,10 @@ src/
   klipper_vault_db.py             Shared SQLite helpers
 ```
 
-## Runtime Modes
+## Runtime Mode
 
-Supported `runtime_mode` values from `klippervault.cfg` (`[vault] runtime_mode`) or env:
+Supported `runtime_mode` value from `klippervault.cfg` (`[vault] runtime_mode`) or env:
 
-- `auto`: legacy local defaults and behavior.
-- `on_printer`: local printer-host behavior.
 - `off_printer`: SSH/SFTP-driven remote config workflow.
 
 Environment override:
@@ -254,4 +248,3 @@ Local app startup problems:
 
 - Check `klippervault.cfg` for malformed values.
 - Validate the `.venv` interpreter exists and dependencies installed.
-- Read service logs (`journalctl`) if running as systemd service.

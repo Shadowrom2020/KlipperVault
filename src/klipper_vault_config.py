@@ -6,27 +6,13 @@
 from __future__ import annotations
 
 import configparser
-import re
 from dataclasses import dataclass, fields as dataclass_fields
 from pathlib import Path
 
 _CFG_FILENAME = "klippervault.cfg"
-_FREEDI_CFG_FILENAME = "freedi.cfg"
 _DEFAULT_ONLINE_UPDATE_REPO_URL = "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
 _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
 _DEFAULT_ONLINE_UPDATE_REF = "main"
-_MOONRAKER_CONF_FILENAME = "moonraker.conf"
-_UPDATE_MANAGER_NAME = "klippervault"
-_MANAGED_SERVICE_NAMES: tuple[str, ...] = (
-    "klipper-vault",
-    "klipper-vault-host-api",
-)
-_MANAGED_SERVICE_ALIASES: dict[str, str] = {
-    "klippervault": "klipper-vault",
-    "klippervault-host-api": "klipper-vault-host-api",
-    "klipper-vault.service": "klipper-vault",
-    "klipper-vault-host-api.service": "klipper-vault-host-api",
-}
 
 _DEFAULT_CONTENT = """\
 # KlipperVault configuration
@@ -43,9 +29,8 @@ version_history_size: 5
 port: 10090
 
 # Runtime mode controls where connection settings come from.
-# auto: detect from environment, on_printer: force local printer mode,
-# off_printer: use DB-backed remote SSH profiles.
-runtime_mode: auto
+# KlipperVault now runs in remote mode only.
+runtime_mode: off_printer
 
 # UI language used by the web interface (for example: en, de).
 ui_language: en
@@ -68,25 +53,6 @@ online_update_ref: main
 # Developer mode: enables export of local macros to update repository bundles.
 # WARNING: This is intended for repository maintainers; keep disabled for normal use.
 developer: false
-
-# Host API service for remote GUI clients.
-# Keep disabled for local-only setups.
-enable_remote_api: false
-
-# Bind address and port for host API service.
-api_bind_host: 127.0.0.1
-api_port: 10091
-
-# Optional bearer token required by host API service.
-# Leave empty to disable auth (not recommended on shared networks).
-api_token:
-
-# Optional remote host API target for GUI client mode.
-# Example: http://printer-host.local:10091
-remote_api_url:
-
-# Optional bearer token used by GUI when connecting to remote API.
-remote_api_token:
 """
 
 
@@ -94,7 +60,7 @@ remote_api_token:
 class VaultConfig:
     version_history_size: int = 5
     port: int = 10090
-    runtime_mode: str = "auto"
+    runtime_mode: str = "off_printer"
     ui_language: str = "en"
     printer_vendor: str = ""
     printer_model: str = ""
@@ -102,12 +68,6 @@ class VaultConfig:
     online_update_manifest_path: str = _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
     online_update_ref: str = _DEFAULT_ONLINE_UPDATE_REF
     developer: bool = False
-    enable_remote_api: bool = False
-    api_bind_host: str = "127.0.0.1"
-    api_port: int = 10091
-    api_token: str = ""
-    remote_api_url: str = ""
-    remote_api_token: str = ""
     printer_profile_prompt_required: bool = True
 
 
@@ -208,95 +168,6 @@ def _get_enum(
     return value if value in allowed else default
 
 
-def _read_key_value_line(raw_line: str) -> tuple[str, str] | None:
-    """Parse simple cfg lines like `key: value` or `key = value`."""
-    line = raw_line.split("#", 1)[0].strip()
-    if not line:
-        return None
-    for separator in (":", "="):
-        if separator in line:
-            key, value = line.split(separator, 1)
-            key = key.strip().lower()
-            value = value.strip()
-            if key:
-                return key, value
-    return None
-
-
-def _detect_printer_identity(config_dir: Path) -> tuple[str, str] | None:
-    """Detect printer identity from known vendor-specific config files."""
-    freedi_cfg_path = config_dir / _FREEDI_CFG_FILENAME
-    if not freedi_cfg_path.exists():
-        return None
-
-    printer_model = ""
-    for raw_line in freedi_cfg_path.read_text(encoding="utf-8").splitlines():
-        parsed_line = _read_key_value_line(raw_line)
-        if parsed_line is None:
-            continue
-        key, value = parsed_line
-        if key == "printer_model" and value:
-            printer_model = value
-            break
-
-    if printer_model:
-        return "freedi", printer_model
-
-    return None
-
-
-def ensure_moonraker_update_manager_managed_services(config_dir: Path) -> bool:
-    """Ensure Moonraker update_manager references current KlipperVault services.
-
-    Returns True when moonraker.conf was modified.
-    """
-    moonraker_conf_path = config_dir / _MOONRAKER_CONF_FILENAME
-    if not moonraker_conf_path.exists() or not moonraker_conf_path.is_file():
-        return False
-
-    original_text = moonraker_conf_path.read_text(encoding="utf-8", errors="ignore")
-    section_pattern = re.compile(
-        rf"(?ms)^\[update_manager\s+{re.escape(_UPDATE_MANAGER_NAME)}\]\n(?:.*?)(?=^\[|\Z)"
-    )
-    section_match = section_pattern.search(original_text)
-    if section_match is None:
-        return False
-
-    section_text = section_match.group(0)
-    managed_services_pattern = re.compile(r"(?mi)^\s*managed_services\s*:\s*(.*?)\s*$")
-    managed_services_match = managed_services_pattern.search(section_text)
-
-    if managed_services_match is None:
-        managed_services_text = ", ".join(_MANAGED_SERVICE_NAMES)
-        updated_section = section_text.rstrip("\n") + f"\nmanaged_services: {managed_services_text}\n"
-    else:
-        raw_services = managed_services_match.group(1)
-        parsed_services = [
-            service.strip()
-            for service in str(raw_services).split(",")
-            if service.strip()
-        ]
-        normalized_services: list[str] = []
-        for service in parsed_services:
-            service = _MANAGED_SERVICE_ALIASES.get(service, service)
-            if service not in normalized_services:
-                normalized_services.append(service)
-
-        for required_service in _MANAGED_SERVICE_NAMES:
-            if required_service not in normalized_services:
-                normalized_services.append(required_service)
-
-        replacement_line = f"managed_services: {', '.join(normalized_services)}"
-        updated_section = managed_services_pattern.sub(replacement_line, section_text, count=1)
-
-    if updated_section == section_text:
-        return False
-
-    updated_text = original_text[: section_match.start()] + updated_section + original_text[section_match.end() :]
-    moonraker_conf_path.write_text(updated_text, encoding="utf-8")
-    return True
-
-
 def save(config_dir: Path, config: VaultConfig) -> None:
     """Persist VaultConfig to klippervault.cfg in a stable Klipper format."""
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -317,9 +188,8 @@ def save(config_dir: Path, config: VaultConfig) -> None:
         f"port: {int(config.port)}",
         "",
         "# Runtime mode controls where connection settings come from.",
-        "# auto: detect from environment, on_printer: force local printer mode,",
-        "# off_printer: use DB-backed remote SSH profiles.",
-        f"runtime_mode: {str(config.runtime_mode or 'auto').strip().lower() or 'auto'}",
+        "# KlipperVault now runs in remote mode only.",
+        "runtime_mode: off_printer",
         "",
         "# UI language used by the web interface (for example: en, de).",
         f"ui_language: {str(config.ui_language or 'en').strip().lower() or 'en'}",
@@ -342,25 +212,6 @@ def save(config_dir: Path, config: VaultConfig) -> None:
         "# Developer mode: enables export of local macros to update repository bundles.",
         "# WARNING: This is intended for repository maintainers; keep disabled for normal use.",
         f"developer: {'true' if config.developer else 'false'}",
-        "",
-        "# Host API service for remote GUI clients.",
-        "# Keep disabled for local-only setups.",
-        f"enable_remote_api: {'true' if config.enable_remote_api else 'false'}",
-        "",
-        "# Bind address and port for host API service.",
-        f"api_bind_host: {str(config.api_bind_host or '127.0.0.1').strip() or '127.0.0.1'}",
-        f"api_port: {max(1, min(65535, int(config.api_port)))}",
-        "",
-        "# Optional bearer token required by host API service.",
-        "# Leave empty to disable auth (not recommended on shared networks).",
-        f"api_token: {str(config.api_token or '').strip()}",
-        "",
-        "# Optional remote host API target for GUI client mode.",
-        "# Example: http://printer-host.local:10091",
-        f"remote_api_url: {str(config.remote_api_url or '').strip()}",
-        "",
-        "# Optional bearer token used by GUI when connecting to remote API.",
-        f"remote_api_token: {str(config.remote_api_token or '').strip()}",
         "",
     ]
     cfg_path.write_text("\n".join(lines), encoding="utf-8")
@@ -411,8 +262,8 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         parser,
         "vault",
         "runtime_mode",
-        default="auto",
-        allowed={"auto", "on_printer", "off_printer"},
+        default="off_printer",
+        allowed={"off_printer"},
     )
 
     printer_vendor = ""
@@ -449,34 +300,6 @@ def load_or_create(config_dir: Path) -> VaultConfig:
     )
 
     developer = _get_bool(parser, "vault", "developer", default=False)
-    enable_remote_api = _get_bool(parser, "vault", "enable_remote_api", default=False)
-    api_bind_host = _get_stripped(
-        parser,
-        "vault",
-        "api_bind_host",
-        default="127.0.0.1",
-        require_non_empty=True,
-    )
-    api_port = _get_int_in_range(
-        parser,
-        "vault",
-        "api_port",
-        default=10091,
-        minimum=1,
-        maximum=65535,
-    )
-    api_token = _get_stripped(parser, "vault", "api_token", default="")
-    remote_api_url = _get_stripped(parser, "vault", "remote_api_url", default="")
-    remote_api_token = _get_stripped(parser, "vault", "remote_api_token", default="")
-
-    detected_printer_identity = False
-    if not printer_vendor or not printer_model:
-        detected_identity = _detect_printer_identity(config_dir)
-        if detected_identity is not None:
-            printer_vendor, printer_model = detected_identity
-            vendor_is_stored = True
-            model_is_stored = True
-            detected_printer_identity = True
 
     # Prompt on first start and on upgrades where old cfg files do not yet
     # contain these keys, or when stored values are still empty.
@@ -498,19 +321,10 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         online_update_manifest_path=online_update_manifest_path,
         online_update_ref=online_update_ref,
         developer=developer,
-        enable_remote_api=enable_remote_api,
-        api_bind_host=api_bind_host,
-        api_port=api_port,
-        api_token=api_token,
-        remote_api_url=remote_api_url,
-        remote_api_token=remote_api_token,
         printer_profile_prompt_required=printer_profile_prompt_required,
     )
 
-    should_backfill_config = (
-        detected_printer_identity
-        or bool(missing_persisted_keys)
-    )
+    should_backfill_config = bool(missing_persisted_keys)
 
     if should_backfill_config:
         save(config_dir, config)

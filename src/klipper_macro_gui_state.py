@@ -5,14 +5,11 @@
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
-from queue import SimpleQueue
 
 from nicegui import ui
 
 from klipper_macro_compare import MacroCompareView
-from klipper_macro_watcher import ConfigWatcher
 
 
 @dataclass
@@ -20,7 +17,7 @@ class UIState:
     """Consolidated runtime state and UI elements for build_ui()."""
 
     # ─── Service/Config References ───────────────────────────────────────────
-    service: object  # MacroGuiService | RemoteMacroGuiService
+    service: object  # MacroGuiService
     config_dir: object  # Path
     app_version: str = "unknown"
     memory_trim_enabled: bool = True
@@ -64,21 +61,13 @@ class UIState:
     dynamic_reload_required: bool = False
     print_lock_popup_open: bool = False
 
-    # ─── Remote API/Off-Printer State ────────────────────────────────────────
-    remote_api_connected: bool = True
-    remote_api_status_text: str = ""
+    # ─── Off-Printer State ───────────────────────────────────────────────────
     off_printer_profile_ready: bool = True
     off_printer_profile_status_text: str = ""
     ssh_profile_option_ids: dict[str, int] = field(default_factory=dict)
     ssh_profiles_by_id: dict[int, dict[str, object]] = field(default_factory=dict)
     printer_profile_option_ids: dict[str, int] = field(default_factory=dict)
 
-    # ─── Remote Event Handling ───────────────────────────────────────────────
-    remote_event_queue: SimpleQueue[dict[str, object]] = field(default_factory=SimpleQueue)
-    remote_event_stop: threading.Event = field(default_factory=threading.Event)
-    remote_event_listener_thread: threading.Thread | None = None
-    remote_last_event_id: int = 0
-    remote_data_dirty: bool = False
     printer_connecting_modal_open: bool = False
 
     # ─── Memory Management & Activity Tracking ──────────────────────────────
@@ -101,9 +90,6 @@ class UIState:
     startup_online_update_check_in_progress: bool = False
     deferred_startup_scan: bool = False
 
-    # ─── File Watching ──────────────────────────────────────────────────────
-    watcher: ConfigWatcher = field(default_factory=lambda: ConfigWatcher(None))  # type: ignore
-
     # ─── UI Element References ──────────────────────────────────────────────
     # Toolbar elements
     toolbar_header: ui.header | None = None
@@ -118,7 +104,6 @@ class UIState:
 
     # Status/Connection labels
     status_label: ui.label | None = None
-    remote_connection_label: ui.label | None = None
     off_printer_profile_label: ui.label | None = None
 
     # Main layout elements
@@ -204,5 +189,5 @@ class UIState:
         return {
             k: v
             for k, v in vars(self).items()
-            if not k.startswith("_") and not isinstance(v, (ui.element, ConfigWatcher))
+            if not k.startswith("_") and not isinstance(v, ui.element)
         }

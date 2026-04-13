@@ -68,7 +68,7 @@ class CommandPackEntry(TypedDict, total=False):
     effects: list[str]
 
 
-_DEFAULT_COMMAND_PACK_PATH = (Path.home() / "printer_data" / "config" / "klippervault_command_pack.json").resolve()
+_DEFAULT_COMMAND_PACK_PATH = (Path.home() / ".config" / "klippervault" / "klippervault_command_pack.json").resolve()
 
 
 def build_macro_reference_index(macros: Sequence[Mapping[str, object]]) -> dict[str, list[MacroReference]]:

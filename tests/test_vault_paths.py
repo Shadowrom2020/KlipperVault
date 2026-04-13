@@ -20,15 +20,15 @@ def test_off_printer_defaults_use_user_config_and_share_dirs(monkeypatch):
     assert module.DEFAULT_DB_PATH.endswith(expected_db_suffix)
 
 
-def test_on_printer_defaults_use_printer_data_paths(monkeypatch):
+def test_invalid_runtime_mode_falls_back_to_remote_only_defaults(monkeypatch):
     monkeypatch.delenv("KLIPPERVAULT_CONFIG_DIR", raising=False)
     monkeypatch.delenv("KLIPPERVAULT_DB_PATH", raising=False)
-    monkeypatch.setenv("KLIPPERVAULT_RUNTIME_MODE", "on_printer")
+    monkeypatch.setenv("KLIPPERVAULT_RUNTIME_MODE", "legacy_mode")
 
     module = _reload_paths_module()
 
-    assert module.DEFAULT_CONFIG_DIR.endswith(os.path.join("printer_data", "config"))
-    assert module.DEFAULT_DB_PATH.endswith(os.path.join("printer_data", "db", "klipper_macros.db"))
+    assert module.DEFAULT_CONFIG_DIR.endswith(os.path.join(".config", "klippervault"))
+    assert module.DEFAULT_DB_PATH.endswith(os.path.join(".local", "share", "klippervault", "klipper_macros.db"))
 
 
 def test_env_overrides_take_priority(monkeypatch, tmp_path):

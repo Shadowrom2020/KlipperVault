@@ -5,6 +5,7 @@ import klipper_vault
 
 
 def test_sync_venv_requirements_skips_when_hash_matches(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("KLIPPERVAULT_AUTO_UPDATE_VENV", raising=False)
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("nicegui==2.0.0\n", encoding="utf-8")
 
@@ -29,6 +30,7 @@ def test_sync_venv_requirements_skips_when_hash_matches(tmp_path: Path, monkeypa
 
 
 def test_sync_venv_requirements_installs_and_writes_stamp(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("KLIPPERVAULT_AUTO_UPDATE_VENV", raising=False)
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("nicegui==2.0.0\n", encoding="utf-8")
 
