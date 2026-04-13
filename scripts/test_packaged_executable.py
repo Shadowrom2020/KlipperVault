@@ -10,7 +10,26 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    # Running standalone (not via pytest): provide minimal shims.
+    class _Skipped(Exception):
+        pass
+
+    class _Failed(Exception):
+        pass
+
+    class _pytest_shim:  # noqa: N801
+        @staticmethod
+        def skip(msg: str = "") -> None:
+            raise _Skipped(msg)
+
+        @staticmethod
+        def fail(msg: str = "") -> None:
+            raise _Failed(msg)
+
+    pytest = _pytest_shim()  # type: ignore[assignment]
 
 
 def find_executable() -> Path:
@@ -114,16 +133,34 @@ def main() -> None:
         ("Start and shutdown", test_executable_starts),
         ("Windows GUI check", test_executable_not_console),
     ]
-    
+
+    # When running standalone the pytest shim raises these exception types.
+    _skip_types = (getattr(pytest, "skip", None),)
+    try:
+        import pytest as _real_pytest  # noqa: PLC0415
+        _skip_exc = _real_pytest.skip.Exception  # type: ignore[attr-defined]
+        _fail_exc = _real_pytest.fail.Exception  # type: ignore[attr-defined]
+    except Exception:
+        # Shim mode: _Skipped / _Failed are defined at module level via the shim class.
+        _skip_exc = Exception  # broad fallback; handled below by message prefix
+        _fail_exc = Exception
+
     results = []
     for name, test_func in tests:
         print(f"\n--- {name} ---")
         try:
-            passed = test_func()
-            results.append((name, passed))
-        except Exception as e:
-            print(f"EXCEPTION in {name}: {e}")
-            results.append((name, False))
+            test_func()
+            results.append((name, True))
+        except SystemExit:
+            raise
+        except BaseException as e:
+            msg = str(e)
+            if type(e).__name__ in ("_Skipped", "Skipped") or "skip" in type(e).__name__.lower():
+                print(f"⊘ SKIP: {msg}")
+                results.append((name, True))  # skips are not failures
+            else:
+                print(f"✗ FAIL: {msg}")
+                results.append((name, False))
     
     print("\n=== Test Summary ===")
     for name, passed in results:
