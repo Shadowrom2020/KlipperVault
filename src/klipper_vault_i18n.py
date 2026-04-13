@@ -6,12 +6,16 @@
 from __future__ import annotations
 
 import gettext
+import sys
 from pathlib import Path
 
 _DEFAULT_LANGUAGE = "en"
 _current_language = _DEFAULT_LANGUAGE
 
-_LOCALES_DIR = Path(__file__).resolve().parent / "locales"
+if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", ""):
+    _LOCALES_DIR = Path(sys._MEIPASS) / "locales"
+else:
+    _LOCALES_DIR = Path(__file__).resolve().parent / "locales"
 _GETTEXT_DOMAIN = "klippervault"
 _active_gettext: gettext.NullTranslations = gettext.NullTranslations()
 

@@ -154,6 +154,135 @@ Migration status:
 - Runtime translations are now loaded from gettext catalogs (`.mo`) only.
 - Translation source of truth is now `src/locales/<lang>/LC_MESSAGES/klippervault.po`.
 
+## Building Standalone Executables
+
+KlipperVault can be packaged as native executables for Windows, macOS, and Linux using PyInstaller.
+
+### Local Build
+
+Build a standalone executable for your current platform:
+
+```bash
+make bundle
+```
+
+This creates:
+- `dist/KlipperVault` (Linux)
+- `dist/KlipperVault.exe` (Windows)
+- `dist/KlipperVault.app` (macOS)
+
+The executable includes:
+- Python 3.13 runtime (no system Python needed)
+- All dependencies (NiceGUI, paramiko, keyring, Babel, etc.)
+- Translation catalogs (en, de, fr)
+- Bundled assets (favicon, version metadata)
+
+Size: ~55–60 MB executable, ~75–95 MB when packaged.
+
+### Releasing with Executables
+
+#### 1. Tag the Release
+
+Create an annotated git tag on main:
+
+```bash
+git tag -a v0.4.0 -m "Release version 0.4.0"
+git push origin v0.4.0
+```
+
+This triggers the automated release workflow.
+
+#### 2. Automated Workflow
+
+The GitHub Actions `build-executables.yml` workflow:
+
+1. **Builds on all platforms** (parallel):
+   - Linux (ubuntu-latest)
+   - Windows (windows-latest)
+   - macOS Intel (macos-13)
+   - macOS Apple Silicon (macos-14)
+
+2. **For each platform**:
+   - Installs Python 3.13
+   - Installs build dependencies (`requirements.txt` + `requirements-build.txt`)
+   - Runs `python scripts/build_executable.py` (PyInstaller)
+   - Builds native installers if tools available:
+     - `.exe` (Windows via Inno Setup)
+     - `.dmg` (macOS)
+     - `.AppImage` (Linux)
+   - Creates fallback ZIP archives (always available)
+   - Runs smoke test: `scripts/test_packaged_executable.py`
+
+3. **Publishes automatically**:
+   - Downloads all artifacts from 4 build jobs
+   - Creates GitHub Release with the tag
+   - Uploads all packages (installers + ZIPs + signatures)
+
+#### 3. What Gets Published
+
+For each platform:
+- Native installer if available (`.exe`, `.dmg`, `.AppImage`)
+- ZIP archive with contents
+- `.asc` signature file (GPG signed if configured)
+
+Results appear on [Releases](https://github.com/Shadowrom2020/KlipperVault/releases).
+
+#### 4. Release Notes
+
+Add release notes before tagging by editing [.github/RELEASE_NOTES_TEMPLATE.md](.github/RELEASE_NOTES_TEMPLATE.md).
+
+The template includes:
+- Features
+- Bug fixes
+- Breaking changes
+- Installation instructions
+- Documentation links
+
+GitHub will use this as the default release description.
+
+### Manual Workflow Dispatch
+
+Trigger builds manually without creating a tag:
+
+1. Go to **Actions** → **Build Executables**
+2. Click **Run workflow**
+
+This builds but does not auto-publish (no GitHub release created).
+
+### Testing the Build Locally
+
+```bash
+# Clean previous builds
+make clean
+
+# Build new executable
+make bundle
+
+# Run the executable
+./dist/KlipperVault
+```
+
+or for Windows:
+```powershell
+.\dist\KlipperVault.exe
+```
+
+### Troubleshooting Builds
+
+Missing dependencies for installers:
+
+- **Windows**: Inno Setup (`choco install innosetup`)
+- **macOS**: Built-in (uses .app bundle)
+- **Linux**: `appimage-builder` or `appimagetool`
+
+If installer tools are unavailable, the workflow falls back to ZIP archives.
+
+Python syntax errors:
+
+```bash
+python3 -m py_compile src/klipper_macro_gui.py src/klipper_macro_indexer.py
+```
+
 ## Checks Before Commit
 
 Run syntax checks on changed Python files (minimum requirement):

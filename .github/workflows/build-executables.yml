@@ -1,0 +1,136 @@
+name: Build Executables
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: build-executables-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  package:
+    name: Package ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+
+    permissions:
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: Linux
+            platform: linux-x64
+            python: "3.13"
+          - runner: windows-latest
+            label: Windows
+            platform: windows-x64
+            python: "3.13"
+          - runner: macos-13
+            label: macOS Intel
+            platform: macos-x64
+            python: "3.13"
+          - runner: macos-14
+            label: macOS Apple Silicon
+            platform: macos-arm64
+            python: "3.13"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: "requirements*.txt"
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Build standalone executable
+        run: python scripts/build_executable.py
+
+      - name: Install AppImage tool (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -qq appimage-builder || true
+          if ! command -v appimagetool &> /dev/null; then
+            wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+            chmod +x appimagetool-x86_64.AppImage
+            sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool
+          fi
+
+      - name: Archive packaged executable
+        run: python scripts/package_executable_artifact.py --platform ${{ matrix.platform }}
+
+      - name: Build macOS DMG installer (macOS only)
+        if: runner.os == 'macOS'
+        run: python scripts/build_dmg_installer.py
+        continue-on-error: true
+
+      - name: Build Linux AppImage installer (Linux only)
+        if: runner.os == 'Linux'
+        run: python scripts/build_appimage_installer.py
+        continue-on-error: true
+
+      - name: Build Windows installer (Windows only)
+        if: runner.os == 'Windows'
+        run: |
+          # Try to install Inno Setup if not already present
+          if (!(Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup --yes
+          }
+          
+          # Check if Inno Setup is available and build if so
+          if (Get-Command iscc -ErrorAction SilentlyContinue) {
+            python scripts/build_msi_installer.py
+          } else {
+            Write-Host "Inno Setup not found, skipping installer build"
+          }
+        shell: pwsh
+        continue-on-error: true
+
+      - name: Smoke test packaged executable
+        run: python scripts/test_packaged_executable.py
+        continue-on-error: true
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: KlipperVault-${{ matrix.platform }}
+          path: release/*
+          if-no-files-found: warn
+
+  publish-release:
+    name: Publish release assets
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: KlipperVault-*
+          merge-multiple: true
+
+      - name: Publish release asset bundle
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*

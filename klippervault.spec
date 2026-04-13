@@ -1,0 +1,84 @@
+# -*- mode: python ; coding: utf-8 -*-
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_all
+
+
+project_root = Path(SPECPATH)
+
+nicegui_datas, nicegui_binaries, nicegui_hiddenimports = collect_all("nicegui")
+keyring_datas, keyring_binaries, keyring_hiddenimports = collect_all("keyring")
+paramiko_datas, paramiko_binaries, paramiko_hiddenimports = collect_all("paramiko")
+
+datas = [
+    (str(project_root / "VERSION"), "."),
+    (str(project_root / "assets" / "favicon.svg"), "assets"),
+    (str(project_root / "src" / "locales"), "locales"),
+] + nicegui_datas + keyring_datas + paramiko_datas
+
+binaries = nicegui_binaries + keyring_binaries + paramiko_binaries
+hiddenimports = nicegui_hiddenimports + keyring_hiddenimports + paramiko_hiddenimports
+
+
+a = Analysis(
+    [str(project_root / "klipper_vault_gui.py")],
+    pathex=[str(project_root), str(project_root / "src")],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz = PYZ(a.pure)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.datas,
+    [],
+    name="KlipperVault",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=None,
+)
+
+if sys.platform == "darwin":
+    app = BUNDLE(
+        exe,
+        name="KlipperVault.app",
+        icon=None,
+        bundle_identifier="com.klippervault.gui",
+        info_plist={
+            "NSPrincipalClass": "NSApplication",
+            "NSHighResolutionCapable": "True",
+        },
+    )
+    coll = COLLECT(app, name="dist")
+else:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name="dist",
+    )

@@ -36,3 +36,26 @@ Installer summary (GUI/off-printer default):
 ```bash
 ~/klippervault-venv/bin/python ./klipper_vault_gui.py
 ```
+
+## Build a Standalone Executable
+
+From repository root:
+
+```bash
+python3 -m pip install -r requirements.txt -r requirements-build.txt
+make bundle
+```
+
+Build artifacts are written under `dist/` by PyInstaller. Linux binaries must be built on Linux.
+
+### Build AppImage Installer (Optional)
+
+If you have `appimagetool` installed:
+
+```bash
+python3 -m pip install -r requirements.txt -r requirements-build.txt
+make bundle
+python3 scripts/build_appimage_installer.py
+```
+
+This generates an `.AppImage` file in the `release/` directory. See [AppImageKit](https://github.com/AppImage/AppImageKit) for installation instructions.
