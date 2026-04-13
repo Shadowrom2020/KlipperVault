@@ -1,91 +1,87 @@
 # Release Notes Template
 
-Use this template when creating a GitHub Release for KlipperVault.
+Use this template for GitHub Releases triggered by version tags (`v*`).
 
 ---
 
-## KlipperVault X.X.X — Release Notes
+## KlipperVault vX.Y.Z
 
-### ✨ What's New
+Release date: YYYY-MM-DD
 
-- **Feature name**: Brief description
-- **Feature name**: Brief description
-- **Bug fix**: Fixed issue #123
+### Highlights
 
-### 🔄 Changes
+- [ ] Major feature or improvement #1
+- [ ] Major feature or improvement #2
+- [ ] Key fix #1
 
-- Changed behavior of X
-- Improved Y performance by Z%
-- Updated translation for language
+### Added
 
-### 🐛 Bug Fixes
+- Item
+- Item
 
-- Fixed crash when doing X
-- Fixed incorrect Y display in Z scenario
-- Fixed SSH connection timeout handling
+### Changed
 
-### 📦 Installation
+- Item
+- Item
 
-**Recommended**: Download the executable for your platform below — no Python installation needed.
+### Fixed
 
-- **Windows**: `KlipperVault-X.X.X-windows-x64.exe` — Inno Setup installer with Desktop shortcut
-- **macOS**: `KlipperVault-X.X.X-macos.dmg` — Drag-and-drop disk image for Intel and Apple Silicon
-- **Linux**: `KlipperVault-X.X.X-linux-x64.AppImage` — Universal desktop application image
+- Item
+- Item
 
-Alternatively, extract from ZIP archive if you prefer a portable version without the installer.
+### Installers and Artifacts
 
-### 🔐 Code Signing
+Recommended: use the native installer for your platform.
 
-- **Windows executable signed** with [certificate authority]
-- **macOS app notarized** — safe to open without security warnings
-- **Linux AppImage GPG-signed** — verify with `gpg --verify KlipperVault-*.AppImage.asc`
+- Windows installer: `KlipperVault-X.Y.Z-windows-x64.exe`
+- macOS disk image: `KlipperVault-X.Y.Z-macos.dmg`
+- Linux AppImage: `KlipperVault-X.Y.Z-linux-x64.AppImage`
+- Portable archives: `KlipperVault-X.Y.Z-<platform>.zip`
 
-GPG public key: [link to key in repo]
+If an installer is unavailable for a platform in this release, use the ZIP artifact.
 
-### 📋 Migration from Source Installation
+### Upgrade Notes
 
-If upgrading from a virtualenv-based installation:
+- Existing config and database are preserved.
+- Source-based installs continue to work.
+- If you run from source, no migration is required.
 
-1. Download the executable for your platform
-2. Run it — your existing config and database are automatically preserved
-3. No data loss; all settings and macro history remain intact
+See [INSTALLATION_GUIDE.md](https://github.com/Shadowrom2020/KlipperVault/blob/main/INSTALLATION_GUIDE.md) for install details.
 
-See [INSTALLATION_GUIDE.md](https://github.com/Shadowrom2020/KlipperVault/blob/main/INSTALLATION_GUIDE.md) for details.
+### Security and Signing
 
-### 🙏 Contributors
+- Windows code signing: [signed / unsigned]
+- macOS notarization: [notarized / not notarized]
+- Linux signature: [signed / unsigned]
 
-- @username — feature or fix description
-- @username — feature or fix description
+Verification command for Linux signatures:
 
-### 📚 Documentation
+`gpg --verify KlipperVault-*.AppImage.asc`
+
+### Known Issues
+
+- Issue + workaround
+- Issue + workaround
+
+### Contributors
+
+- @username - contribution
+- @username - contribution
+
+### Documentation
 
 - [Installation Guide](https://github.com/Shadowrom2020/KlipperVault/blob/main/INSTALLATION_GUIDE.md)
-- [Macro Developer Guide](https://github.com/Shadowrom2020/KlipperVault/blob/main/Macro_Developer.md)
-- [Release Signing (Code Signing & Notarization)](https://github.com/Shadowrom2020/KlipperVault/blob/main/RELEASE_SIGNING.md)
-
-### ⚠️Known Issues
-
-- Issue description and workaround
-- Planned fix in version X.X.X+1
+- [Development Guide](https://github.com/Shadowrom2020/KlipperVault/blob/main/development.md)
+- [Release Signing Guide](https://github.com/Shadowrom2020/KlipperVault/blob/main/RELEASE_SIGNING.md)
 
 ---
 
-## Checklist Before Publishing
+## Release Manager Checklist
 
-- [ ] Version incremented in `VERSION` file
-- [ ] CHANGELOG.md updated with release notes
-- [ ] All platform executables built and tested  
-- [ ] Windows executable signed with certificate
-- [ ] macOS app signed and notarized
-- [ ] Linux AppImage GPG-signed
-- [ ] GitHub Actions build-executables workflow completed successfully
-- [ ] Downloaded and tested at least one artifact per platform
-- [ ] Release notes formatted and ready
-- [ ] Contributors credited appropriately
-
-## Notes for Release Manager
-
-- Consider security implications of any new dependencies
-- Verify that no credentials or secrets are accidentally included in bundles
-- Test on a clean machine to simulate real user experience
-- Announce release in relevant community channels (Klipper Discord, etc.)
+- [ ] `VERSION` updated
+- [ ] Tag created and pushed (example: `vX.Y.Z`)
+- [ ] `build-executables` workflow green for all matrix targets
+- [ ] Artifacts uploaded to GitHub Release
+- [ ] At least one artifact smoke-tested per platform
+- [ ] Signing/notarization status accurately documented
+- [ ] Notes reviewed for correctness and clarity

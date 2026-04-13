@@ -199,7 +199,7 @@ The GitHub Actions `build-executables.yml` workflow:
 1. **Builds on all platforms** (parallel):
    - Linux (ubuntu-latest)
    - Windows (windows-latest)
-   - macOS Intel (macos-13)
+   - macOS Intel (macos-15-intel)
    - macOS Apple Silicon (macos-14)
 
 2. **For each platform**:

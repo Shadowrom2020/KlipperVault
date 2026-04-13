@@ -34,7 +34,7 @@ jobs:
             label: Windows
             platform: windows-x64
             python: "3.13"
-          - runner: macos-13
+          - runner: macos-15-intel
             label: macOS Intel
             platform: macos-x64
             python: "3.13"

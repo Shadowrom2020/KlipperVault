@@ -118,7 +118,7 @@ KlipperVault-0.3.0-linux-x64.zip        # Linux portable
 3. Matrix job builds on:
    - `ubuntu-latest` → Linux executable + AppImage
    - `windows-latest` → Windows executable + Inno Setup installer
-   - `macos-13` → macOS Intel executable + DMG
+   - `macos-15-intel` → macOS Intel executable + DMG
    - `macos-14` → macOS ARM64 executable + DMG
 4. Smoke tests run on each platform
 5. Artifacts uploaded as workflow artifacts
