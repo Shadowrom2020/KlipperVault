@@ -31,6 +31,6 @@ jobs:
 
       - name: Run quality parity checks
         env:
-          PYTHON_BIN: python
+          PYTHON_BIN: python3
         run: |
           ./scripts/ci_parity.sh --quality

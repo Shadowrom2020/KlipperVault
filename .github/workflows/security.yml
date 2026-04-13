@@ -36,6 +36,6 @@ jobs:
 
       - name: Run security parity checks
         env:
-          PYTHON_BIN: python
+          PYTHON_BIN: python3
         run: |
           ./scripts/ci_parity.sh --security

@@ -65,10 +65,19 @@ done
 cd "$REPO_ROOT"
 
 if [[ "$RUN_QUALITY" == "1" || "$RUN_SECURITY" == "1" ]]; then
-    if [[ ! -x "$PYTHON_BIN" ]]; then
-        echo "Python interpreter not found: $PYTHON_BIN"
-        echo "Run ./scripts/setup_dev.sh first."
-        exit 1
+    if [[ "$PYTHON_BIN" == */* ]]; then
+        if [[ ! -x "$PYTHON_BIN" ]]; then
+            echo "Python interpreter not found: $PYTHON_BIN"
+            echo "Run ./scripts/setup_dev.sh first."
+            exit 1
+        fi
+    else
+        if ! have_cmd "$PYTHON_BIN"; then
+            echo "Python interpreter not found: $PYTHON_BIN"
+            echo "Run ./scripts/setup_dev.sh first."
+            exit 1
+        fi
+        PYTHON_BIN="$(command -v "$PYTHON_BIN")"
     fi
 
     if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
