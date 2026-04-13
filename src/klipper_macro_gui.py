@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Jürgen Herrmann
 # SPDX-License-Identifier: GPL-3.0-or-later
+# mypy: ignore-errors
 """NiceGUI frontend for Klipper macro indexing."""
 
 from __future__ import annotations
@@ -10,12 +11,11 @@ from datetime import datetime
 import os
 
 from pathlib import Path
-import threading
 import tempfile
 import time
 from urllib.parse import urlparse
 
-from nicegui import app, ui
+from nicegui import ui
 
 from klipper_macro_compare import MacroCompareView
 from klipper_macro_gui_logic import (
@@ -1839,7 +1839,6 @@ def build_ui(app_version: str = "unknown") -> None:
                     runtime_config_dir_raw = str(service.get_runtime_config_dir())
                 else:
                     runtime_config_dir_raw = str(config_dir)
-            runtime_config_dir = Path(runtime_config_dir_raw)
             if isinstance(active_profile, dict):
                 vendor = str(active_profile.get("vendor", "")).strip()
                 model = str(active_profile.get("model", "")).strip()

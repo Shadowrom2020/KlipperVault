@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import platform
 
@@ -19,6 +20,7 @@ from klipper_vault_remote_profiles import (
 
 _BACKEND_OS_KEYRING = "os_keyring"
 _BACKEND_DB_FALLBACK = "db_fallback"
+_LOG = logging.getLogger(__name__)
 
 
 def _detect_os_keyring() -> tuple[bool, str]:
@@ -93,7 +95,7 @@ class CredentialStore:
                 return _BACKEND_OS_KEYRING
             except Exception:
                 # Fall through to DB fallback when keyring is not operational.
-                pass
+                _LOG.debug("OS keyring write failed; falling back to DB secret storage", exc_info=True)
 
         set_credential_backend(
             self._db_path,
@@ -124,7 +126,7 @@ class CredentialStore:
                     return value
             except Exception:
                 # Fallback read for migration/recovery scenarios.
-                pass
+                _LOG.debug("OS keyring read failed; using DB fallback secret", exc_info=True)
 
         return get_fallback_secret(self._db_path, ref)
 
@@ -141,6 +143,6 @@ class CredentialStore:
                 keyring.delete_password(self._service_name, ref)
             except Exception:
                 # Ignore keyring deletion failures and continue with DB fallback cleanup.
-                pass
+                _LOG.debug("OS keyring delete failed; continuing DB fallback cleanup", exc_info=True)
 
         clear_fallback_secret(self._db_path, ref)

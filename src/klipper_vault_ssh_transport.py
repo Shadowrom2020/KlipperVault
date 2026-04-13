@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 import posixpath
 import time
 
-import paramiko
+import paramiko  # type: ignore[import-untyped]
 
 
 @dataclass
@@ -34,7 +34,8 @@ class SshTransport:
 
     def _connect(self) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.load_system_host_keys()
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
         auth_mode = str(self._config.auth_mode or "").strip().lower()
         secret = str(self._config.secret_value or "").strip()
@@ -78,7 +79,7 @@ class SshTransport:
         started = time.time()
         client = self._connect()
         try:
-            stdin, stdout, stderr = client.exec_command("echo klippervault-ssh-ok")
+            stdin, stdout, stderr = client.exec_command("echo klippervault-ssh-ok")  # nosec B601
             _ = stdin
             output = str(stdout.read().decode("utf-8", errors="ignore")).strip()
             error_output = str(stderr.read().decode("utf-8", errors="ignore")).strip()

@@ -19,7 +19,10 @@ from packaging.requirements import Requirement
 # Metadata quality varies across packages. These overrides are used only when a
 # package does not expose a usable license in `License` or classifier fields.
 LICENSE_OVERRIDES: dict[str, str] = {
+    "cffi": "MIT",
+    "more-itertools": "MIT",
     "nicegui": "mit",
+    "paramiko": "LGPL-2.1",
 }
 
 
@@ -32,6 +35,8 @@ ALLOWED_LICENSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"mozilla public license\s*2", re.IGNORECASE),
     re.compile(r"python software foundation", re.IGNORECASE),
     re.compile(r"\bpsf\b", re.IGNORECASE),
+    re.compile(r"\blgpl\b", re.IGNORECASE),
+    re.compile(r"lesser general public license", re.IGNORECASE),
     re.compile(r"public domain", re.IGNORECASE),
 )
 

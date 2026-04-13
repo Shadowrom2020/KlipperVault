@@ -122,9 +122,15 @@ def upsert_ssh_host_profile(db_path: Path, profile: SshHostProfile) -> int:
                     now,
                 ),
             )
-            profile_id = int(cursor.lastrowid)
+            profile_id_raw = cursor.lastrowid
+            if profile_id_raw is None:
+                raise RuntimeError("failed to insert ssh_host_profile")
+            profile_id = int(profile_id_raw)
         else:
-            profile_id = int(existing[0])
+            existing_id = existing[0]
+            if existing_id is None:
+                raise RuntimeError("invalid ssh_host_profiles row without id")
+            profile_id = int(existing_id)
             conn.execute(
                 """
                 UPDATE ssh_host_profiles

@@ -10,7 +10,6 @@ module can focus on rendering and user interactions.
 from __future__ import annotations
 
 import json
-import os
 import hashlib
 import shutil
 import tempfile
@@ -47,7 +46,6 @@ from klipper_macro_indexer import (
     remove_inactive_macro_version,
     restore_macro_version,
     resolve_duplicate_macros,
-    run_indexing,
     run_indexing_from_source,
     save_macro_edit,
 )
@@ -347,7 +345,8 @@ class MacroGuiService:
             self._active_cache_dir = self._cache_dir_for_profile(profile_id)
             self._active_cache_printer_profile_id = profile_id
 
-        assert self._active_cache_dir is not None
+        if self._active_cache_dir is None:
+            raise RuntimeError("Runtime cache directory is not initialized")
         self._active_cache_dir.mkdir(parents=True, exist_ok=True)
         return self._active_cache_dir
 
@@ -647,9 +646,9 @@ class MacroGuiService:
             raise ValueError("auth_mode must be 'key' or 'password'")
 
         normalized_credential_ref = _as_text(credential_ref) or self._normalize_credential_ref(profile_name, auth_mode)
-        secret_backend = ""
+        credential_backend_name = ""
         if secret_value is not None:
-            secret_backend = self._credential_store.set_secret(
+            credential_backend_name = self._credential_store.set_secret(
                 credential_ref=normalized_credential_ref,
                 secret_type=auth_mode,
                 secret_value=str(secret_value),
@@ -670,8 +669,8 @@ class MacroGuiService:
             ),
         )
 
-        if not secret_backend and normalized_credential_ref:
-            secret_backend = get_credential_backend(self._db_path, normalized_credential_ref) or ""
+        if not credential_backend_name and normalized_credential_ref:
+            credential_backend_name = get_credential_backend(self._db_path, normalized_credential_ref) or ""
 
         ensure_result = self.ensure_printer_profile_for_ssh_profile(
             ssh_profile_id=int(legacy_ssh_profile_id),
@@ -706,7 +705,7 @@ class MacroGuiService:
             "printer_profile_id": printer_profile_id,
             "legacy_ssh_profile_id": int(legacy_ssh_profile_id),
             "credential_ref": normalized_credential_ref,
-            "secret_backend": secret_backend,
+            "secret_backend": credential_backend_name,
             "is_active": bool(is_active),
         }
 
@@ -772,8 +771,9 @@ class MacroGuiService:
             conn.commit()
 
         legacy_ssh_profile_id = profile.get("ssh_profile_id")
-        if legacy_ssh_profile_id is not None:
-            delete_ssh_host_profile(self._db_path, int(legacy_ssh_profile_id))
+        legacy_ssh_profile_id_int = _as_int(legacy_ssh_profile_id, default=0)
+        if legacy_ssh_profile_id_int > 0:
+            delete_ssh_host_profile(self._db_path, legacy_ssh_profile_id_int)
 
         if bool(profile.get("is_active", False)):
             self.cleanup_runtime_cache()

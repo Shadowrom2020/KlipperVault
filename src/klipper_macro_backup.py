@@ -274,29 +274,29 @@ def create_macro_backup(
                 )
             if cfg_files_count == 0:
                 raise ValueError("backup aborted: no .cfg files found to snapshot")
-        elif config_dir.exists() and config_dir.is_dir():
-            cfg_rows: List[tuple[int, int, str, str]] = []
+        elif config_dir is not None and config_dir.exists() and config_dir.is_dir():
+            cfg_file_rows: List[tuple[int, int, str, str]] = []
             for cfg_file in _iter_cfg_files(config_dir):
                 rel_path = str(cfg_file.relative_to(config_dir))
                 file_content = cfg_file.read_text(encoding="utf-8", errors="ignore")
-                cfg_rows.append((backup_id, int(printer_profile_id), rel_path, file_content))
+                cfg_file_rows.append((backup_id, int(printer_profile_id), rel_path, file_content))
                 cfg_files_count += 1
-                if len(cfg_rows) >= _DB_BATCH_SIZE:
+                if len(cfg_file_rows) >= _DB_BATCH_SIZE:
                     conn.executemany(
                         """
                         INSERT INTO macro_backup_files (backup_id, printer_profile_id, file_path, file_content)
                         VALUES (?, ?, ?, ?)
                         """,
-                        cfg_rows,
+                        cfg_file_rows,
                     )
-                    cfg_rows.clear()
-            if cfg_rows:
+                    cfg_file_rows.clear()
+            if cfg_file_rows:
                 conn.executemany(
                     """
                     INSERT INTO macro_backup_files (backup_id, printer_profile_id, file_path, file_content)
                     VALUES (?, ?, ?, ?)
                     """,
-                    cfg_rows,
+                    cfg_file_rows,
                 )
             if cfg_files_count == 0:
                 raise ValueError("backup aborted: no .cfg files found to snapshot")
@@ -660,7 +660,7 @@ def restore_macro_backup(
             config_dir = config_dir.expanduser().resolve()
             config_dir.mkdir(parents=True, exist_ok=True)
 
-            snapshot_paths: set[str] = set()
+            snapshot_paths_local: set[str] = set()
             if has_file_snapshot:
                 file_cursor = conn.execute(
                     """
@@ -674,7 +674,7 @@ def restore_macro_backup(
                 for chunk in _iter_cursor_batches(file_cursor):
                     for rel_path, content in chunk:
                         rel = str(rel_path)
-                        snapshot_paths.add(rel)
+                        snapshot_paths_local.add(rel)
                         touched_cfg_files.add(rel)
                         target = _safe_cfg_path(config_dir, rel)
                         target.parent.mkdir(parents=True, exist_ok=True)
@@ -683,18 +683,18 @@ def restore_macro_backup(
             elif legacy_file_rows:
                 for rel_path, content in legacy_file_rows:
                     rel = str(rel_path)
-                    snapshot_paths.add(rel)
+                    snapshot_paths_local.add(rel)
                     touched_cfg_files.add(rel)
                     target = _safe_cfg_path(config_dir, rel)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(str(content), encoding="utf-8")
                     restored_cfg_files += 1
 
-            if snapshot_paths:
+            if snapshot_paths_local:
                 existing_cfg = [p for p in _iter_cfg_files(config_dir)]
                 for cfg_file in existing_cfg:
                     rel = str(cfg_file.relative_to(config_dir))
-                    if rel not in snapshot_paths:
+                    if rel not in snapshot_paths_local:
                         cfg_file.unlink(missing_ok=True)
                         removed_cfg_files += 1
                         removed_cfg_paths.add(rel)

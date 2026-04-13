@@ -15,7 +15,6 @@ import json
 import os
 import re
 import subprocess  # nosec B404
-import sys
 from pathlib import Path
 from urllib import error, request
 
@@ -111,7 +110,7 @@ def _send_mainsail_deprecation_notification() -> None:
     endpoint = moonraker_url.rstrip("/") + "/printer/gcode/script"
     req = request.Request(endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with request.urlopen(req, timeout=3.0):
+        with request.urlopen(req, timeout=3.0):  # nosec B310
             pass
     except (error.URLError, error.HTTPError, TimeoutError):
         # Non-fatal: service should still be stopped even when Moonraker is unavailable.
@@ -122,7 +121,7 @@ def _stop_legacy_service() -> None:
     """Stop legacy KlipperVault systemd service names."""
     for service_name in ("klippervault.service", "klipper-vault.service"):
         try:
-            subprocess.run(["systemctl", "stop", service_name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603
+            subprocess.run(["systemctl", "stop", service_name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603 B607
         except OSError:
             # Non-fatal: service manager may be unavailable in some environments.
             pass

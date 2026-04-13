@@ -43,7 +43,7 @@ def test_set_active_printer_profile_switches_profiles(tmp_path: Path) -> None:
 
     # Create a second profile by reusing the default and inserting a new one via ensure path.
     # Keep this test focused on active profile switching behavior.
-    from klipper_vault_printer_profiles import PrinterProfile, ensure_printer_profile_schema
+    from klipper_vault_printer_profiles import ensure_printer_profile_schema
     from klipper_vault_db import open_sqlite_connection
 
     with open_sqlite_connection(db_path, ensure_schema=ensure_printer_profile_schema) as conn:

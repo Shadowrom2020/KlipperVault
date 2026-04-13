@@ -30,14 +30,12 @@ jobs:
           cache-dependency-path: |
             requirements.txt
 
-      - name: Install dependencies and security tools
+      - name: Ensure CI parity script is executable
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pip-audit bandit
+          chmod +x scripts/ci_parity.sh
 
-      - name: Dependency vulnerability scan
-        run: pip-audit
-
-      - name: Bandit static analysis
-        run: bandit -q -r src klipper_vault.py -s B608
+      - name: Run security parity checks
+        env:
+          PYTHON_BIN: python
+        run: |
+          ./scripts/ci_parity.sh --security

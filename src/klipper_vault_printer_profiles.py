@@ -236,11 +236,17 @@ def ensure_default_printer_profile(db_path: Path) -> int:
                 """,
                 ("Default Printer", "", "", "off_printer", None, 1, 0, now, now),
             )
-            profile_id = int(cursor.lastrowid)
+            profile_id_raw = cursor.lastrowid
+            if profile_id_raw is None:
+                raise RuntimeError("failed to insert default printer profile")
+            profile_id = int(profile_id_raw)
             conn.commit()
             return profile_id
 
-        profile_id = int(row[0])
+        row_id = row[0]
+        if row_id is None:
+            raise RuntimeError("invalid printer_profiles row without id")
+        profile_id = int(row_id)
         conn.execute("UPDATE printer_profiles SET is_active = 0 WHERE is_active = 1")
         conn.execute(
             "UPDATE printer_profiles SET is_active = 1, updated_at = ? WHERE id = ?",
@@ -356,7 +362,10 @@ def create_printer_profile(
                 now,
             ),
         )
-        profile_id = int(cursor.lastrowid)
+        profile_id_raw = cursor.lastrowid
+        if profile_id_raw is None:
+            raise RuntimeError("failed to insert printer profile")
+        profile_id = int(profile_id_raw)
         conn.commit()
         return profile_id
 
