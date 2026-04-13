@@ -36,6 +36,29 @@ Installer summary:
 %USERPROFILE%\\klippervault-venv\\Scripts\\python.exe klipper_vault_gui.py
 ```
 
+## Build a Standalone Executable
+
+From repository root in Command Prompt:
+
+```bat
+py -3 -m pip install -r requirements.txt -r requirements-build.txt
+py -3 scripts\build_executable.py
+```
+
+Build artifacts are written under `dist\` by PyInstaller. Windows executables must be built on Windows.
+
+### Build Inno Setup Installer (Optional)
+
+If you have [Inno Setup 6](https://jrsoftware.org/isdl.php) installed:
+
+```bat
+py -3 -m pip install -r requirements.txt -r requirements-build.txt
+py -3 scripts\build_executable.py
+py -3 scripts\build_msi_installer.py
+```
+
+This generates a `.exe` setup file in the `release\` directory. The installer includes desktop and Start Menu shortcuts.
+
 ## Uninstall
 
 Remove installed artifacts manually:

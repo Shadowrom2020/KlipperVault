@@ -37,6 +37,27 @@ Installer summary:
 ~/klippervault-venv/bin/python ./klipper_vault_gui.py
 ```
 
+## Build a Standalone Executable
+
+From repository root:
+
+```bash
+python3 -m pip install -r requirements.txt -r requirements-build.txt
+make bundle
+```
+
+Build artifacts are written under `dist/` by PyInstaller. macOS app bundles must be built on macOS.
+
+### Build DMG Installer (Automatic)
+
+After running `make bundle`, you can optionally create a DMG disk image:
+
+```bash
+python3 scripts/build_dmg_installer.py
+```
+
+This generates a `.dmg` file in the `release/` directory that is ready for distribution.
+
 ## Uninstall
 
 Remove installed artifacts manually:

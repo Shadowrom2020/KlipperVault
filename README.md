@@ -6,6 +6,18 @@ KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definiti
 
 **[📸 View UI Overview with Screenshots](overview.md)**
 
+## Getting Started
+
+**[→ Download the standalone executable for your platform →](https://github.com/Shadowrom2020/KlipperVault/releases)**
+
+- **Windows**: Download `.exe` installer, run it, done
+- **macOS**: Download `.dmg`, drag app to Applications
+- **Linux**: Download `.AppImage`, make executable, run
+
+No Python installation or virtualenv needed. Works across Windows 10+, macOS, and Linux.
+
+**[Full installation guide](INSTALLATION_GUIDE.md)** — for troubleshooting, upgrading, and source installs
+
 ## Deprecation Notice: On-Printer Runtime Removed
 
 Support for running KlipperVault directly on the printer host has been removed.
@@ -174,11 +186,55 @@ Port, UI language, and developer mode changes require app restart to take full e
 
 ## Installation
 
-- [Linux installation](Linux.md)
-- [macOS installation](MacOS.md)
-- [Windows installation](Windows.md)
+**Quick Start: Use the [standalone executable or native installer](INSTALLATION_GUIDE.md)** — no Python or virtualenv needed.
 
-Run instructions are included in each OS-specific installation guide above.
+For developers or source-based deployments:
+- [Linux source installation](Linux.md)
+- [macOS source installation](MacOS.md)
+- [Windows source installation](Windows.md)
+
+## Standalone Executable Builds
+
+KlipperVault can also be packaged as a standalone executable for Windows, Linux, and macOS with PyInstaller.
+
+Important constraints:
+
+- Build on the target OS. PyInstaller does not cross-compile Windows, Linux, and macOS binaries from one host.
+- The packaged build keeps the existing config and database locations for each platform.
+- Packaged builds skip the startup virtualenv dependency sync and open the browser automatically on launch.
+
+Build prerequisites:
+
+```bash
+python3 -m pip install -r requirements.txt -r requirements-build.txt
+```
+
+Build commands:
+
+```bash
+# Linux/macOS
+make bundle
+
+# Windows
+py -3 scripts\\build_executable.py
+```
+
+This generates a packaged app from [klippervault.spec](klippervault.spec). CI/release automation can reuse the same spec on each platform.
+
+Platform-native installer packages:
+
+- **Windows**: Inno Setup installer (.exe) — requires [Inno Setup 6](https://jrsoftware.org/isdl.php) to build locally
+- **macOS**: DMG disk image (.dmg) — built automatically with `hdiutil` on macOS
+- **Linux**: AppImage (.AppImage) — requires [appimagetool](https://github.com/AppImage/AppImageKit) to build locally
+
+When tools are not available, the build produces a ZIP archive fallback containing the executable.
+
+GitHub Actions automation:
+
+- [build-executables.yml](.github/workflows/build-executables.yml) builds versioned Windows, Linux, macOS Intel, and macOS Apple Silicon artifacts.
+  - Installers (DMG, AppImage, Inno Setup) are built on each respective OS if tools are available.
+  - All platforms produce ZIP archives as a fallback.
+- Tagged pushes matching `v*` publish all artifacts to the GitHub release for that tag.
 
 ## Docker Deployment
 

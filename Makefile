@@ -1,9 +1,10 @@
 VENV ?= .venv
 PYBABEL := $(shell test -x $(VENV)/bin/pybabel && echo $(VENV)/bin/pybabel || echo pybabel)
+PYTHON := $(shell test -x $(VENV)/bin/python && echo $(VENV)/bin/python || echo python3)
 I18N_DOMAIN := klippervault
 I18N_POT := src/locales/$(I18N_DOMAIN).pot
 
-.PHONY: i18n-extract i18n-update i18n-compile i18n
+.PHONY: i18n-extract i18n-update i18n-compile i18n bundle
 
 # Extract translatable strings from Python sources into the template catalog.
 i18n-extract:
@@ -19,3 +20,7 @@ i18n-compile:
 
 # Full translation refresh: extract, update, and compile catalogs.
 i18n: i18n-update i18n-compile
+
+# Build a standalone executable with PyInstaller.
+bundle:
+	$(PYTHON) scripts/build_executable.py

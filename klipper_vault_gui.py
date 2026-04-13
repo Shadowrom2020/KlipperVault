@@ -15,8 +15,24 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _is_frozen_runtime() -> bool:
+    """Return True when running from a packaged executable."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def _bundle_root() -> Path:
+    """Return runtime root for packaged resources or repository root."""
+    if _is_frozen_runtime():
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            return Path(meipass)
+    return REPO_ROOT
+
+
 SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
+if not _is_frozen_runtime() and str(SRC_DIR) not in sys.path:
     # Keep imports stable after moving all source modules under src/.
     sys.path.insert(0, str(SRC_DIR))
 
@@ -63,6 +79,10 @@ def _log_venv_sync(message: str) -> None:
 
 def _sync_venv_requirements_if_needed() -> None:
     """Install requirements into active venv when requirements.txt changed."""
+    if _is_frozen_runtime():
+        _log_venv_sync("skipping in packaged runtime")
+        return
+
     if not _auto_update_venv_enabled():
         _log_venv_sync("disabled via KLIPPERVAULT_AUTO_UPDATE_VENV")
         return
@@ -97,7 +117,7 @@ def _sync_venv_requirements_if_needed() -> None:
 
 def _load_app_version() -> str:
     """Read application version from VERSION file, with safe fallback."""
-    version_path = REPO_ROOT / "VERSION"
+    version_path = _bundle_root() / "VERSION"
     try:
         version = version_path.read_text(encoding="utf-8").strip()
         return version or "unknown"
@@ -213,19 +233,31 @@ def main() -> None:
     _patch_nicegui_deleted_parent_slot_event_race()
     _patch_nicegui_deleted_parent_slot_exception_filter()
 
+    # Disable NiceGUI's reloader in bundled executables to prevent
+    # attempts to reload the binary executable, which causes null byte errors.
+    if _is_frozen_runtime():
+        os.environ["NICEGUI_AUTORELOAD"] = "False"
+        os.environ["NICEGUI_RELOAD"] = "no"
+
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
     db_path = Path(DEFAULT_DB_PATH).expanduser().resolve()
     vault_cfg = _load_vault_config(config_dir, db_path)
-    favicon_path = REPO_ROOT / "assets" / "favicon.svg"
-    build_ui(app_version=_load_app_version())
+    favicon_path = _bundle_root() / "assets" / "favicon.svg"
+    app_version = _load_app_version()
+
+    def build_ui_root() -> None:
+        """Wrap UI building in a root function to prevent NiceGUI script mode detection."""
+        build_ui(app_version=app_version)
+
     ui.run(
         host="0.0.0.0",  # nosec B104
         port=vault_cfg.port,
         title=t("Klipper Vault"),
         dark=True,
         favicon=favicon_path,
-        show=False,
+        show=_is_frozen_runtime(),
         reload=False,
+        root=build_ui_root if _is_frozen_runtime() else None,
     )
 
 
