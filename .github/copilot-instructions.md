@@ -23,8 +23,8 @@ Maintain a lightweight Klipper macro vault with:
 - Trailing comment-only lines at end of gcode are trimmed before storage.
 
 ## Config Rules
-- Config path: `~/printer_data/config/klippervault.cfg`.
-- Settings in `[vault]`:
+- App settings are stored in SQLite table `vault_settings`.
+- Runtime-critical settings include:
   - `version_history_size`
   - `port`
 - Do not hardcode static UI port values in runtime logic.

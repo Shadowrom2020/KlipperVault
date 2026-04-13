@@ -33,7 +33,7 @@ from klipper_macro_gui_state import UIState
 from klipper_macro_viewer import MacroViewer, format_ts as _format_ts
 from klipper_type_utils import to_dict_list as _as_dict_list
 from klipper_type_utils import to_int as _to_int
-from klipper_vault_config import load_or_create as _load_vault_config
+from klipper_vault_config import VaultConfig, load_or_create as _load_vault_config, save as _save_vault_config
 from klipper_vault_paths import DEFAULT_CONFIG_DIR, DEFAULT_DB_PATH
 from klipper_vault_i18n import set_language, t
 
@@ -86,7 +86,7 @@ def build_ui(app_version: str = "unknown") -> None:
     db_path = Path(DEFAULT_DB_PATH).expanduser().resolve()
     # Load (or create) klippervault.cfg once at startup. All subsequent indexing
     # runs read settings from this object without re-reading the file.
-    vault_cfg = _load_vault_config(config_dir)
+    vault_cfg = _load_vault_config(config_dir, db_path)
     set_language(os.environ.get("KLIPPERVAULT_LANG", vault_cfg.ui_language))
     ui.page_title(t("Klipper Vault"))
     runtime_mode = "off_printer"
@@ -311,6 +311,35 @@ def build_ui(app_version: str = "unknown") -> None:
             return " | " + restart_message
         return ""
 
+    def _is_remote_conflict_error(error: Exception | str) -> bool:
+        """Return True when an error indicates stale remote cfg state."""
+        text = str(error or "").lower()
+        return "remote cfg conflict" in text
+
+    def _show_remote_conflict_guidance(
+        *,
+        operation_label: str,
+        error: Exception | str,
+        local_error_label: ui.label | None = None,
+    ) -> bool:
+        """Show actionable remote conflict guidance and return True when handled."""
+        if not _is_remote_conflict_error(error):
+            return False
+
+        error_text = str(error or "").strip()
+        guidance = t(
+            "Remote configuration changed while processing '{operation}'. Sync remote cfg files, review differences, and retry.",
+            operation=operation_label,
+        )
+        if local_error_label is not None:
+            local_error_label.set_text(guidance)
+
+        state.status_label.set_text(guidance)
+        remote_conflict_dialog_detail.set_text(error_text)
+        remote_conflict_dialog_guidance.set_text(guidance)
+        remote_conflict_dialog.open()
+        return True
+
     def _set_off_printer_profile_state(ready: bool, detail: str = "") -> None:
         """Update off-printer profile status indicators."""
         state.off_printer_profile_ready = ready
@@ -507,6 +536,38 @@ def build_ui(app_version: str = "unknown") -> None:
     state.printer_profile_error = printer_profile_error
     state.save_printer_profile_button = save_printer_profile_button
 
+    with ui.dialog() as app_settings_dialog, ui.card().classes("w-[42rem] max-w-[96vw]"):
+        ui.label(t("Application settings")).classes("text-lg font-semibold")
+        ui.label(t("Configure KlipperVault settings stored in the local database.")).classes("text-sm text-grey-5")
+        settings_version_history_input = (
+            ui.number(label=t("Version history size"), value=vault_cfg.version_history_size)
+            .props("outlined dense")
+            .classes("w-full mt-2")
+        )
+        settings_port_input = (
+            ui.number(label=t("Web UI port"), value=vault_cfg.port)
+            .props("outlined dense")
+            .classes("w-full")
+        )
+        settings_language_select = (
+            ui.select(
+                options={"en": "English", "de": "Deutsch", "fr": "Francais"},
+                value=str(vault_cfg.ui_language or "en"),
+                label=t("UI language"),
+            )
+            .props("outlined dense")
+            .classes("w-full")
+        )
+        settings_repo_url_input = ui.input(label=t("Online update repository URL")).props("outlined dense").classes("w-full")
+        settings_manifest_input = ui.input(label=t("Online update manifest path")).props("outlined dense").classes("w-full")
+        settings_ref_input = ui.input(label=t("Online update reference")).props("outlined dense").classes("w-full")
+        settings_developer_toggle = ui.switch(t("Developer mode"), value=bool(vault_cfg.developer))
+        settings_error_label = ui.label("").classes("text-sm text-negative mt-1")
+        settings_info_label = ui.label("").classes("text-sm text-grey-5 mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            flat_dialog_button("Cancel", app_settings_dialog.close)
+            save_settings_button = ui.button(t("Save")).props("color=primary no-caps")
+
     def _printer_profile_missing() -> bool:
         """Return True when active printer vendor/model values are not set."""
         vendor, model = _active_printer_identity()
@@ -622,6 +683,88 @@ def build_ui(app_version: str = "unknown") -> None:
 
     state.save_printer_profile_button.on_click(_save_printer_profile)
 
+    def open_app_settings_dialog() -> None:
+        """Open settings dialog populated from current persisted app config."""
+        settings_version_history_input.set_value(int(vault_cfg.version_history_size))
+        settings_port_input.set_value(int(vault_cfg.port))
+        settings_language_select.set_value(str(vault_cfg.ui_language or "en").strip().lower() or "en")
+        settings_repo_url_input.set_value(str(vault_cfg.online_update_repo_url or "").strip())
+        settings_manifest_input.set_value(str(vault_cfg.online_update_manifest_path or "").strip())
+        settings_ref_input.set_value(str(vault_cfg.online_update_ref or "").strip())
+        settings_developer_toggle.set_value(bool(vault_cfg.developer))
+        settings_error_label.set_text("")
+        settings_info_label.set_text(t("Changing port, UI language, or developer mode requires app restart."))
+        app_settings_dialog.open()
+
+    def save_app_settings_dialog() -> None:
+        """Validate and persist app settings in the SQLite configuration store."""
+        version_history_size = _to_int(settings_version_history_input.value, default=0)
+        port_value = _to_int(settings_port_input.value, default=0)
+        ui_language = str(settings_language_select.value or "").strip().lower()
+        repo_url = str(settings_repo_url_input.value or "").strip()
+        manifest_path = str(settings_manifest_input.value or "").strip()
+        update_ref = str(settings_ref_input.value or "").strip()
+        developer_mode = bool(settings_developer_toggle.value)
+
+        if version_history_size < 1:
+            settings_error_label.set_text(t("Version history size must be at least 1."))
+            return
+        if port_value < 1 or port_value > 65535:
+            settings_error_label.set_text(t("Port must be between 1 and 65535."))
+            return
+        if ui_language not in {"en", "de", "fr"}:
+            settings_error_label.set_text(t("Unsupported UI language."))
+            return
+        if not manifest_path:
+            settings_error_label.set_text(t("Online update manifest path is required."))
+            return
+        if not update_ref:
+            settings_error_label.set_text(t("Online update reference is required."))
+            return
+
+        restart_required = (
+            int(vault_cfg.port) != int(port_value)
+            or str(vault_cfg.ui_language or "en").strip().lower() != ui_language
+            or bool(vault_cfg.developer) != developer_mode
+        )
+
+        new_cfg = VaultConfig(
+            version_history_size=version_history_size,
+            port=port_value,
+            runtime_mode="off_printer",
+            ui_language=ui_language,
+            printer_vendor=str(vault_cfg.printer_vendor or "").strip(),
+            printer_model=str(vault_cfg.printer_model or "").strip(),
+            online_update_repo_url=repo_url,
+            online_update_manifest_path=manifest_path,
+            online_update_ref=update_ref,
+            developer=developer_mode,
+        )
+
+        try:
+            _save_vault_config(config_dir, new_cfg, db_path)
+        except Exception as exc:
+            settings_error_label.set_text(t("Failed to save settings: {error}", error=exc))
+            return
+
+        # Update in-memory values so runtime operations pick up new settings immediately.
+        vault_cfg.version_history_size = int(new_cfg.version_history_size)
+        vault_cfg.port = int(new_cfg.port)
+        vault_cfg.ui_language = str(new_cfg.ui_language)
+        vault_cfg.online_update_repo_url = str(new_cfg.online_update_repo_url)
+        vault_cfg.online_update_manifest_path = str(new_cfg.online_update_manifest_path)
+        vault_cfg.online_update_ref = str(new_cfg.online_update_ref)
+        vault_cfg.developer = bool(new_cfg.developer)
+        service.set_version_history_size(vault_cfg.version_history_size)
+
+        app_settings_dialog.close()
+        if restart_required:
+            state.status_label.set_text(t("Settings saved. Restart KlipperVault to apply all changes."))
+        else:
+            state.status_label.set_text(t("Settings saved."))
+
+    save_settings_button.on_click(save_app_settings_dialog)
+
     with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4 p-4 xl:h-[calc(100vh-110px)]"):
         with ui.card().classes("col-span-1 xl:h-full flex flex-col overflow-hidden min-h-[55vh] xl:min-h-0"):
             ui.label(t("Indexed macros")).classes("text-lg font-semibold mb-2 shrink-0")
@@ -629,7 +772,7 @@ def build_ui(app_version: str = "unknown") -> None:
             with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
                 duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
                 new_button = ui.button(t("Show new")).props("flat dense no-caps")
-                active_filter_button = ui.button(t("Filter: {state}", state="all")).props("flat dense no-caps")
+                active_filter_button = ui.button(t("Filter: {state}", state=t("all"))).props("flat dense no-caps")
             with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
                 ui.label(t("Sort:")).classes("text-xs text-grey-4")
                 sort_radio = (
@@ -883,6 +1026,14 @@ def build_ui(app_version: str = "unknown") -> None:
         with ui.row().classes("w-full justify-end mt-3"):
             flat_dialog_button("Close", remote_cfg_list_dialog.close)
 
+    with ui.dialog() as remote_conflict_dialog, ui.card().classes("w-[40rem] max-w-[96vw]"):
+        ui.label(t("Remote changes detected")).classes("text-lg font-semibold text-warning")
+        remote_conflict_dialog_guidance = ui.label("").classes("text-sm text-grey-4 mt-1")
+        remote_conflict_dialog_detail = ui.label("").classes("text-sm text-negative mt-1")
+        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+            flat_dialog_button("Close", remote_conflict_dialog.close)
+            sync_after_conflict_button = ui.button(t("Sync and reload")).props("color=primary no-caps")
+
     with ui.dialog() as off_printer_profile_dialog, ui.card().classes("w-[44rem] max-w-[96vw]"):
         ui.label(t("Printer connection management")).classes("text-lg font-semibold")
         ui.label(t("Configure SSH settings as part of each printer profile for off-printer mode.")).classes("text-sm text-grey-5")
@@ -921,6 +1072,13 @@ def build_ui(app_version: str = "unknown") -> None:
                 delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
                 activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")
                 save_ssh_profile_button = ui.button(t("Save profile")).props("color=primary no-caps")
+
+    def _sync_after_remote_conflict() -> None:
+        """Close conflict dialog and run a one-click recovery sync/index."""
+        remote_conflict_dialog.close()
+        perform_index("remote conflict recovery")
+
+    sync_after_conflict_button.on_click(_sync_after_remote_conflict)
 
     def open_macro_by_identity(file_path: str, macro_name: str) -> None:
         """Select a macro by identity, clearing filters if needed to reveal it."""
@@ -1060,6 +1218,8 @@ def build_ui(app_version: str = "unknown") -> None:
             else:
                 result = service.restore_version(file_path, macro_name, version)
         except Exception as exc:
+            if _show_remote_conflict_guidance(operation_label=t("macro restore"), error=exc):
+                return
             state.status_label.set_text(t("Failed to restore macro version: {error}", error=exc))
             return
 
@@ -1097,18 +1257,23 @@ def build_ui(app_version: str = "unknown") -> None:
         if selected_version != latest_version:
             raise ValueError("Only the latest macro version can be edited.")
 
-        if off_printer_mode_enabled:
-            result = _run_with_file_operation_modal(
-                t("Uploading changed cfg file"),
-                lambda: service.save_macro_editor_text(
-                    file_path,
-                    macro_name,
-                    section_text,
-                    progress_callback=_set_file_operation_progress,
-                ),
-            )
-        else:
-            result = service.save_macro_editor_text(file_path, macro_name, section_text)
+        try:
+            if off_printer_mode_enabled:
+                result = _run_with_file_operation_modal(
+                    t("Uploading changed cfg file"),
+                    lambda: service.save_macro_editor_text(
+                        file_path,
+                        macro_name,
+                        section_text,
+                        progress_callback=_set_file_operation_progress,
+                    ),
+                )
+            else:
+                result = service.save_macro_editor_text(file_path, macro_name, section_text)
+        except Exception as exc:
+            _show_remote_conflict_guidance(operation_label=t("macro edit"), error=exc)
+            raise
+
         state.status_label.set_text(t(
             "Saved macro '{macro_name}' in {file_path} ({operation}). Re-indexing...",
             macro_name=result["macro_name"],
@@ -1194,7 +1359,13 @@ def build_ui(app_version: str = "unknown") -> None:
         try:
             _perform_delete_macro_source(state.macro_delete_target)
         except Exception as exc:
-            state.macro_delete_error_label.set_text(str(exc))
+            handled = _show_remote_conflict_guidance(
+                operation_label=t("macro delete"),
+                error=exc,
+                local_error_label=state.macro_delete_error_label,
+            )
+            if not handled:
+                state.macro_delete_error_label.set_text(str(exc))
             return
 
         state.macro_delete_dialog.close()
@@ -1210,9 +1381,17 @@ def build_ui(app_version: str = "unknown") -> None:
         """Sync new-macros filter button text with current filter state."""
         new_button.set_text(t("Show all macros") if state.show_new_only else t("Show new"))
 
+    def _translated_active_filter_state() -> str:
+        """Return localized active-filter state label for button text."""
+        if state.active_filter == "active":
+            return t("active")
+        if state.active_filter == "inactive":
+            return t("inactive")
+        return t("all")
+
     def update_active_filter_button_label() -> None:
         """Sync active/inactive cycle button text with current filter state."""
-        active_filter_button.set_text(t("Filter: {state}", state=state.active_filter))
+        active_filter_button.set_text(t("Filter: {state}", state=_translated_active_filter_state()))
 
     def status_badge_key(macro: dict[str, object]) -> str:
         """Resolve macro row status key for consistent badge rendering."""
@@ -1451,6 +1630,12 @@ def build_ui(app_version: str = "unknown") -> None:
             else:
                 result = service.resolve_duplicates(keep_choices=keep_map, duplicate_groups=state.duplicate_wizard_groups)
         except Exception as exc:
+            if _show_remote_conflict_guidance(
+                operation_label=t("duplicate resolution"),
+                error=exc,
+                local_error_label=state.duplicate_wizard_error,
+            ):
+                return
             state.duplicate_wizard_error.set_text(t("Failed to resolve duplicates: {error}", error=exc))
             return
 
@@ -1668,6 +1853,12 @@ def build_ui(app_version: str = "unknown") -> None:
             else:
                 result = service.restore_backup(state.restore_target_id)
         except Exception as exc:
+            if _show_remote_conflict_guidance(
+                operation_label=t("backup restore"),
+                error=exc,
+                local_error_label=state.restore_error_label,
+            ):
+                return
             state.restore_error_label.set_text(t("Restore failed: {error}", error=exc))
             state.status_label.set_text(t("Restore failed: {error}", error=exc))
             return
@@ -3012,6 +3203,7 @@ def build_ui(app_version: str = "unknown") -> None:
     save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
     active_printer_select.on_value_change(on_active_printer_profile_change)
     with macro_actions_menu:
+        ui.menu_item(t("Settings"), on_click=open_app_settings_dialog)
         ui.menu_item(t("Export macros"), on_click=open_export_dialog)
         ui.menu_item(t("Import macros"), on_click=open_import_dialog)
         ui.menu_item(t("Loading order overview"), on_click=open_load_order_overview_dialog)

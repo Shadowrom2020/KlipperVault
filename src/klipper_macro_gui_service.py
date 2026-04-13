@@ -308,6 +308,10 @@ class MacroGuiService:
         """Return active config root used for parser and file mutations."""
         return self._resolve_runtime_config_dir()
 
+    def set_version_history_size(self, value: int) -> None:
+        """Update in-memory version history retention for subsequent indexing runs."""
+        self._version_history_size = max(int(value), 1)
+
     def cleanup_runtime_cache(self) -> None:
         """Remove active off-printer cache directory when available."""
         if self._active_cache_dir is not None:

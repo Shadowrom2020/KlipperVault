@@ -205,21 +205,6 @@ JSON
                 "KLIPPERVAULT_AUTO_UPDATE_VENV": "0",
                 "KLIPPERVAULT_RUNTIME_MODE": "off_printer"
             }
-        },
-        {
-            "name": "Python: KlipperVault Host API (legacy)",
-            "type": "python",
-            "request": "launch",
-            "python": "${config:python.defaultInterpreterPath}",
-            "program": "${workspaceFolder}/klipper_vault.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/.vscode/.env",
-            "justMyCode": true,
-            "env": {
-                "PYTHONUNBUFFERED": "1",
-                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
-            }
         }
     ]
 }

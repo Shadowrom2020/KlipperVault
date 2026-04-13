@@ -20,7 +20,6 @@ VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-venv}"
 REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-$APP_DIR/requirements.txt}"
 KLIPPERVAULT_CONFIG_DIR="${KLIPPERVAULT_CONFIG_DIR:-$APP_HOME/.config/klippervault}"
 KLIPPERVAULT_DB_PATH="${KLIPPERVAULT_DB_PATH:-$APP_HOME/.local/share/klippervault/klipper_macros.db}"
-VAULT_CFG_PATH="${VAULT_CFG_PATH:-$KLIPPERVAULT_CONFIG_DIR/klippervault.cfg}"
 
 need_cmd() {
   local cmd="$1"
@@ -47,25 +46,6 @@ as_user() {
   else
     as_root runuser -u "$APP_USER" -- "$@"
   fi
-}
-
-ensure_off_printer_config() {
-  as_user "$PYTHON_BIN" - "$APP_DIR" "$KLIPPERVAULT_CONFIG_DIR" <<'PY'
-import sys
-from pathlib import Path
-
-repo_root = Path(sys.argv[1]).resolve()
-config_dir = Path(sys.argv[2]).expanduser().resolve()
-src_dir = repo_root / "src"
-if str(src_dir) not in sys.path:
-    sys.path.insert(0, str(src_dir))
-
-from klipper_vault_config import VaultConfig, load_or_create, save
-
-cfg = load_or_create(config_dir)
-cfg.runtime_mode = "off_printer"
-save(config_dir, cfg)
-PY
 }
 
 echo "Installing KlipperVault (remote-only mode)"
@@ -96,8 +76,7 @@ echo "Installing Python dependencies..."
 as_user "$VENV_DIR/bin/pip" install --upgrade pip
 as_user "$VENV_DIR/bin/pip" install -r "$REQUIREMENTS_FILE"
 
-echo "Writing remote-only config defaults..."
-ensure_off_printer_config
+echo "Settings are initialized automatically in the SQLite database on first start."
 
 echo
 echo "Install complete."

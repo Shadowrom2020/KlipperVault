@@ -69,34 +69,21 @@ Off-printer credential storage:
 - Runtime mode: `off_printer`
 - Config directory: `~/.config/klippervault`
 - Database: `~/.local/share/klippervault/klipper_macros.db`
-- App config path default (installer): `~/.config/klippervault/klippervault.cfg`
 - Default HTTP port: `10090`
 - Moonraker URL comes from the active SSH profile.
 
 ## Configuration
 
-KlipperVault creates `klippervault.cfg` on first start if it does not exist.
+KlipperVault stores application settings in the SQLite database and exposes them in-app:
 
-```ini
-[vault]
-version_history_size: 5
-port: 10090
-runtime_mode: off_printer
-ui_language: en
-printer_vendor:
-printer_model:
-online_update_repo_url:
-online_update_manifest_path: updates/manifest.json
-online_update_ref: main
-developer: false
-```
+1. Open `Macro actions`.
+2. Click `Settings`.
+3. Save changes from the dialog.
 
 - `version_history_size`: max stored versions per macro
 - `port`: web UI port
-- `runtime_mode`: runtime behavior (`off_printer` only)
-- `ui_language`: UI language (`en`, `de`)
-- `printer_vendor`: optional printer vendor shown in UI and exported share metadata
-- `printer_model`: optional printer model shown in UI and exported share metadata
+- `runtime_mode`: fixed to `off_printer`
+- `ui_language`: UI language (`en`, `de`, `fr`)
 - `online_update_repo_url`: optional GitHub URL for macro update repository
 - `online_update_manifest_path`: path to manifest file inside the update repository (default: `updates/manifest.json`)
 - `online_update_ref`: branch, tag, or commit SHA for update checks (default: `main`)
@@ -107,7 +94,7 @@ Environment overrides:
 - `KLIPPERVAULT_CONFIG_DIR`
 - `KLIPPERVAULT_DB_PATH`
 
-If vendor/model are missing, KlipperVault prompts for them and writes them back to config.
+Port, UI language, and developer mode changes require app restart to take full effect.
 
 ## Installation
 
@@ -123,7 +110,7 @@ Installer summary (GUI/off-printer default):
 2. Create runtime directories under `~/.config/klippervault` and `~/.local/share/klippervault`
 3. Create virtualenv (`~/klippervault-venv` by default)
 4. Install dependencies from `requirements.txt`
-5. Write remote-only runtime config (`runtime_mode: off_printer`)
+5. Initialize runtime defaults (stored in SQLite on first app start)
 
 Uninstall:
 
@@ -151,7 +138,7 @@ KLIPPERVAULT_DB_PATH=$HOME/.local/share/klippervault/klipper_macros.db \
 
 ## Usage
 
-Typical flow:
+Typical off-printer flow:
 
 1. Open KlipperVault.
 2. In `off_printer` mode, open `Manage SSH profiles`, save one profile, and activate it.
@@ -162,16 +149,6 @@ Typical flow:
 7. For dynamic macros, editing is allowed even while printing.
 8. Use `Reload Dynamic Macros` to apply dynamic-macro changes without a full Klipper restart.
 9. Save and re-index.
-
-On-printer/auto flow:
-
-1. Open KlipperVault.
-2. Click `Scan macros`.
-3. Select a macro and review details/history.
-4. Edit latest non-deleted version.
-5. For dynamic macros, editing is allowed even while printing.
-6. Use `Reload Dynamic Macros` to apply dynamic-macro changes without a full Klipper restart.
-7. Save and re-index.
 
 Loading-order inspection:
 
@@ -189,7 +166,7 @@ Share/import flow:
 
 Online updates flow:
 
-1. Configure `online_update_repo_url` and optional `online_update_manifest_path`, `online_update_ref` in `klippervault.cfg`.
+1. Configure `online_update_repo_url` and optional `online_update_manifest_path`, `online_update_ref` in `Macro actions -> Settings`.
 2. Click `Check for updates` to fetch the manifest and compare local macros against remote versions.
 3. Review available updates in the dialog; select which ones to activate.
 4. Click `Import updates` to add new versions; activate selectively or defer.
@@ -197,7 +174,7 @@ Online updates flow:
 
 Developer mode (publish and export update artifacts):
 
-1. Set `developer: true` in `klippervault.cfg`.
+1. Enable `Developer mode` in `Macro actions -> Settings`.
 2. Use the top-level `Developer` toolbar menu.
 3. Click `Export Update Zip` to download an update ZIP for review or manual distribution.
 4. Click `Create Pull Request` to publish active macros directly to the configured GitHub repository.
@@ -221,13 +198,13 @@ Exception for dynamic macros:
 
 App does not start:
 
-- Check `klippervault.cfg` port value.
+- Check `Macro actions -> Settings` web UI port value.
 - Confirm virtualenv and dependencies were installed.
 - Check service logs with `journalctl`.
 
 No macros found:
 
-- In `off_printer` mode, verify an active SSH profile exists, credentials are set, and `Test SSH profile` succeeds.
+- In `off_printer` mode, verify an active printer connection exists, credentials are set, and `Test printer connection` succeeds.
 - Check `printer.cfg` includes and file readability.
 - Trigger a manual scan.
 

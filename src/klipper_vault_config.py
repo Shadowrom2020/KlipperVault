@@ -1,60 +1,22 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Jürgen Herrmann
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Read and write the KlipperVault configuration file (klippervault.cfg)."""
+"""Read and write KlipperVault configuration values in SQLite."""
 
 from __future__ import annotations
 
 import configparser
 from dataclasses import dataclass, fields as dataclass_fields
 from pathlib import Path
+import time
+
+from klipper_vault_db import open_sqlite_connection
 
 _CFG_FILENAME = "klippervault.cfg"
+_SETTINGS_TABLE = "vault_settings"
 _DEFAULT_ONLINE_UPDATE_REPO_URL = "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
 _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
 _DEFAULT_ONLINE_UPDATE_REF = "main"
-
-_DEFAULT_CONTENT = """\
-# KlipperVault configuration
-# This file is automatically created by KlipperVault on first start.
-# Edit the values below to customise behaviour.
-
-[vault]
-# Maximum number of versions to keep per macro.
-# Older versions are deleted automatically when this limit is exceeded.
-# Minimum value is 1.
-version_history_size: 5
-
-# HTTP port for the KlipperVault web UI.
-port: 10090
-
-# Runtime mode controls where connection settings come from.
-# KlipperVault now runs in remote mode only.
-runtime_mode: off_printer
-
-# UI language used by the web interface (for example: en, de).
-ui_language: en
-
-# Optional printer identity fields used by KlipperVault features.
-# If left empty, KlipperVault asks once on first start.
-printer_vendor:
-printer_model:
-
-# Optional GitHub source for online macro updates.
-# Example: https://github.com/<owner>/<repo>
-online_update_repo_url: https://github.com/Shadowrom2020/KlipperVault-Online-Updates
-
-# Manifest file path inside the repository.
-online_update_manifest_path: updates/manifest.json
-
-# Branch, tag, or commit used for update checks.
-online_update_ref: main
-
-# Developer mode: enables export of local macros to update repository bundles.
-# WARNING: This is intended for repository maintainers; keep disabled for normal use.
-developer: false
-"""
-
 
 @dataclass
 class VaultConfig:
@@ -72,7 +34,7 @@ class VaultConfig:
 
 
 def _persisted_config_keys() -> set[str]:
-    """Return config keys that should be stored in klippervault.cfg."""
+    """Return config keys that should be stored in persistent settings."""
     return {
         field.name
         for field in dataclass_fields(VaultConfig)
@@ -168,70 +130,104 @@ def _get_enum(
     return value if value in allowed else default
 
 
-def save(config_dir: Path, config: VaultConfig) -> None:
-    """Persist VaultConfig to klippervault.cfg in a stable Klipper format."""
-    config_dir.mkdir(parents=True, exist_ok=True)
-    cfg_path = config_dir / _CFG_FILENAME
-
-    lines = [
-        "# KlipperVault configuration",
-        "# This file is automatically created by KlipperVault on first start.",
-        "# Edit the values below to customise behaviour.",
-        "",
-        "[vault]",
-        "# Maximum number of versions to keep per macro.",
-        "# Older versions are deleted automatically when this limit is exceeded.",
-        "# Minimum value is 1.",
-        f"version_history_size: {max(1, int(config.version_history_size))}",
-        "",
-        "# HTTP port for the KlipperVault web UI.",
-        f"port: {int(config.port)}",
-        "",
-        "# Runtime mode controls where connection settings come from.",
-        "# KlipperVault now runs in remote mode only.",
-        "runtime_mode: off_printer",
-        "",
-        "# UI language used by the web interface (for example: en, de).",
-        f"ui_language: {str(config.ui_language or 'en').strip().lower() or 'en'}",
-        "",
-        "# Optional printer identity fields used by KlipperVault features.",
-        "# If left empty, KlipperVault asks once on first start.",
-        f"printer_vendor: {str(config.printer_vendor or '').strip()}",
-        f"printer_model: {str(config.printer_model or '').strip()}",
-        "",
-        "# Optional GitHub source for online macro updates.",
-        "# Example: https://github.com/<owner>/<repo>",
-        f"online_update_repo_url: {str(config.online_update_repo_url or _DEFAULT_ONLINE_UPDATE_REPO_URL).strip() or _DEFAULT_ONLINE_UPDATE_REPO_URL}",
-        "",
-        "# Manifest file path inside the repository.",
-        f"online_update_manifest_path: {str(config.online_update_manifest_path or _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH).strip() or _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH}",
-        "",
-        "# Branch, tag, or commit used for update checks.",
-        f"online_update_ref: {str(config.online_update_ref or _DEFAULT_ONLINE_UPDATE_REF).strip() or _DEFAULT_ONLINE_UPDATE_REF}",
-        "",
-        "# Developer mode: enables export of local macros to update repository bundles.",
-        "# WARNING: This is intended for repository maintainers; keep disabled for normal use.",
-        f"developer: {'true' if config.developer else 'false'}",
-        "",
-    ]
-    cfg_path.write_text("\n".join(lines), encoding="utf-8")
+def _default_db_path(config_dir: Path) -> Path:
+    """Return fallback DB path used in unit tests and standalone calls."""
+    return config_dir / "klippervault_settings.db"
 
 
-def load_or_create(config_dir: Path) -> VaultConfig:
-    """Load klippervault.cfg from *config_dir*, creating it with defaults if absent.
+def _normalized_config(config: VaultConfig) -> VaultConfig:
+    """Return one normalized configuration payload with clamped defaults."""
+    version_history_size = max(int(config.version_history_size), 1)
+    port = int(config.port)
+    if port < 1 or port > 65535:
+        port = 10090
+    ui_language = str(config.ui_language or "en").strip().lower() or "en"
+    runtime_mode = "off_printer"
+    printer_vendor = str(config.printer_vendor or "").strip()
+    printer_model = str(config.printer_model or "").strip()
+    online_update_repo_url = (
+        str(config.online_update_repo_url or _DEFAULT_ONLINE_UPDATE_REPO_URL).strip()
+        or _DEFAULT_ONLINE_UPDATE_REPO_URL
+    )
+    online_update_manifest_path = (
+        str(config.online_update_manifest_path or _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH).strip()
+        or _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
+    )
+    online_update_ref = (
+        str(config.online_update_ref or _DEFAULT_ONLINE_UPDATE_REF).strip()
+        or _DEFAULT_ONLINE_UPDATE_REF
+    )
+    developer = bool(config.developer)
 
-    The file is written in Klipper cfg format so it can live alongside
-    printer.cfg and other Klipper configuration files.
-    """
-    cfg_path = config_dir / _CFG_FILENAME
+    return VaultConfig(
+        version_history_size=version_history_size,
+        port=port,
+        runtime_mode=runtime_mode,
+        ui_language=ui_language,
+        printer_vendor=printer_vendor,
+        printer_model=printer_model,
+        online_update_repo_url=online_update_repo_url,
+        online_update_manifest_path=online_update_manifest_path,
+        online_update_ref=online_update_ref,
+        developer=developer,
+        printer_profile_prompt_required=(not printer_vendor or not printer_model),
+    )
 
-    if not cfg_path.exists():
-        config_dir.mkdir(parents=True, exist_ok=True)
-        cfg_path.write_text(_DEFAULT_CONTENT, encoding="utf-8")
 
+def ensure_settings_schema(conn) -> None:
+    """Ensure SQLite table for global app settings exists."""
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_SETTINGS_TABLE} (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+
+
+def _settings_rows(conn) -> dict[str, str]:
+    """Load all persisted settings as key/value mapping."""
+    rows = conn.execute(f"SELECT key, value FROM {_SETTINGS_TABLE}").fetchall()
+    return {str(key): str(value) for key, value in rows}
+
+
+def _persist_config(conn, config: VaultConfig) -> None:
+    """Write normalized settings to SQLite."""
+    normalized = _normalized_config(config)
+    now_ts = int(time.time())
+    payload = {
+        "version_history_size": str(normalized.version_history_size),
+        "port": str(normalized.port),
+        "runtime_mode": normalized.runtime_mode,
+        "ui_language": normalized.ui_language,
+        "printer_vendor": normalized.printer_vendor,
+        "printer_model": normalized.printer_model,
+        "online_update_repo_url": normalized.online_update_repo_url,
+        "online_update_manifest_path": normalized.online_update_manifest_path,
+        "online_update_ref": normalized.online_update_ref,
+        "developer": "true" if normalized.developer else "false",
+    }
+    for key, value in payload.items():
+        conn.execute(
+            f"""
+            INSERT INTO {_SETTINGS_TABLE} (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (key, value, now_ts),
+        )
+
+
+def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
+    """Build normalized VaultConfig from SQLite settings rows."""
     parser = configparser.ConfigParser()
-    parser.read(str(cfg_path), encoding="utf-8")
-    missing_persisted_keys = _missing_persisted_config_keys(parser)
+    parser.add_section("vault")
+    for key, value in rows.items():
+        parser.set("vault", key, value)
 
     version_history_size = _get_int_in_range(
         parser,
@@ -265,19 +261,8 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         default="off_printer",
         allowed={"off_printer"},
     )
-
-    printer_vendor = ""
-    vendor_is_stored = False
-    if parser.has_option("vault", "printer_vendor"):
-        vendor_is_stored = True
-        printer_vendor = _get_stripped(parser, "vault", "printer_vendor", default="")
-
-    printer_model = ""
-    model_is_stored = False
-    if parser.has_option("vault", "printer_model"):
-        model_is_stored = True
-        printer_model = _get_stripped(parser, "vault", "printer_model", default="")
-
+    printer_vendor = _get_stripped(parser, "vault", "printer_vendor", default="")
+    printer_model = _get_stripped(parser, "vault", "printer_model", default="")
     online_update_repo_url = _get_stripped(
         parser,
         "vault",
@@ -298,35 +283,61 @@ def load_or_create(config_dir: Path) -> VaultConfig:
         default=_DEFAULT_ONLINE_UPDATE_REF,
         require_non_empty=True,
     )
-
     developer = _get_bool(parser, "vault", "developer", default=False)
 
-    # Prompt on first start and on upgrades where old cfg files do not yet
-    # contain these keys, or when stored values are still empty.
-    printer_profile_prompt_required = (
-        not vendor_is_stored
-        or not model_is_stored
-        or not printer_vendor
-        or not printer_model
+    return _normalized_config(
+        VaultConfig(
+            version_history_size=version_history_size,
+            port=port,
+            runtime_mode=runtime_mode,
+            ui_language=ui_language,
+            printer_vendor=printer_vendor,
+            printer_model=printer_model,
+            online_update_repo_url=online_update_repo_url,
+            online_update_manifest_path=online_update_manifest_path,
+            online_update_ref=online_update_ref,
+            developer=developer,
+        )
     )
 
-    config = VaultConfig(
-        version_history_size=version_history_size,
-        port=port,
-        runtime_mode=runtime_mode,
-        ui_language=ui_language,
-        printer_vendor=printer_vendor,
-        printer_model=printer_model,
-        online_update_repo_url=online_update_repo_url,
-        online_update_manifest_path=online_update_manifest_path,
-        online_update_ref=online_update_ref,
-        developer=developer,
-        printer_profile_prompt_required=printer_profile_prompt_required,
-    )
 
-    should_backfill_config = bool(missing_persisted_keys)
+def _load_legacy_cfg(config_dir: Path) -> VaultConfig | None:
+    """Load legacy cfg settings when a file exists; return None otherwise."""
+    cfg_path = config_dir / _CFG_FILENAME
+    if not cfg_path.exists():
+        return None
 
-    if should_backfill_config:
-        save(config_dir, config)
+    parser = configparser.ConfigParser()
+    parser.read(str(cfg_path), encoding="utf-8")
+    return _config_from_rows({
+        key: parser.get("vault", key)
+        for key in _persisted_config_keys()
+        if parser.has_option("vault", key)
+    })
 
-    return config
+
+def save(config_dir: Path, config: VaultConfig, db_path: Path | None = None) -> None:
+    """Persist VaultConfig into SQLite-backed app settings."""
+    target_db_path = Path(db_path) if db_path is not None else _default_db_path(config_dir)
+    with open_sqlite_connection(target_db_path, ensure_schema=ensure_settings_schema) as conn:
+        _persist_config(conn, config)
+        conn.commit()
+
+
+def load_or_create(config_dir: Path, db_path: Path | None = None) -> VaultConfig:
+    """Load app settings from SQLite and migrate legacy cfg values when needed."""
+    target_db_path = Path(db_path) if db_path is not None else _default_db_path(config_dir)
+    with open_sqlite_connection(target_db_path, ensure_schema=ensure_settings_schema) as conn:
+        rows = _settings_rows(conn)
+        if rows:
+            config = _config_from_rows(rows)
+            _persist_config(conn, config)
+            conn.commit()
+            return config
+
+        migrated = _load_legacy_cfg(config_dir)
+        config = migrated if migrated is not None else VaultConfig()
+        config = _normalized_config(config)
+        _persist_config(conn, config)
+        conn.commit()
+        return config

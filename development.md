@@ -33,7 +33,7 @@ VS Code debug configs use `${workspaceFolder}/.venv/bin/python` so launch runs w
 
 Generated debug configurations include full app workflows:
 
-- `Python: KlipperVault GUI (local service)`
+- `Python: KlipperVault GUI (off_printer debug)`
 
 Manual setup alternative:
 
@@ -91,18 +91,17 @@ src/
   klipper_macro_backup.py         Backup and restore support
   klipper_macro_compare.py        Version compare UI
   klipper_macro_compare_core.py   Diff logic used by compare dialog
-  klipper_macro_watcher.py        Config file watcher
   klipper_vault_ssh_transport.py  SSH/SFTP read-write transport for off_printer mode
   klipper_vault_remote_profiles.py SQLite profile metadata and credential index tables
   klipper_vault_secret_store.py   Keyring-first secret storage with DB fallback
-  klipper_vault_config.py         klippervault.cfg handling
+  klipper_vault_config.py         SQLite-backed app settings handling
   klipper_vault_paths.py          Runtime-aware default config/db path resolution
   klipper_vault_db.py             Shared SQLite helpers
 ```
 
 ## Runtime Mode
 
-Supported `runtime_mode` value from `klippervault.cfg` (`[vault] runtime_mode`) or env:
+Supported `runtime_mode` value from app settings (or env override):
 
 - `off_printer`: SSH/SFTP-driven remote config workflow.
 
@@ -114,6 +113,7 @@ KLIPPERVAULT_RUNTIME_MODE=off_printer
 
 Off-printer persistence model:
 
+- App settings are stored in SQLite (`vault_settings`).
 - SSH host profiles are stored in SQLite (`ssh_host_profiles`).
 - Secret backend metadata is tracked in `credential_store_index`.
 - Credential values are stored in OS keyring when available; SQLite fallback is used otherwise.
@@ -227,7 +227,7 @@ Modes:
 When UI or behavior changes, update docs in the same PR and verify:
 
 - Menu/action names match current UI labels exactly.
-- Config keys and defaults match `klipper_vault_config.py` and `klippervault.cfg` examples.
+- Config keys and defaults match `klipper_vault_config.py` and the in-app `Macro actions -> Settings` dialog.
 - Feature descriptions align across [README.md](README.md), [overview.md](overview.md), and [Macro_Developer.md](Macro_Developer.md).
 - Any startup/background behavior changes are described in user-facing docs.
 - Security/token handling text reflects implemented behavior only.
@@ -246,5 +246,5 @@ VS Code debug cannot import `nicegui`:
 
 Local app startup problems:
 
-- Check `klippervault.cfg` for malformed values.
+- Check app settings in `Macro actions -> Settings` for malformed values.
 - Validate the `.venv` interpreter exists and dependencies installed.

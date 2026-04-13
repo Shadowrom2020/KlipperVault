@@ -8,9 +8,9 @@
 - Backup logic: `src/klipper_macro_backup.py`
 
 ## Runtime and Config
-- App config file is auto-created at `~/printer_data/config/klippervault.cfg`.
-- UI port comes from `[vault] port` in that config.
-- Version history retention comes from `[vault] version_history_size`.
+- App settings are stored in SQLite table `vault_settings`.
+- UI port comes from `vault_settings.port`.
+- Version history retention comes from `vault_settings.version_history_size`.
 - App version is read from repository file `VERSION`.
 
 ## Common Workflows

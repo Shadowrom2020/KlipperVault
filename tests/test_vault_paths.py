@@ -23,7 +23,7 @@ def test_off_printer_defaults_use_user_config_and_share_dirs(monkeypatch):
 def test_invalid_runtime_mode_falls_back_to_remote_only_defaults(monkeypatch):
     monkeypatch.delenv("KLIPPERVAULT_CONFIG_DIR", raising=False)
     monkeypatch.delenv("KLIPPERVAULT_DB_PATH", raising=False)
-    monkeypatch.setenv("KLIPPERVAULT_RUNTIME_MODE", "legacy_mode")
+    monkeypatch.setenv("KLIPPERVAULT_RUNTIME_MODE", "invalid_mode")
 
     module = _reload_paths_module()
 
