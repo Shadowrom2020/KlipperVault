@@ -11,7 +11,7 @@ Maintain a lightweight Klipper macro vault with:
 - Mainsail UI integration for macro editing and management
 
 ## Codebase Facts
-- Runtime starts from `klipper_vault.py`.
+- Runtime starts from `klipper_vault_gui.py`.
 - All source files are under `src/`.
 - The GUI module builds UI only; launcher handles `main()` and `ui.run(...)`.
 - Current app version is stored in `VERSION`.
@@ -36,6 +36,6 @@ Maintain a lightweight Klipper macro vault with:
 - Run `py_compile` on changed Python files before finishing.
 
 ## Helpful Commands
-- `python3 klipper_vault.py`
+- `python3 klipper_vault_gui.py`
 - `python3 -m py_compile src/klipper_macro_gui.py`
 - `python3 -m py_compile src/klipper_macro_indexer.py src/klipper_macro_backup.py`

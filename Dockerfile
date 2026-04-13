@@ -2,10 +2,7 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    KLIPPERVAULT_AUTO_UPDATE_VENV=0 \
-    KLIPPERVAULT_RUNTIME_MODE=off_printer \
-    KLIPPERVAULT_CONFIG_DIR=/data/config \
-    KLIPPERVAULT_DB_PATH=/data/db/klipper_macros.db
+    KLIPPERVAULT_AUTO_UPDATE_VENV=0
 
 WORKDIR /app
 
@@ -17,8 +14,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . .
 
-RUN mkdir -p /data/config /data/db \
-    && chown -R klippervault:klippervault /app /data
+RUN mkdir -p /home/klippervault/.config/klippervault /home/klippervault/.local/share/klippervault \
+    && chown -R klippervault:klippervault /app /home/klippervault/.config /home/klippervault/.local
 
 USER klippervault
 

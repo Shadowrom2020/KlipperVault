@@ -87,7 +87,7 @@ fi
 if [[ "$RUN_QUALITY" == "1" ]]; then
     echo "==> Running PR quality parity checks"
     "$PYTHON_BIN" -m ruff check .
-    if PYTHONPATH=src "$PYTHON_BIN" -m mypy src klipper_vault.py --ignore-missing-imports; then
+    if PYTHONPATH=src "$PYTHON_BIN" -m mypy src klipper_vault_gui.py --ignore-missing-imports; then
         echo "mypy check passed."
     else
         if [[ "$STRICT_MYPY" == "1" ]]; then
@@ -96,9 +96,9 @@ if [[ "$RUN_QUALITY" == "1" ]]; then
         fi
         echo "Warning: mypy check reported issues (non-blocking; set STRICT_MYPY=1 to enforce)."
     fi
-    "$PYTHON_BIN" -m py_compile klipper_vault.py src/*.py
+    "$PYTHON_BIN" -m py_compile klipper_vault_gui.py src/*.py
 
-    "$PYTHON_BIN" -m babel.messages.frontend extract -F babel.ini -o /tmp/fresh.pot src klipper_vault.py
+    "$PYTHON_BIN" -m babel.messages.frontend extract -F babel.ini -o /tmp/fresh.pot src klipper_vault_gui.py
     "$PYTHON_BIN" - <<'PY'
 import sys
 from babel.messages.pofile import read_po
@@ -135,7 +135,7 @@ fi
 if [[ "$RUN_SECURITY" == "1" ]]; then
     echo "==> Running security parity checks"
     "$PYTHON_BIN" -m pip_audit
-    "$PYTHON_BIN" -m bandit -q -r src klipper_vault.py -s B608
+    "$PYTHON_BIN" -m bandit -q -r src klipper_vault_gui.py -s B608
 fi
 
 if [[ "$RUN_WORKFLOWS" == "1" ]]; then

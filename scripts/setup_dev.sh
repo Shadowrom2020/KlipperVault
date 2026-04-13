@@ -163,9 +163,6 @@ setup_vscode_workspace_files() {
 PYTHONUNBUFFERED=1
 PYTHONPATH=$REPO_ROOT:$REPO_ROOT/src
 KLIPPERVAULT_AUTO_UPDATE_VENV=0
-KLIPPERVAULT_RUNTIME_MODE=off_printer
-KLIPPERVAULT_CONFIG_DIR=$HOME/.config/klippervault
-KLIPPERVAULT_DB_PATH=$HOME/.local/share/klippervault/klipper_macros.db
 ENV
         echo "    Wrote .vscode/.env"
 
@@ -202,22 +199,6 @@ JSON
             "justMyCode": false,
             "env": {
                 "PYTHONUNBUFFERED": "1",
-                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0",
-                "KLIPPERVAULT_RUNTIME_MODE": "off_printer"
-            }
-        },
-        {
-            "name": "Python: KlipperVault Legacy On-Printer Cleanup",
-            "type": "python",
-            "request": "launch",
-            "python": "${config:python.defaultInterpreterPath}",
-            "program": "${workspaceFolder}/klipper_vault.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "envFile": "${workspaceFolder}/.vscode/.env",
-            "justMyCode": false,
-            "env": {
-                "PYTHONUNBUFFERED": "1",
                 "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
             }
         }
@@ -240,11 +221,6 @@ echo ""
 
 if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
     echo "requirements.txt not found in $REPO_ROOT"
-    exit 1
-fi
-
-if [[ ! -f "$REPO_ROOT/klipper_vault.py" ]]; then
-    echo "klipper_vault.py not found in $REPO_ROOT"
     exit 1
 fi
 
@@ -324,9 +300,6 @@ echo "    Python: KlipperVault GUI (primary launcher)"
 echo ""
 echo "==> Then launch the app with:"
 echo "    python klipper_vault_gui.py"
-echo ""
-echo "==> Legacy on-printer cleanup helper (deprecated-runtime shutdown):"
-echo "    python klipper_vault.py"
 echo ""
 echo "==> To skip system dependencies next run:"
 echo "    INSTALL_SYSTEM_DEPS=0 ./scripts/setup_dev.sh"

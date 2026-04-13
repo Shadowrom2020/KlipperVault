@@ -26,13 +26,8 @@ http://<host-ip>:10090
 
 Compose defines two named volumes:
 
-- `klippervault_config` -> `/data/config`
-- `klippervault_db` -> `/data/db`
-
-The container maps these to runtime environment variables:
-
-- `KLIPPERVAULT_CONFIG_DIR=/data/config`
-- `KLIPPERVAULT_DB_PATH=/data/db/klipper_macros.db`
+- `klippervault_config` -> `/home/klippervault/.config/klippervault`
+- `klippervault_db` -> `/home/klippervault/.local/share/klippervault`
 
 This keeps settings, profiles, and macro history across container restarts/rebuilds.
 

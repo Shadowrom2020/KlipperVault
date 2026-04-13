@@ -51,32 +51,16 @@ pip install -r requirements.txt
 ./.venv/bin/python klipper_vault_gui.py
 ```
 
-Use explicit off-printer runtime mode (recommended for current architecture work):
-
-```bash
-KLIPPERVAULT_RUNTIME_MODE=off_printer \
-KLIPPERVAULT_CONFIG_DIR=/tmp/kv-config \
-KLIPPERVAULT_DB_PATH=/tmp/kv-data/klipper_macros.db \
-./.venv/bin/python klipper_vault_gui.py
-```
-
 Notes:
 
-- In `off_printer` mode, indexing mirrors remote cfg files into local `KLIPPERVAULT_CONFIG_DIR` before scan.
+- In `off_printer` mode, indexing mirrors remote cfg files into a local OS-standard data directory before scan.
 - Mutating operations (edit/delete/restore/duplicate resolve/backup restore) sync changed cfg content back to remote over SSH.
 - Manual/startup scan is intentionally blocked until an active SSH profile with credentials is configured.
-
-Primary launcher:
-
-```bash
-./.venv/bin/python klipper_vault.py
-```
 
 ## Project Layout
 
 ```text
-klipper_vault.py                  Primary GUI entry point
-klipper_vault_gui.py              Dedicated GUI entry point wrapper
+klipper_vault_gui.py              Primary GUI entry point wrapper
 install.sh                        Remote-host virtualenv installer
 uninstall.sh                      Remote-host uninstall helper
 VERSION                           App version string
@@ -101,15 +85,9 @@ src/
 
 ## Runtime Mode
 
-Supported `runtime_mode` value from app settings (or env override):
+Supported `runtime_mode` value from app settings:
 
 - `off_printer`: SSH/SFTP-driven remote config workflow.
-
-Environment override:
-
-```bash
-KLIPPERVAULT_RUNTIME_MODE=off_printer
-```
 
 Off-printer persistence model:
 
@@ -154,7 +132,7 @@ KlipperVault now uses a gettext-first translation workflow with Babel:
 Refresh translation catalogs after adding or changing `t("...")` strings:
 
 ```bash
-./.venv/bin/pybabel extract -F babel.ini -o src/locales/klippervault.pot src klipper_vault.py
+./.venv/bin/pybabel extract -F babel.ini -o src/locales/klippervault.pot src klipper_vault_gui.py
 ./.venv/bin/pybabel update -i src/locales/klippervault.pot -d src/locales -D klippervault
 ./.venv/bin/pybabel compile -d src/locales -D klippervault
 ```

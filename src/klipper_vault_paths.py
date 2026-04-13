@@ -6,31 +6,50 @@
 from __future__ import annotations
 
 import os
+import platform
 from pathlib import Path
 
 
 def _runtime_mode() -> str:
-	"""Resolve runtime mode from environment with remote-only fallback."""
-	mode = str(os.environ.get("KLIPPERVAULT_RUNTIME_MODE", "off_printer")).strip().lower()
-	if mode == "off_printer":
-		return mode
-	return "off_printer"
+    """Return fixed runtime mode (remote-only)."""
+    return "off_printer"
+
+
+def _platform_dirs() -> tuple[Path, Path]:
+	"""Return platform-specific default config dir and DB path."""
+	home = Path.home()
+	system = platform.system().lower()
+
+	if system == "windows":
+		appdata = Path(os.environ.get("APPDATA") or (home / "AppData" / "Roaming"))
+		localappdata = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
+		config_dir = appdata / "KlipperVault"
+		db_path = localappdata / "KlipperVault" / "klipper_macros.db"
+		return config_dir.resolve(), db_path.resolve()
+
+	if system == "darwin":
+		support_dir = home / "Library" / "Application Support" / "KlipperVault"
+		db_path = support_dir / "klipper_macros.db"
+		return support_dir.resolve(), db_path.resolve()
+
+	# Linux and other Unix-like systems follow XDG defaults.
+	xdg_config_home = Path(os.environ.get("XDG_CONFIG_HOME") or (home / ".config"))
+	xdg_data_home = Path(os.environ.get("XDG_DATA_HOME") or (home / ".local" / "share"))
+	config_dir = xdg_config_home / "klippervault"
+	db_path = xdg_data_home / "klippervault" / "klipper_macros.db"
+	return config_dir.resolve(), db_path.resolve()
 
 
 def _default_config_dir() -> Path:
 	"""Compute default config directory for remote-only runtime."""
-	override = str(os.environ.get("KLIPPERVAULT_CONFIG_DIR", "")).strip()
-	if override:
-		return Path(override).expanduser().resolve()
-	return (Path.home() / ".config" / "klippervault").resolve()
+	config_dir, _ = _platform_dirs()
+	return config_dir
 
 
 def _default_db_path() -> Path:
 	"""Compute default database path for remote-only runtime."""
-	override = str(os.environ.get("KLIPPERVAULT_DB_PATH", "")).strip()
-	if override:
-		return Path(override).expanduser().resolve()
-	return (Path.home() / ".local" / "share" / "klippervault" / "klipper_macros.db").resolve()
+	_, db_path = _platform_dirs()
+	return db_path
 
 
 DEFAULT_CONFIG_DIR = str(_default_config_dir())

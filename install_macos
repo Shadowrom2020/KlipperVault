@@ -10,7 +10,26 @@ else
   APP_USER="$USER"
 fi
 
-APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
+resolve_home_dir() {
+  local user="$1"
+  local home=""
+
+  if command -v dscl >/dev/null 2>&1; then
+    home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+  fi
+
+  if [[ -z "$home" ]]; then
+    home="$(eval echo "~$user")"
+  fi
+
+  if [[ -z "$home" || ! -d "$home" ]]; then
+    return 1
+  fi
+
+  printf "%s" "$home"
+}
+
+APP_HOME="$(resolve_home_dir "$APP_USER" || true)"
 if [[ -z "$APP_HOME" ]]; then
   echo "Could not determine home directory for user: $APP_USER"
   exit 1
@@ -18,8 +37,8 @@ fi
 
 VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-venv}"
 REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-$APP_DIR/requirements.txt}"
-CONFIG_DIR="$APP_HOME/.config/klippervault"
-DB_PATH="$APP_HOME/.local/share/klippervault/klipper_macros.db"
+CONFIG_DIR="$APP_HOME/Library/Application Support/KlipperVault"
+DB_PATH="$APP_HOME/Library/Application Support/KlipperVault/klipper_macros.db"
 
 need_cmd() {
   local cmd="$1"
@@ -29,26 +48,18 @@ need_cmd() {
   fi
 }
 
-as_root() {
-  if [[ "$(id -u)" -eq 0 ]]; then
+as_user() {
+  if [[ "$(id -un)" == "$APP_USER" ]]; then
     "$@"
   elif command -v sudo >/dev/null 2>&1; then
-    sudo "$@"
+    sudo -u "$APP_USER" -- "$@"
   else
-    echo "This step requires root privileges, but sudo is not available."
+    echo "Cannot switch to user '$APP_USER' because sudo is not available."
     exit 1
   fi
 }
 
-as_user() {
-  if [[ "$(id -un)" == "$APP_USER" ]]; then
-    "$@"
-  else
-    as_root runuser -u "$APP_USER" -- "$@"
-  fi
-}
-
-echo "Installing KlipperVault (remote-only mode)"
+echo "Installing KlipperVault (remote-only mode) on macOS"
 echo "App dir: $APP_DIR"
 echo "User: $APP_USER"
 echo "Python: $PYTHON_BIN"
@@ -57,7 +68,6 @@ echo "Venv: $VENV_DIR"
 after_install_cmd="$VENV_DIR/bin/python $APP_DIR/klipper_vault_gui.py"
 
 need_cmd "$PYTHON_BIN"
-need_cmd getent
 
 if [[ ! -f "$REQUIREMENTS_FILE" ]]; then
   echo "Requirements file not found: $REQUIREMENTS_FILE"

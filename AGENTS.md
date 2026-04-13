@@ -1,7 +1,7 @@
 # KlipperVault Agent Hints
 
 ## Project Layout
-- Entry point: `klipper_vault.py`
+- Entry point: `klipper_vault_gui.py`
 - Source modules: `src/`
 - Main UI: `src/klipper_macro_gui.py`
 - Parser/indexer: `src/klipper_macro_indexer.py`
@@ -14,7 +14,7 @@
 - App version is read from repository file `VERSION`.
 
 ## Common Workflows
-- Launch UI: `python3 klipper_vault.py`
+- Launch UI: `python3 klipper_vault_gui.py`
 - Syntax check touched files: `python3 -m py_compile <file1> <file2> ...`
 - Re-index macros from UI: "Scan macros" button.
 - Create backups from UI: "Backup" button in top toolbar.
@@ -35,6 +35,6 @@
 
 ## Change Safety Checklist
 1. Update imports if files are moved under `src/`.
-2. Keep `klipper_vault.py` as the single runtime launcher.
+2. Keep `klipper_vault_gui.py` as the documented runtime launcher.
 3. After parser/indexer changes, run a compile check and at least one quick parse smoke test.
 4. After GUI changes, run compile check and confirm callback wiring paths.

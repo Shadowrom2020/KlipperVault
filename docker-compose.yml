@@ -7,14 +7,11 @@ services:
     restart: unless-stopped
     environment:
       KLIPPERVAULT_AUTO_UPDATE_VENV: "0"
-      KLIPPERVAULT_RUNTIME_MODE: off_printer
-      KLIPPERVAULT_CONFIG_DIR: /data/config
-      KLIPPERVAULT_DB_PATH: /data/db/klipper_macros.db
     ports:
       - "10090:10090"
     volumes:
-      - klippervault_config:/data/config
-      - klippervault_db:/data/db
+      - klippervault_config:/home/klippervault/.config/klippervault
+      - klippervault_db:/home/klippervault/.local/share/klippervault
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:10090', timeout=3)"]
       interval: 30s
