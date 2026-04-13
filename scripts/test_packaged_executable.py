@@ -10,6 +10,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 
 def find_executable() -> Path:
     """Locate the built executable in dist/."""
@@ -24,20 +26,27 @@ def find_executable() -> Path:
     raise FileNotFoundError("No packaged executable found in dist/")
 
 
-def test_executable_starts() -> bool:
+def test_executable_starts() -> None:
     """Test that the executable launches and emits expected startup messages."""
-    executable = find_executable()
+    try:
+        executable = find_executable()
+    except FileNotFoundError as e:
+        pytest.skip(str(e))
     
     print(f"Testing executable: {executable}")
     
     try:
-        # Start the process with a timeout
+        # Start the process with a timeout.
+        # Strip PYTEST_CURRENT_TEST so NiceGUI inside the executable doesn't
+        # think it's running under pytest and try to read NICEGUI_SCREEN_TEST_PORT.
+        child_env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+        child_env["BROWSER"] = "/bin/true"  # Suppress browser opening
         process = subprocess.Popen(
             [str(executable)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
-            env={**os.environ, "BROWSER": "/bin/true"},  # Suppress browser opening
+            env=child_env,
         )
         
         # Give the app 10 seconds to start (increased from 5 for slower CI runners)
@@ -50,7 +59,7 @@ def test_executable_starts() -> bool:
             print(f"ERROR: Process exited with code {poll}")
             print(f"STDOUT: {stdout.decode()}")
             print(f"STDERR: {stderr.decode()}")
-            return False
+            pytest.fail(f"Process exited with code {poll}")
         
         # Check for expected startup markers in output
         # (process is still running but we can't easily read live output)
@@ -66,27 +75,26 @@ def test_executable_starts() -> bool:
             process.wait()
         
         print("✓ Executable shut down cleanly")
-        return True
-        
+
     except Exception as e:
-        print(f"ERROR: Failed to test executable: {e}")
-        return False
+        pytest.fail(f"Failed to test executable: {e}")
 
 
-def test_executable_not_console() -> bool:
+def test_executable_not_console() -> None:
     """Verify that Windows executable is windowed (not console)."""
     if not sys.platform.startswith("win"):
-        print("⊘ Skipping Windows console check (not on Windows)")
-        return True
-    
-    executable = find_executable()
+        pytest.skip("Not on Windows")
+
+    try:
+        executable = find_executable()
+    except FileNotFoundError as e:
+        pytest.skip(str(e))
     
     try:
         # Use Windows PE header inspection
         import pefile
     except ImportError:
-        print("⊘ Skipping PE check (pefile not installed)")
-        return True
+        pytest.skip("pefile not installed")
     
     try:
         pe = pefile.PE(str(executable))
@@ -94,13 +102,10 @@ def test_executable_not_console() -> bool:
         # 3 = Windows CUI (console), 2 = Windows GUI (windowed)
         if subsystem == 2:
             print("✓ Executable is GUI (windowed)")
-            return True
         else:
-            print(f"WARNING: Executable subsystem is {subsystem} (expected 2 for GUI)")
-            return False
+            pytest.fail(f"Executable subsystem is {subsystem} (expected 2 for GUI)")
     except Exception as e:
-        print(f"⊘ Could not check executable subsystem: {e}")
-        return True
+        pytest.skip(f"Could not check executable subsystem: {e}")
 
 
 def main() -> None:
