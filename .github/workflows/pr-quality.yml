@@ -25,72 +25,12 @@ jobs:
           cache-dependency-path: |
             requirements.txt
 
-      - name: Install dependencies
+      - name: Ensure CI parity script is executable
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install ruff mypy pytest packaging
+          chmod +x scripts/ci_parity.sh
 
-      - name: Ruff lint
-        run: ruff check .
-
-      - name: MyPy type check
+      - name: Run quality parity checks
         env:
-          PYTHONPATH: src
-        run: mypy src klipper_vault.py --ignore-missing-imports
-
-      - name: Python compile check
-        run: python -m py_compile klipper_vault.py src/*.py
-
-      - name: i18n artifact parity
+          PYTHON_BIN: python3
         run: |
-          # Extract a fresh catalog to a temp file and compare msgids against the
-          # committed .pot.  This is timezone-independent, binary-safe, and immune
-          # to the volatile POT-Creation-Date header that pybabel stamps on every run.
-          pybabel extract -F babel.ini -o /tmp/fresh.pot src klipper_vault.py
-          python - <<'PY'
-          import sys
-          from babel.messages.pofile import read_po
-
-          def msgids(path):
-              with open(path, "rb") as f:
-                  return {m.id for m in read_po(f) if m.id}
-
-          committed = msgids("src/locales/klippervault.pot")
-          fresh     = msgids("/tmp/fresh.pot")
-
-          added   = fresh - committed
-          removed = committed - fresh
-
-          if added:
-              print("New translatable strings not in committed .pot:")
-              for s in sorted(added):
-                  print(f"  + {s!r}")
-          if removed:
-              print("Strings removed from source but still in committed .pot:")
-              for s in sorted(removed):
-                  print(f"  - {s!r}")
-          if added or removed:
-              print("Run 'make i18n' and commit the updated catalog files.")
-              sys.exit(1)
-
-          print("i18n catalog is up to date.")
-          PY
-
-      - name: GPLv3 license compatibility check
-        run: python scripts/check_gplv3_compatibility.py
-
-      - name: Pytest
-        env:
-          PYTHONPATH: src
-        run: |
-          if python - <<'PY'
-          from pathlib import Path
-          has_tests = any(Path("tests").rglob("*.py")) or any(Path('.').glob('test_*.py'))
-          raise SystemExit(0 if has_tests else 1)
-          PY
-          then
-            pytest -q
-          else
-            echo "No test files found; skipping pytest."
-          fi
+          ./scripts/ci_parity.sh --quality

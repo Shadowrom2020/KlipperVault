@@ -68,7 +68,7 @@ class CommandPackEntry(TypedDict, total=False):
     effects: list[str]
 
 
-_DEFAULT_COMMAND_PACK_PATH = (Path.home() / "printer_data" / "config" / "klippervault_command_pack.json").resolve()
+_DEFAULT_COMMAND_PACK_PATH = (Path.home() / ".config" / "klippervault" / "klippervault_command_pack.json").resolve()
 
 
 def build_macro_reference_index(macros: Sequence[Mapping[str, object]]) -> dict[str, list[MacroReference]]:
@@ -986,6 +986,11 @@ def _describe_template_expression(expression: str) -> str:
     return f"This expression is evaluated as `{expr}` before Klipper renders the final command text. {sentence}."
 
 
+def _static_explanation(effect: str, summary: str, details: str) -> tuple[str, str, str]:
+    """Return a standard (effect, summary, details) explainer tuple."""
+    return effect, summary, details
+
+
 def _explain_motion_command(command: str, params: dict[str, str], _: str) -> tuple[str, str, str]:
     axes = [f"{axis}={params[axis]}" for axis in ("X", "Y", "Z") if axis in params]
     extrusion = f"E={params['E']}" if "E" in params else ""
@@ -1013,11 +1018,19 @@ def _explain_dwell(_: str, params: dict[str, str], __: str) -> tuple[str, str, s
 
 
 def _explain_firmware_retraction(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Runs firmware retraction.", "This retracts filament using Klipper firmware-retraction settings instead of a raw E move."
+    return _static_explanation(
+        "motion",
+        "Runs firmware retraction.",
+        "This retracts filament using Klipper firmware-retraction settings instead of a raw E move.",
+    )
 
 
 def _explain_firmware_unretraction(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Runs firmware unretraction.", "This restores filament after a firmware retraction using configured unretract behavior."
+    return _static_explanation(
+        "motion",
+        "Runs firmware unretraction.",
+        "This restores filament after a firmware retraction using configured unretract behavior.",
+    )
 
 
 def _explain_arc_plane_select(command: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1033,11 +1046,19 @@ def _explain_home_command(_: str, params: dict[str, str], __: str) -> tuple[str,
 
 
 def _explain_disable_steppers(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Disables stepper motors.", "This turns motors off so axes may no longer hold position until re-enabled by movement or explicit commands."
+    return _static_explanation(
+        "state",
+        "Disables stepper motors.",
+        "This turns motors off so axes may no longer hold position until re-enabled by movement or explicit commands.",
+    )
 
 
 def _explain_wait_moves(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Waits for queued moves to finish.", "This blocks execution until all already queued motion has completed."
+    return _static_explanation(
+        "state",
+        "Waits for queued moves to finish.",
+        "This blocks execution until all already queued motion has completed.",
+    )
 
 
 def _explain_speed_factor(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1055,19 +1076,35 @@ def _explain_acceleration(_: str, params: dict[str, str], __: str) -> tuple[str,
 
 
 def _explain_query_nozzle_temperature(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Requests current temperature report.", "This asks Klipper to report current heater temperatures (M105)."
+    return _static_explanation(
+        "message",
+        "Requests current temperature report.",
+        "This asks Klipper to report current heater temperatures (M105).",
+    )
 
 
 def _explain_emergency_stop(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Emergency stop.", "This immediately halts printer activity and places Klipper in an emergency state requiring restart."
+    return _static_explanation(
+        "state",
+        "Emergency stop.",
+        "This immediately halts printer activity and places Klipper in an emergency state requiring restart.",
+    )
 
 
 def _explain_get_current_position(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Requests current position report.", "This asks Klipper to print current motion coordinates (M114)."
+    return _static_explanation(
+        "message",
+        "Requests current position report.",
+        "This asks Klipper to print current motion coordinates (M114).",
+    )
 
 
 def _explain_firmware_version(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Requests firmware version information.", "This asks Klipper to report firmware/version details (M115)."
+    return _static_explanation(
+        "message",
+        "Requests firmware version information.",
+        "This asks Klipper to report firmware/version details (M115).",
+    )
 
 
 def _explain_host_echo(_: str, params: dict[str, str], source: str) -> tuple[str, str, str]:
@@ -1076,15 +1113,27 @@ def _explain_host_echo(_: str, params: dict[str, str], source: str) -> tuple[str
 
 
 def _explain_query_endstops_legacy(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Queries endstop states (legacy).", "This requests endstop status using M119. Klipper docs recommend QUERY_ENDSTOPS for extended usage."
+    return _static_explanation(
+        "message",
+        "Queries endstop states (legacy).",
+        "This requests endstop status using M119. Klipper docs recommend QUERY_ENDSTOPS for extended usage.",
+    )
 
 
 def _explain_absolute_positioning(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Enables absolute movement mode.", "Subsequent X, Y, and Z moves are interpreted as machine coordinates instead of relative offsets."
+    return _static_explanation(
+        "state",
+        "Enables absolute movement mode.",
+        "Subsequent X, Y, and Z moves are interpreted as machine coordinates instead of relative offsets.",
+    )
 
 
 def _explain_relative_positioning(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Enables relative movement mode.", "Subsequent X, Y, and Z moves are treated as offsets from the current position."
+    return _static_explanation(
+        "state",
+        "Enables relative movement mode.",
+        "Subsequent X, Y, and Z moves are treated as offsets from the current position.",
+    )
 
 
 def _explain_set_position(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1092,11 +1141,19 @@ def _explain_set_position(_: str, params: dict[str, str], __: str) -> tuple[str,
 
 
 def _explain_absolute_extrusion(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Enables absolute extrusion mode.", "Extrusion moves now use a running absolute E position until another command changes the mode."
+    return _static_explanation(
+        "state",
+        "Enables absolute extrusion mode.",
+        "Extrusion moves now use a running absolute E position until another command changes the mode.",
+    )
 
 
 def _explain_relative_extrusion(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Enables relative extrusion mode.", "Extrusion values now represent incremental amounts rather than absolute E coordinates."
+    return _static_explanation(
+        "state",
+        "Enables relative extrusion mode.",
+        "Extrusion values now represent incremental amounts rather than absolute E coordinates.",
+    )
 
 
 def _explain_nozzle_temperature(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1125,7 +1182,11 @@ def _explain_fan_command(_: str, params: dict[str, str], __: str) -> tuple[str, 
 
 
 def _explain_fan_off(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Turns the part-cooling fan off.", "This command stops the standard print cooling fan."
+    return _static_explanation(
+        "state",
+        "Turns the part-cooling fan off.",
+        "This command stops the standard print cooling fan.",
+    )
 
 
 def _explain_display_message(_: str, params: dict[str, str], source: str) -> tuple[str, str, str]:
@@ -1169,7 +1230,11 @@ def _explain_set_gcode_offset(_: str, params: dict[str, str], __: str) -> tuple[
 
 
 def _explain_get_position(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Reports detailed toolhead position.", "This emits Klipper's GET_POSITION diagnostic output for current coordinate systems and internal position state."
+    return _static_explanation(
+        "message",
+        "Reports detailed toolhead position.",
+        "This emits Klipper's GET_POSITION diagnostic output for current coordinate systems and internal position state.",
+    )
 
 
 def _explain_temperature_wait(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1188,7 +1253,11 @@ def _explain_temperature_wait(_: str, params: dict[str, str], __: str) -> tuple[
 
 
 def _explain_turn_off_heaters(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "temperature", "Turns heaters off.", "This clears active heater targets so the printer can cool down."
+    return _static_explanation(
+        "temperature",
+        "Turns heaters off.",
+        "This clears active heater targets so the printer can cool down.",
+    )
 
 
 def _explain_set_heater_temperature(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1204,11 +1273,19 @@ def _explain_update_delayed_gcode(_: str, params: dict[str, str], __: str) -> tu
 
 
 def _explain_bed_mesh_calibrate(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Runs bed mesh calibration.", "This probes the bed to build a compensation mesh that later print moves can use."
+    return _static_explanation(
+        "motion",
+        "Runs bed mesh calibration.",
+        "This probes the bed to build a compensation mesh that later print moves can use.",
+    )
 
 
 def _explain_bed_mesh_clear(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Clears active bed mesh.", "This removes current bed mesh compensation from active motion planning."
+    return _static_explanation(
+        "state",
+        "Clears active bed mesh.",
+        "This removes current bed mesh compensation from active motion planning.",
+    )
 
 
 def _explain_bed_mesh_output(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1220,7 +1297,11 @@ def _explain_bed_mesh_output(_: str, params: dict[str, str], __: str) -> tuple[s
 
 
 def _explain_bed_mesh_map(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Prints mesh state as JSON.", "This outputs bed mesh data in machine-friendly JSON format for host tools."
+    return _static_explanation(
+        "message",
+        "Prints mesh state as JSON.",
+        "This outputs bed mesh data in machine-friendly JSON format for host tools.",
+    )
 
 
 def _explain_bed_mesh_profile(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1235,23 +1316,43 @@ def _explain_bed_mesh_offset(_: str, params: dict[str, str], __: str) -> tuple[s
 
 
 def _explain_bed_tilt_calibrate(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Runs bed tilt calibration.", "This probes configured points and estimates XY tilt correction values."
+    return _static_explanation(
+        "motion",
+        "Runs bed tilt calibration.",
+        "This probes configured points and estimates XY tilt correction values.",
+    )
 
 
 def _explain_bed_screws_adjust(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Starts manual bed screw adjustment.", "This walks through screw positions so the bed can be manually leveled."
+    return _static_explanation(
+        "motion",
+        "Starts manual bed screw adjustment.",
+        "This walks through screw positions so the bed can be manually leveled.",
+    )
 
 
 def _explain_quad_gantry_level(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Runs quad gantry leveling.", "This probes and adjusts the gantry so the toolhead plane is aligned before printing."
+    return _static_explanation(
+        "motion",
+        "Runs quad gantry leveling.",
+        "This probes and adjusts the gantry so the toolhead plane is aligned before printing.",
+    )
 
 
 def _explain_z_tilt_adjust(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Runs Z tilt adjustment.", "This probes configured points and adjusts independent Z steppers to compensate for tilt."
+    return _static_explanation(
+        "motion",
+        "Runs Z tilt adjustment.",
+        "This probes configured points and adjusts independent Z steppers to compensate for tilt.",
+    )
 
 
 def _explain_screws_tilt_calculate(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Calculates screw turn guidance.", "This probes bed points and computes screw adjustment turns for bed leveling."
+    return _static_explanation(
+        "motion",
+        "Calculates screw turn guidance.",
+        "This probes bed points and computes screw adjustment turns for bed leveling.",
+    )
 
 
 def _explain_probe(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1264,15 +1365,27 @@ def _explain_probe_accuracy(_: str, params: dict[str, str], __: str) -> tuple[st
 
 
 def _explain_probe_calibrate(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "motion", "Starts probe Z-offset calibration.", "This opens the guided process to calibrate probe z_offset, usually followed by SAVE_CONFIG."
+    return _static_explanation(
+        "motion",
+        "Starts probe Z-offset calibration.",
+        "This opens the guided process to calibrate probe z_offset, usually followed by SAVE_CONFIG.",
+    )
 
 
 def _explain_query_probe(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Queries probe trigger state.", "This reports whether the probe is currently open or triggered."
+    return _static_explanation(
+        "message",
+        "Queries probe trigger state.",
+        "This reports whether the probe is currently open or triggered.",
+    )
 
 
 def _explain_query_endstops(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Queries endstop states.", "This reports endstop trigger/open state for configured axes."
+    return _static_explanation(
+        "message",
+        "Queries endstop states.",
+        "This reports endstop trigger/open state for configured axes.",
+    )
 
 
 def _explain_set_fan_speed(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1423,29 +1536,26 @@ def _explain_set_stepper_phase(_: str, params: dict[str, str], __: str) -> tuple
 
 
 def _explain_stepper_buzz(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    stepper = params.get("STEPPER", "a configured stepper")
-    return (
+    return _static_explanation(
         "motion",
         "Runs stepper buzz test.",
-        f"This jogs {stepper} back and forth in a short test pattern so you can identify the motor or verify wiring/direction.",
+        f"This jogs {params.get('STEPPER', 'a configured stepper')} back and forth in a short test pattern so you can identify the motor or verify wiring/direction.",
     )
 
 
 def _explain_dump_tmc(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    stepper = params.get("STEPPER", "a configured TMC stepper")
-    return (
+    return _static_explanation(
         "message",
         "Prints TMC driver diagnostics.",
-        f"This queries TMC register and status information for {stepper} and prints it to the console for troubleshooting.",
+        f"This queries TMC register and status information for {params.get('STEPPER', 'a configured TMC stepper')} and prints it to the console for troubleshooting.",
     )
 
 
 def _explain_init_tmc(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    stepper = params.get("STEPPER", "a configured TMC stepper")
-    return (
+    return _static_explanation(
         "state",
         "Reinitializes a TMC driver.",
-        f"This asks Klipper to re-send configuration to the TMC driver for {stepper}, which can help recover expected driver settings after low-level changes or diagnostics.",
+        f"This asks Klipper to re-send configuration to the TMC driver for {params.get('STEPPER', 'a configured TMC stepper')}, which can help recover expected driver settings after low-level changes or diagnostics.",
     )
 
 
@@ -1488,7 +1598,11 @@ def _explain_save_variable(_: str, params: dict[str, str], __: str) -> tuple[str
 
 
 def _explain_save_config(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Writes config and restarts.", "This persists pending calibration/config values to printer config and restarts Klipper host software."
+    return _static_explanation(
+        "state",
+        "Writes config and restarts.",
+        "This persists pending calibration/config values to printer config and restarts Klipper host software.",
+    )
 
 
 def _explain_set_idle_timeout(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1512,15 +1626,27 @@ def _explain_sdcard_print_file(_: str, params: dict[str, str], __: str) -> tuple
 
 
 def _explain_sdcard_reset_file(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Resets SD print state.", "This unloads the current virtual SD file and clears SD print state."
+    return _static_explanation(
+        "state",
+        "Resets SD print state.",
+        "This unloads the current virtual SD file and clears SD print state.",
+    )
 
 
 def _explain_sd_list(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Lists SD card files.", "This requests a file listing from virtual SD storage (M20)."
+    return _static_explanation(
+        "message",
+        "Lists SD card files.",
+        "This requests a file listing from virtual SD storage (M20).",
+    )
 
 
 def _explain_sd_init(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Initializes SD state.", "This initializes virtual SD card handling (M21)."
+    return _static_explanation(
+        "state",
+        "Initializes SD state.",
+        "This initializes virtual SD card handling (M21).",
+    )
 
 
 def _explain_sd_select(_: str, params: dict[str, str], source: str) -> tuple[str, str, str]:
@@ -1529,11 +1655,19 @@ def _explain_sd_select(_: str, params: dict[str, str], source: str) -> tuple[str
 
 
 def _explain_sd_start_or_resume(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Starts or resumes SD print.", "This starts a selected SD print file or resumes a paused SD print (M24)."
+    return _static_explanation(
+        "state",
+        "Starts or resumes SD print.",
+        "This starts a selected SD print file or resumes a paused SD print (M24).",
+    )
 
 
 def _explain_sd_pause(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Pauses SD print.", "This pauses the active virtual SD print (M25)."
+    return _static_explanation(
+        "state",
+        "Pauses SD print.",
+        "This pauses the active virtual SD print (M25).",
+    )
 
 
 def _explain_sd_set_position(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1542,7 +1676,11 @@ def _explain_sd_set_position(_: str, params: dict[str, str], __: str) -> tuple[s
 
 
 def _explain_sd_status(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Reports SD print status.", "This requests current virtual SD print progress/state (M27)."
+    return _static_explanation(
+        "message",
+        "Reports SD print status.",
+        "This requests current virtual SD print progress/state (M27).",
+    )
 
 
 def _explain_set_build_percentage(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
@@ -1551,35 +1689,67 @@ def _explain_set_build_percentage(_: str, params: dict[str, str], __: str) -> tu
 
 
 def _explain_restart(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Restarts Klipper host.", "This reloads config and performs a host-side restart (without MCU error-state clear)."
+    return _static_explanation(
+        "state",
+        "Restarts Klipper host.",
+        "This reloads config and performs a host-side restart (without MCU error-state clear).",
+    )
 
 
 def _explain_firmware_restart(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Performs firmware restart.", "This restarts host and clears MCU error state (FIRMWARE_RESTART)."
+    return _static_explanation(
+        "state",
+        "Performs firmware restart.",
+        "This restarts host and clears MCU error state (FIRMWARE_RESTART).",
+    )
 
 
 def _explain_status(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Requests Klipper status.", "This prints current Klipper host status information."
+    return _static_explanation(
+        "message",
+        "Requests Klipper status.",
+        "This prints current Klipper host status information.",
+    )
 
 
 def _explain_help(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "message", "Requests available commands list.", "This asks Klipper to print known extended G-Code commands."
+    return _static_explanation(
+        "message",
+        "Requests available commands list.",
+        "This asks Klipper to print known extended G-Code commands.",
+    )
 
 
 def _explain_pause(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Pauses the current print flow.", "This triggers the printer's pause behavior, which often parks the toolhead and waits for operator input."
+    return _static_explanation(
+        "state",
+        "Pauses the current print flow.",
+        "This triggers the printer's pause behavior, which often parks the toolhead and waits for operator input.",
+    )
 
 
 def _explain_resume(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Resumes a paused print.", "This asks Klipper to continue execution after a pause sequence completes."
+    return _static_explanation(
+        "state",
+        "Resumes a paused print.",
+        "This asks Klipper to continue execution after a pause sequence completes.",
+    )
 
 
 def _explain_clear_pause(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Clears pause state.", "This clears pause state without resuming movement, useful before a new print start."
+    return _static_explanation(
+        "state",
+        "Clears pause state.",
+        "This clears pause state without resuming movement, useful before a new print start.",
+    )
 
 
 def _explain_cancel_print(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:
-    return "state", "Cancels the current print.", "This stops the active print workflow and usually triggers configured cleanup behavior."
+    return _static_explanation(
+        "state",
+        "Cancels the current print.",
+        "This stops the active print workflow and usually triggers configured cleanup behavior.",
+    )
 
 
 def _explain_pid_calibrate(_: str, params: dict[str, str], __: str) -> tuple[str, str, str]:

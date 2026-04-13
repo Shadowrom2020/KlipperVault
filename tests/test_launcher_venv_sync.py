@@ -1,10 +1,11 @@
 import subprocess
 from pathlib import Path
 
-import klipper_vault
+import klipper_vault_gui as klipper_vault
 
 
 def test_sync_venv_requirements_skips_when_hash_matches(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("KLIPPERVAULT_AUTO_UPDATE_VENV", raising=False)
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("nicegui==2.0.0\n", encoding="utf-8")
 
@@ -29,6 +30,7 @@ def test_sync_venv_requirements_skips_when_hash_matches(tmp_path: Path, monkeypa
 
 
 def test_sync_venv_requirements_installs_and_writes_stamp(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("KLIPPERVAULT_AUTO_UPDATE_VENV", raising=False)
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("nicegui==2.0.0\n", encoding="utf-8")
 
@@ -78,3 +80,19 @@ def test_sync_venv_requirements_disabled_by_env(tmp_path: Path, monkeypatch) -> 
 
     assert called["value"] is False
     assert not stamp.exists()
+
+
+def test_requirements_path_uses_env_relative_to_repo_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("KLIPPERVAULT_REQUIREMENTS_FILE", "requirements-printer.txt")
+
+    assert klipper_vault._requirements_path() == tmp_path / "requirements-printer.txt"
+
+
+def test_stamp_path_changes_per_requirements_profile(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("KLIPPERVAULT_REQUIREMENTS_FILE", "requirements-printer.txt")
+    monkeypatch.setattr(klipper_vault.sys, "executable", str(tmp_path / "python"))
+
+    stamp_path = klipper_vault._venv_requirements_stamp_path()
+
+    assert stamp_path.name == ".klippervault_requirements-printer.txt.sha256"

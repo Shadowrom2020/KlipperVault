@@ -6,144 +6,197 @@ KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definiti
 
 **[📸 View UI Overview with Screenshots](overview.md)**
 
+## Deprecation Notice: On-Printer Runtime Removed
+
+Support for running KlipperVault directly on the printer host has been removed.
+
+- Removed behavior: local/on-printer runtime mode and local printer-host execution workflow.
+- Supported behavior: remote-only `off_printer` mode using SSH/SFTP + Moonraker API.
+
+If you still have an older on-printer installation, remove it to avoid port conflicts,
+stale services, and accidental execution of unsupported code paths.
+
+### Uninstall Old On-Printer Versions (Detailed)
+
+Run the helper script from the repository root on the printer host (for example via SSH):
+
+```bash
+chmod +x ./remove.sh
+./remove.sh
+```
+
+What `remove.sh` handles automatically:
+
+1. Stops and disables legacy services (`klippervault.service`, `klipper-vault.service`).
+2. Removes legacy service unit files from `/etc/systemd/system`.
+3. Removes old app directories and virtual environments.
+4. Removes legacy on-printer config/database artifacts.
+5. Removes old launcher shortcuts in the installer user's home directory.
+6. Prints a verification summary of any remaining paths.
+
+Optional script modes:
+
+```bash
+# Preview actions without applying changes
+./remove.sh --dry-run
+
+# Keep old launcher shortcuts, remove everything else
+./remove.sh --keep-shortcuts
+```
+
+After cleanup, use this repository from a remote PC/server only, then follow the normal installation and remote profile setup flow.
+
 ## Overview
 
-KlipperVault scans your Klipper config tree, indexes every `[gcode_macro ...]` section in SQLite, and presents the results in a NiceGUI interface.
+KlipperVault runs remotely on a PC/server, syncs Klipper cfg files over SSH/SFTP, indexes every `[gcode_macro ...]` section in SQLite, and presents the results in a NiceGUI interface.
 
-It is built for Klipper systems that keep configuration in `~/printer_data/config` and want safer macro maintenance than editing raw `.cfg` files alone.
+All printer interaction is remote-only via SSH/SFTP for config files and Moonraker HTTP API for printer state/actions.
 
 ## What's New
 
-- Startup online update check now runs automatically when `online_update_repo_url` is configured.
-- When updates are found during startup checks, KlipperVault posts a Mainsail notification through Moonraker.
-- Developer publishing actions are available in a dedicated top-level `Developer` toolbar menu:
-  - `Export Update Zip`
-  - `Create Pull Request`
+- **Remote-only runtime (on-printer removed)**
+  - KlipperVault now runs in remote `off_printer` mode only.
+  - Printer interaction is handled via SSH/SFTP (cfg files) and Moonraker API (state/actions).
+
+- **Safer edit and sync workflow**
+  - Local edits are staged first; upload happens explicitly with `Save Config`.
+  - While printing, check/view/import flows remain available, but mutating remote sync actions are blocked.
+  - Auto-restart after upload is removed; restart remains a deliberate/manual action.
+
+- **Improved printer/profile UX**
+  - Active printer selection is in the top bar for faster context switching.
+  - Printer connection actions are grouped under a dedicated `Printers` menu.
+  - Backup action is now in `Macro actions` for a cleaner toolbar.
+
+- **Online update quality-of-life**
+  - Startup update check runs automatically when `online_update_repo_url` is configured.
+  - If updates are found, KlipperVault can post a Mainsail notification through Moonraker.
+  - Imported updates are attached as new versions within existing macro identity chains.
+
+- **Developer publishing menu**
+  - Publishing tools are grouped in a top-level `Developer` menu:
+    - `Export Update Zip`
+    - `Create Pull Request`
 
 ## Key Features
 
-- Automatic macro version history (changes are stored only when content differs).
-- Active/inactive and loaded/not-loaded state tracking across include chains.
-- Dynamic macro awareness for configs loaded via `[dynamicmacros]` `configs:` entries.
-- Dynamic macro status badge (`Dynamic`) and dedicated `Reload Dynamic Macros` action.
-- Duplicate macro detection with guided conflict resolution.
-- Loading-order overview showing Klipper file parse order and macro-level inline include order.
-- In-place macro editing with write-back to cfg files.
-- Backup and restore of both indexed rows and cfg snapshots.
-- Macro sharing workflow:
+- **Versioned macro history**
+  - Automatic history snapshots are stored only when macro content actually changes.
+  - Active/inactive and loaded/not-loaded states are tracked across include chains.
+
+- **Remote-first editing workflow**
+  - Edit macros in-place with local write-back and immediate re-indexing.
+  - Changes are staged locally first and uploaded explicitly with `Save Config`.
+  - Restart/reload actions are surfaced intentionally (no automatic restart on upload).
+
+- **Backup and recovery**
+  - Create named backups of indexed macro rows and cfg snapshots.
+  - Restore from backups with clear status feedback and post-restore re-indexing.
+
+- **Macro sharing and review**
   - Export one or multiple macros into a portable share JSON file.
-  - Attach source printer vendor/model metadata.
-  - Import via file upload as inactive `NEW` entries for review first.
-  - Imported macros default to `macros.cfg`; include is ensured in `printer.cfg`.
-- Online macro updates from GitHub repositories:
-  - Check for updates from optional GitHub-hosted update repository.
-  - Run an automatic startup update check when a repository is configured.
-  - Import updates as new inactive versions for selective activation.
-  - **Developer mode**: Create pull requests to publish macros to repositories, export local macros as repository bundles.
-    - See [**Macro Developer Guide**](Macro_Developer.md) for setup instructions.
-- Moonraker print-state safety gates for mutating actions.
-- Optional script explanation panel with macro-to-macro cross-links.
+  - Include source printer vendor/model metadata for compatibility checks.
+  - Import as inactive `NEW` entries so changes can be reviewed before activation.
+
+- **Online update pipeline**
+  - Compare local macros against an optional GitHub-hosted update repository.
+  - Run automatic startup checks when `online_update_repo_url` is configured.
+  - Import only changed macros as new versions and activate selectively.
+  - Post startup update notifications to Mainsail through Moonraker.
+
+- **Dynamic macro support**
+  - Detect macros provided via `[dynamicmacros]` `configs:` entries.
+  - Show dynamic status and provide a dedicated `Reload Dynamic Macros` action.
+
+- **Conflict and visibility tooling**
+  - Guided duplicate detection/resolution workflows.
+  - Loading-order overview at file and macro parse levels.
+  - Optional script explanation panel with macro-to-macro cross-links.
+
+- **Developer publishing tools**
+  - Top-level `Developer` menu with:
+    - `Export Update Zip`
+    - `Create Pull Request`
+  - See [**Macro Developer Guide**](Macro_Developer.md) for setup instructions.
 
 Dynamic Macros project:
 - https://github.com/3DCoded/DynamicMacros
 
 ## Requirements
 
-- Linux
+- Linux, macOS, or Windows 10+
 - Python 3 with `venv` support
-- systemd
-- Klipper config directory (typically `~/printer_data/config`)
-- Moonraker reachable at `http://127.0.0.1:7125` (default)
+- SSH access to target host config directory
+- Moonraker URL for target host/profile
 
-Dependencies are defined in [requirements.txt](requirements.txt).
+Primary dependency profile:
+
+- GUI + remote workflows: [requirements.txt](requirements.txt)
+
+Off-printer credential storage:
+
+- SSH profile metadata is stored in the KlipperVault SQLite database.
+- SSH secrets use OS key storage (keyring) when available.
+- If no usable keyring backend is present, secrets fall back to encrypted-at-rest SQLite storage.
 
 ## Default Paths
 
-- Config directory: `~/printer_data/config`
-- Database: `~/printer_data/db/klipper_macros.db`
-- App config: `~/printer_data/config/klippervault.cfg`
+- Runtime mode: `off_printer`
+- Config directory:
+  - Linux: `~/.config/klippervault`
+  - macOS: `~/Library/Application Support/KlipperVault`
+  - Windows: `%APPDATA%\\KlipperVault`
+- Database:
+  - Linux: `~/.local/share/klippervault/klipper_macros.db`
+  - macOS: `~/Library/Application Support/KlipperVault/klipper_macros.db`
+  - Windows: `%LOCALAPPDATA%\\KlipperVault\\klipper_macros.db`
 - Default HTTP port: `10090`
-- Default Moonraker URL: `http://127.0.0.1:7125`
+- Moonraker URL comes from the active SSH profile.
 
 ## Configuration
 
-KlipperVault creates `klippervault.cfg` on first start if it does not exist.
+KlipperVault stores application settings in the SQLite database and exposes them in-app:
 
-```ini
-[vault]
-version_history_size: 5
-port: 10090
-ui_language: en
-printer_vendor:
-printer_model:
-online_update_repo_url:
-online_update_manifest_path: updates/manifest.json
-online_update_ref: main
-developer: false
-```
+1. Click the top-right `Settings` (gear) button in the toolbar.
+2. Update settings in the dialog.
+3. Save changes.
 
 - `version_history_size`: max stored versions per macro
 - `port`: web UI port
-- `ui_language`: UI language (`en`, `de`)
-- `printer_vendor`: optional printer vendor shown in UI and exported share metadata
-- `printer_model`: optional printer model shown in UI and exported share metadata
+- `runtime_mode`: fixed to `off_printer`
+- `ui_language`: UI language (`en`, `de`, `fr`)
 - `online_update_repo_url`: optional GitHub URL for macro update repository
 - `online_update_manifest_path`: path to manifest file inside the update repository (default: `updates/manifest.json`)
 - `online_update_ref`: branch, tag, or commit SHA for update checks (default: `main`)
 - `developer`: enable developer features (default: `false`) — see [Macro Developer Guide](Macro_Developer.md)
 
-If vendor/model are missing, KlipperVault prompts for them and writes them back to config.
+Port, UI language, and developer mode changes require app restart to take full effect.
 
 ## Installation
 
-From repository root:
+- [Linux installation](Linux.md)
+- [macOS installation](MacOS.md)
+- [Windows installation](Windows.md)
 
-```bash
-sudo ./install.sh
-```
+Run instructions are included in each OS-specific installation guide above.
 
-Installer summary:
+## Docker Deployment
 
-1. Detect target user
-2. Create virtualenv
-3. Install Python dependencies
-4. Write and enable `klipper-vault.service`
-5. Add/update KlipperVault entry in Mainsail `.theme/navi.json`
-
-Uninstall:
-
-```bash
-sudo ./uninstall.sh
-sudo ./uninstall.sh --remove-venv
-```
-
-## Running
-
-Manual run:
-
-```bash
-./.venv/bin/python klipper_vault.py
-```
-
-Service management:
-
-```bash
-sudo systemctl restart klipper-vault.service
-sudo systemctl status klipper-vault.service
-sudo journalctl -u klipper-vault.service -f
-```
+See [docker.md](docker.md) for Docker build, run, persistence, networking, and upgrade instructions.
 
 ## Usage
 
-Typical flow:
+Typical off-printer flow:
 
 1. Open KlipperVault.
-2. Click `Scan macros`.
-3. Select a macro and review details/history.
-4. Edit latest non-deleted version.
-5. For dynamic macros, editing is allowed even while printing.
-6. Use `Reload Dynamic Macros` to apply dynamic-macro changes without a full Klipper restart.
-7. Save and re-index.
+2. Open `Printers` and choose `Manage printer connections`, then save and activate a profile.
+3. Open `Printers` and choose `Test printer connection`.
+4. Click `Scan macros`.
+5. Select a macro and review details/history.
+6. Edit latest non-deleted version.
+7. For dynamic macros, editing is allowed even while printing.
+8. Use `Reload Dynamic Macros` to apply dynamic-macro changes without a full Klipper restart.
+9. Save and re-index.
 
 Loading-order inspection:
 
@@ -161,7 +214,7 @@ Share/import flow:
 
 Online updates flow:
 
-1. Configure `online_update_repo_url` and optional `online_update_manifest_path`, `online_update_ref` in `klippervault.cfg`.
+1. Configure `online_update_repo_url` and optional `online_update_manifest_path`, `online_update_ref` in `Settings` (gear button).
 2. Click `Check for updates` to fetch the manifest and compare local macros against remote versions.
 3. Review available updates in the dialog; select which ones to activate.
 4. Click `Import updates` to add new versions; activate selectively or defer.
@@ -169,7 +222,7 @@ Online updates flow:
 
 Developer mode (publish and export update artifacts):
 
-1. Set `developer: true` in `klippervault.cfg`.
+1. Enable `Developer mode` in `Settings` (gear button).
 2. Use the top-level `Developer` toolbar menu.
 3. Click `Export Update Zip` to download an update ZIP for review or manual distribution.
 4. Click `Create Pull Request` to publish active macros directly to the configured GitHub repository.
@@ -183,7 +236,9 @@ Compatibility behavior:
 
 ## Safety Model
 
-When Moonraker reports `printing`, KlipperVault blocks most mutating actions (import/export/backup/restore/duplicate resolution), pauses watcher writes, and shows a warning.
+When Moonraker reports `printing`, KlipperVault keeps the UI responsive for review tasks but blocks selected risk-prone actions such as `Save Config`, backup creation, and purge operations.
+
+Local-first workflows remain available during printing (for example check/update dialogs and local import/review), while printer-impacting upload actions stay gated.
 
 Exception for dynamic macros:
 - Dynamic macros remain editable while printing.
@@ -193,13 +248,13 @@ Exception for dynamic macros:
 
 App does not start:
 
-- Check `klippervault.cfg` port value.
+- Check the `Settings` (gear) web UI port value.
 - Confirm virtualenv and dependencies were installed.
 - Check service logs with `journalctl`.
 
 No macros found:
 
-- Verify config files exist under `~/printer_data/config`.
+- In `off_printer` mode, verify an active printer connection exists, credentials are set, and `Test printer connection` succeeds.
 - Check `printer.cfg` includes and file readability.
 - Trigger a manual scan.
 
@@ -214,7 +269,7 @@ Editing is disabled:
 Developer setup, architecture, checks, and contribution guidance are in [development.md](development.md).
 
 ## Honorable people that helped me to build this:
-@[triadterm](https://github.com/triadterm) - Thanks for beign an early adopter and testing this
+@[triadterm](https://github.com/triadterm) - Thanks for being an early adopter and testing this
 
 ## License
 

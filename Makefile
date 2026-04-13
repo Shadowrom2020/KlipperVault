@@ -7,7 +7,7 @@ I18N_POT := src/locales/$(I18N_DOMAIN).pot
 
 # Extract translatable strings from Python sources into the template catalog.
 i18n-extract:
-	$(PYBABEL) extract -F babel.ini -o $(I18N_POT) src klipper_vault.py
+	$(PYBABEL) extract -F babel.ini -o $(I18N_POT) src klipper_vault_gui.py
 
 # Merge template updates into language catalogs.
 i18n-update: i18n-extract

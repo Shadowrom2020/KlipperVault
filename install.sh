@@ -2,7 +2,6 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVICE_NAME="klipper-vault.service"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 if [[ -n "${SUDO_USER:-}" ]]; then
@@ -18,18 +17,9 @@ if [[ -z "$APP_HOME" ]]; then
 fi
 
 VENV_DIR="${VENV_DIR:-$APP_HOME/klippervault-venv}"
-SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
-KLIPPER_CONFIG_DIR="${KLIPPER_CONFIG_DIR:-$APP_HOME/printer_data/config}"
-VAULT_CFG_PATH="${VAULT_CFG_PATH:-$KLIPPER_CONFIG_DIR/klippervault.cfg}"
-MAINSAIL_THEME_DIR="${MAINSAIL_THEME_DIR:-$KLIPPER_CONFIG_DIR/.theme}"
-MAINSAIL_NAV_FILE="${MAINSAIL_NAV_FILE:-$MAINSAIL_THEME_DIR/navi.json}"
-MOONRAKER_CONF_FILE="${MOONRAKER_CONF_FILE:-$KLIPPER_CONFIG_DIR/moonraker.conf}"
-MAINSAIL_NAV_TITLE="${MAINSAIL_NAV_TITLE:-KlipperVault}"
-MAINSAIL_NAV_TARGET="${MAINSAIL_NAV_TARGET:-_blank}"
-MAINSAIL_NAV_POSITION="${MAINSAIL_NAV_POSITION:-85}"
-UPDATE_MANAGER_NAME="${UPDATE_MANAGER_NAME:-klippervault}"
-
-LOW_MEMORY_THRESHOLD_KB=1048576
+REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-$APP_DIR/requirements.txt}"
+CONFIG_DIR="$APP_HOME/.config/klippervault"
+DB_PATH="$APP_HOME/.local/share/klippervault/klipper_macros.db"
 
 need_cmd() {
   local cmd="$1"
@@ -58,301 +48,38 @@ as_user() {
   fi
 }
 
-install_apt_dependencies() {
-  if ! command -v apt-get >/dev/null 2>&1; then
-    return
-  fi
+echo "Installing KlipperVault (remote-only mode)"
+echo "App dir: $APP_DIR"
+echo "User: $APP_USER"
+echo "Python: $PYTHON_BIN"
+echo "Venv: $VENV_DIR"
 
-  echo "Detected apt-based system; installing required Python packages..."
-  as_root apt-get update
-  as_root apt-get install -y python3-venv python3-pip
-}
-
-check_system_memory() {
-  if [[ ! -r /proc/meminfo ]]; then
-    return
-  fi
-
-  local total_kb
-  total_kb="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
-
-  if [[ ! "$total_kb" =~ ^[0-9]+$ ]]; then
-    return
-  fi
-
-  if (( total_kb >= LOW_MEMORY_THRESHOLD_KB )); then
-    return
-  fi
-
-  local total_mb
-  total_mb=$((total_kb / 1024))
-
-  echo "WARNING: Detected ${total_mb}MB RAM (less than 1024MB)."
-  echo "KlipperVault may run poorly on systems with less than 1GB of RAM."
-
-  if [[ ! -t 0 ]]; then
-    echo "Cannot prompt for confirmation in non-interactive mode. Aborting install."
-    exit 1
-  fi
-
-  if ! read -r -p "Continue anyway? [y/N]: " confirm_low_memory; then
-    echo "Install canceled due to low memory."
-    exit 1
-  fi
-
-  case "${confirm_low_memory,,}" in
-    y|yes)
-      ;;
-    n|no|*)
-      echo "Install canceled due to low memory."
-      exit 1
-      ;;
-  esac
-}
-
-detect_vault_port() {
-  local default_port="10090"
-
-  if [[ -f "$VAULT_CFG_PATH" ]]; then
-    local parsed_port
-    parsed_port="$(awk -F: '
-      /^[[:space:]]*port[[:space:]]*:/ {
-        gsub(/[[:space:]]/, "", $2)
-        print $2
-        exit
-      }
-    ' "$VAULT_CFG_PATH")"
-
-    if [[ "$parsed_port" =~ ^[0-9]+$ ]] && (( parsed_port >= 1 && parsed_port <= 65535 )); then
-      echo "$parsed_port"
-      return
-    fi
-  fi
-
-  echo "$default_port"
-}
-
-detect_nav_href() {
-  local port="$1"
-
-  if [[ -n "${MAINSAIL_NAV_HREF:-}" ]]; then
-    echo "$MAINSAIL_NAV_HREF"
-    return
-  fi
-
-  local printer_ip
-  printer_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')"
-
-  if [[ -z "$printer_ip" ]]; then
-    printer_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  fi
-
-  if [[ -z "$printer_ip" ]]; then
-    printer_ip="127.0.0.1"
-  fi
-
-  echo "http://${printer_ip}:${port}"
-}
-
-setup_mainsail_navigation() {
-  local vault_port nav_href
-  vault_port="$(detect_vault_port)"
-  nav_href="$(detect_nav_href "$vault_port")"
-
-  echo "Configuring Mainsail navigation entry..."
-  as_user mkdir -p "$MAINSAIL_THEME_DIR"
-
-  as_user "$PYTHON_BIN" - "$MAINSAIL_NAV_FILE" "$MAINSAIL_NAV_TITLE" "$nav_href" "$MAINSAIL_NAV_TARGET" "$MAINSAIL_NAV_POSITION" <<'PY'
-import json
-import pathlib
-import sys
-
-nav_path = pathlib.Path(sys.argv[1])
-title = sys.argv[2]
-href = sys.argv[3]
-target = sys.argv[4]
-position = int(sys.argv[5])
-
-entry = {
-    "title": title,
-    "href": href,
-    "target": target,
-    "position": position,
-    "icon": "M3,3H21V5H3V3M3,7H21V9H3V7M3,11H21V13H3V11M3,15H21V21H3V15M5,17V19H19V17H5Z",
-}
-
-data = []
-if nav_path.exists():
-    try:
-        loaded = json.loads(nav_path.read_text(encoding="utf-8"))
-        if isinstance(loaded, list):
-            data = loaded
-    except Exception:
-        data = []
-
-updated = False
-for idx, item in enumerate(data):
-    if isinstance(item, dict) and item.get("title") == title:
-        data[idx] = entry
-        updated = True
-        break
-
-if not updated:
-    data.append(entry)
-
-nav_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-PY
-
-  echo "Mainsail nav entry written: $MAINSAIL_NAV_FILE"
-  echo "KlipperVault URL: $nav_href"
-}
-
-detect_repo_origin() {
-  local repo_origin
-  repo_origin="$(git -C "$APP_DIR" config --get remote.origin.url 2>/dev/null || true)"
-  echo "$repo_origin"
-}
-
-detect_repo_branch() {
-  local repo_branch
-  repo_branch="$(git -C "$APP_DIR" branch --show-current 2>/dev/null || true)"
-  if [[ -z "$repo_branch" ]]; then
-    repo_branch="main"
-  fi
-  echo "$repo_branch"
-}
-
-setup_mainsail_update_section() {
-  local repo_origin repo_branch
-  repo_origin="$(detect_repo_origin)"
-  repo_branch="$(detect_repo_branch)"
-
-  echo "Configuring moonraker.conf update section..."
-  as_user mkdir -p "$KLIPPER_CONFIG_DIR"
-
-  as_user "$PYTHON_BIN" - "$MOONRAKER_CONF_FILE" "$UPDATE_MANAGER_NAME" "$APP_DIR" "$SERVICE_NAME" "$repo_origin" "$repo_branch" <<'PY'
-import pathlib
-import re
-import sys
-
-conf_path = pathlib.Path(sys.argv[1])
-update_name = sys.argv[2]
-app_dir = sys.argv[3]
-_ = sys.argv[4]
-repo_origin = sys.argv[5].strip()
-repo_branch = sys.argv[6].strip() or "main"
-
-section_lines = [
-    f"[update_manager {update_name}]",
-    "type: git_repo",
-    f"path: {app_dir}",
-]
-
-if repo_origin:
-    section_lines.append(f"origin: {repo_origin}")
-
-section_lines.extend([
-    f"primary_branch: {repo_branch}",
-    "managed_services: klippervault",
-])
-
-section_text = "\n".join(section_lines) + "\n"
-
-if conf_path.exists():
-    content = conf_path.read_text(encoding="utf-8", errors="ignore")
-else:
-    content = ""
-
-pattern = re.compile(
-    rf"(?ms)^\[update_manager\s+{re.escape(update_name)}\]\n(?:.*?)(?=^\[|\Z)"
-)
-
-if pattern.search(content):
-    updated = pattern.sub(section_text + "\n", content, count=1)
-else:
-    updated = content.rstrip("\n")
-    if updated:
-        updated += "\n\n"
-    updated += section_text
-
-conf_path.write_text(updated.rstrip("\n") + "\n", encoding="utf-8")
-PY
-
-  echo "Moonraker update section written: $MOONRAKER_CONF_FILE"
-}
-
-echo "Installing KlipperVault from: $APP_DIR"
-echo "Service user: $APP_USER"
-echo "Virtualenv: $VENV_DIR"
+after_install_cmd="$VENV_DIR/bin/python $APP_DIR/klipper_vault_gui.py"
 
 need_cmd "$PYTHON_BIN"
-need_cmd systemctl
 need_cmd getent
 
-check_system_memory
-
-install_apt_dependencies
-
-if [[ ! -f "$APP_DIR/klipper_vault.py" ]]; then
-  echo "klipper_vault.py not found in $APP_DIR"
+if [[ ! -f "$REQUIREMENTS_FILE" ]]; then
+  echo "Requirements file not found: $REQUIREMENTS_FILE"
   exit 1
 fi
 
-if [[ ! -f "$APP_DIR/requirements.txt" ]]; then
-  echo "requirements.txt not found in $APP_DIR"
-  exit 1
-fi
-
-# Ensure python venv support is present.
-if ! "$PYTHON_BIN" -m venv --help >/dev/null 2>&1; then
-  echo "python3 venv support is missing. Install python3-venv and retry."
-  exit 1
-fi
+as_user mkdir -p "$CONFIG_DIR"
+as_user mkdir -p "$(dirname "$DB_PATH")"
 
 if [[ ! -d "$VENV_DIR" ]]; then
   echo "Creating virtual environment..."
   as_user "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
-# Ensure pip exists in the virtualenv even on distros that omit it by default.
-as_user "$VENV_DIR/bin/python" -m ensurepip --upgrade
-
 echo "Installing Python dependencies..."
-as_user "$VENV_DIR/bin/python" -m pip install --upgrade pip
-as_user "$VENV_DIR/bin/python" -m pip install -r "$APP_DIR/requirements.txt"
+as_user "$VENV_DIR/bin/pip" install --upgrade pip
+as_user "$VENV_DIR/bin/pip" install -r "$REQUIREMENTS_FILE"
 
-echo "Writing systemd service: $SERVICE_PATH"
-TMP_SERVICE="$(mktemp)"
-cat > "$TMP_SERVICE" <<EOF
-[Unit]
-Description=KlipperVault Service
-After=network-online.target klipper.service mainsail.service
-Wants=network-online.target klipper.service mainsail.service
+echo "Settings are initialized automatically in the SQLite database on first start."
 
-[Service]
-Type=simple
-User=$APP_USER
-WorkingDirectory=$APP_DIR
-ExecStart=$VENV_DIR/bin/python $APP_DIR/klipper_vault.py
-Restart=on-failure
-RestartSec=3
-Environment=PYTHONUNBUFFERED=1
-Environment=KLIPPERVAULT_AUTO_UPDATE_VENV=1
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-as_root install -m 0644 "$TMP_SERVICE" "$SERVICE_PATH"
-rm -f "$TMP_SERVICE"
-
-echo "Reloading and enabling service..."
-as_root systemctl daemon-reload
-as_root systemctl enable --now "$SERVICE_NAME"
-
-setup_mainsail_navigation
-setup_mainsail_update_section
-
+echo
 echo "Install complete."
-echo "Use: sudo systemctl restart $SERVICE_NAME"
-echo "Logs: sudo journalctl -u $SERVICE_NAME -f"
+echo "Config dir: $CONFIG_DIR"
+echo "Database: $DB_PATH"
+echo "Start KlipperVault with: $after_install_cmd"

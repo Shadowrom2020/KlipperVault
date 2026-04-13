@@ -1,219 +1,153 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Jürgen Herrmann
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Root launcher for the KlipperVault NiceGUI app."""
+"""Legacy on-printer entrypoint deprecation helper.
+
+This script performs startup cleanup for deprecated on-printer installations:
+- remove KlipperVault update-manager section from Moonraker config
+- send a Mainsail deprecation notification via Moonraker
+- stop legacy KlipperVault systemd service
+"""
 
 from __future__ import annotations
 
-import hashlib
-import inspect
+import json
 import os
+import re
 import subprocess  # nosec B404
-import sys
 from pathlib import Path
+from urllib import error, request
 
 
-REPO_ROOT = Path(__file__).resolve().parent
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    # Keep imports stable after moving all source modules under src/.
-    sys.path.insert(0, str(SRC_DIR))
+README_URL = "https://github.com/Shadowrom2020/KlipperVault/blob/main/README.md"
+MOONRAKER_URL_DEFAULT = "http://127.0.0.1:7125"
 
 
-def _requirements_hash(requirements_path: Path) -> str:
-    """Return SHA256 hash of requirements file contents."""
-    return hashlib.sha256(requirements_path.read_bytes()).hexdigest()
+def _home_dir() -> Path:
+    """Return effective install-user home directory."""
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    if user:
+        return Path(os.path.expanduser(f"~{user}")).resolve()
+    return Path.home().resolve()
 
 
-def _venv_requirements_stamp_path() -> Path:
-    """Return per-venv stamp file used to skip redundant pip installs."""
-    # Keep symlink path intact so venv python wrappers like
-    # ~/.venv/bin/python -> /usr/bin/python still map back to ~/.venv.
-    python_path = Path(sys.executable)
-    if python_path.parent.name == "bin" and (python_path.parent.parent / "pyvenv.cfg").exists():
-        return python_path.parent.parent / ".klippervault_requirements.sha256"
-    return REPO_ROOT / ".klippervault_requirements.sha256"
-
-
-def _auto_update_venv_enabled() -> bool:
-    """Return True when startup venv sync is enabled."""
-    raw = os.environ.get("KLIPPERVAULT_AUTO_UPDATE_VENV", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
-
-
-def _log_venv_sync(message: str) -> None:
-    """Emit a startup log line for venv sync decisions."""
-    print(f"[KlipperVault] venv-sync: {message}", flush=True)
-
-
-def _sync_venv_requirements_if_needed() -> None:
-    """Install requirements into active venv when requirements.txt changed."""
-    if not _auto_update_venv_enabled():
-        _log_venv_sync("disabled via KLIPPERVAULT_AUTO_UPDATE_VENV")
-        return
-
-    requirements_path = REPO_ROOT / "requirements.txt"
-    if not requirements_path.exists() or not requirements_path.is_file():
-        _log_venv_sync("requirements.txt not found; skipping")
-        return
-
-    required_hash = _requirements_hash(requirements_path)
-    stamp_path = _venv_requirements_stamp_path()
-
-    try:
-        installed_hash = stamp_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        installed_hash = ""
-
-    if installed_hash == required_hash:
-        _log_venv_sync("requirements unchanged; skipping")
-        return
-
-    _log_venv_sync("requirements changed; running pip install")
-    subprocess.run(  # nosec B603
-        [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)],
-        cwd=str(REPO_ROOT),
-        check=True,
+def _moonraker_config_candidates(home_dir: Path) -> list[Path]:
+    """Return possible Moonraker config file locations."""
+    configured = os.environ.get("MOONRAKER_CONFIG_PATH", "").strip()
+    candidates: list[Path] = []
+    if configured:
+        candidates.append(Path(configured).expanduser().resolve())
+    candidates.extend(
+        [
+            (home_dir / "printer_data" / "config" / "moonraker.conf").resolve(),
+            (home_dir / "printer_data" / "config" / "moonraker.cfg").resolve(),
+            Path("/etc/moonraker.conf"),
+        ]
     )
 
-    stamp_path.write_text(required_hash + "\n", encoding="utf-8")
-    _log_venv_sync("requirements sync completed")
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        if path not in seen:
+            unique.append(path)
+            seen.add(path)
+    return unique
 
 
-def _load_app_version() -> str:
-    """Read application version from VERSION file, with safe fallback."""
-    version_path = REPO_ROOT / "VERSION"
+def _remove_update_manager_klippervault_section(config_path: Path) -> bool:
+    """Remove [update_manager ...klippervault...] section from Moonraker config."""
+    if not config_path.exists() or not config_path.is_file():
+        return False
+
+    content = config_path.read_text(encoding="utf-8")
+    lines = content.splitlines(keepends=True)
+
+    section_header_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+    kept: list[str] = []
+    in_removed_section = False
+    removed_any = False
+
+    for line in lines:
+        header_match = section_header_re.match(line)
+        if header_match:
+            section_name = header_match.group(1).strip().lower()
+            remove_section = "update_manager" in section_name and "klippervault" in section_name
+            if remove_section:
+                in_removed_section = True
+                removed_any = True
+                continue
+            in_removed_section = False
+
+        if not in_removed_section:
+            kept.append(line)
+
+    if not removed_any:
+        return False
+
+    backup_path = config_path.with_suffix(config_path.suffix + ".bak_klippervault")
     try:
-        version = version_path.read_text(encoding="utf-8").strip()
-        return version or "unknown"
+        if not backup_path.exists():
+            backup_path.write_text(content, encoding="utf-8")
     except OSError:
-        return "unknown"
+        # Non-fatal: continue with write attempt.
+        pass
+
+    config_path.write_text("".join(kept), encoding="utf-8")
+    return True
 
 
-def _patch_nicegui_disconnect_signature() -> None:
-    """Adapt NiceGUI disconnect callback for newer socket.io argument shape."""
+def _send_mainsail_deprecation_notification() -> None:
+    """Send deprecation notification to Mainsail via Moonraker gcode API."""
+    moonraker_url = os.environ.get("KLIPPERVAULT_MOONRAKER_URL", MOONRAKER_URL_DEFAULT).strip() or MOONRAKER_URL_DEFAULT
+    payload_message = (
+        "Running KlipperVault on printer is deprecated and has been removed. "
+        f"Use remote mode only. See {README_URL}"
+    )
+    escaped = payload_message.replace("\\", "\\\\").replace('"', '\\"')
+    gcode = f'RESPOND TYPE=command MSG="action:notification KlipperVault: {escaped}"'
+
+    body = json.dumps({"script": gcode}).encode("utf-8")
+    endpoint = moonraker_url.rstrip("/") + "/printer/gcode/script"
+    req = request.Request(endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST")
     try:
-        from nicegui import nicegui as nicegui_runtime
-    except Exception:
-        return
-
-    disconnect_handler = getattr(nicegui_runtime, "_on_disconnect", None)
-    sio = getattr(nicegui_runtime, "sio", None)
-    if disconnect_handler is None or sio is None:
-        return
-
-    try:
-        parameter_count = len(inspect.signature(disconnect_handler).parameters)
-    except (TypeError, ValueError):
-        parameter_count = 0
-
-    if parameter_count >= 2:
-        return
-
-    def _on_disconnect_compat(sid: str, *_: object) -> None:
-        disconnect_handler(sid)
-
-    nicegui_runtime._on_disconnect = _on_disconnect_compat
-    sio.on("disconnect", _on_disconnect_compat)
+        with request.urlopen(req, timeout=3.0):  # nosec B310
+            pass
+    except (error.URLError, error.HTTPError, TimeoutError):
+        # Non-fatal: service should still be stopped even when Moonraker is unavailable.
+        pass
 
 
-def _patch_nicegui_deleted_parent_slot_event_race() -> None:
-    """Ignore stale UI events that arrive after a client's element tree is removed."""
-    try:
-        from nicegui import events as nicegui_events
-    except Exception:
-        return
-
-    if getattr(nicegui_events.handle_event, "__name__", "") == "_handle_event_compat":
-        return
-
-    def _handle_event_compat(handler, arguments) -> None:
-        if handler is None:
-            return
+def _stop_legacy_service() -> None:
+    """Stop legacy KlipperVault systemd service names."""
+    for service_name in ("klippervault.service", "klipper-vault.service"):
         try:
-            if isinstance(arguments, nicegui_events.UiEventArguments):
-                parent_slot = arguments.sender.parent_slot or arguments.sender.client.layout.default_slot
-            else:
-                parent_slot = nicegui_events.nullcontext()
-
-            with parent_slot:
-                if nicegui_events.helpers.expects_arguments(handler):
-                    result = handler(arguments)
-                else:
-                    result = handler()
-
-            if nicegui_events.helpers.should_await(result):
-                nicegui_events.background_tasks.create_or_defer(
-                    nicegui_events.helpers.await_with_context(result, parent_slot),
-                    name=str(handler),
-                )
-        except RuntimeError as error:
-            if "The parent slot of the element has been deleted." in str(error):
-                return
-            nicegui_events.core.app.handle_exception(error)
-        except Exception as error:
-            nicegui_events.core.app.handle_exception(error)
-
-    nicegui_events.handle_event = _handle_event_compat
-
-
-def _patch_nicegui_deleted_parent_slot_exception_filter() -> None:
-    """Suppress only the known benign parent-slot teardown RuntimeError."""
-    try:
-        from nicegui import core as nicegui_core
-    except Exception:
-        return
-
-    app_object = getattr(nicegui_core, "app", None)
-    if app_object is None:
-        return
-
-    original_handle_exception = getattr(app_object, "handle_exception", None)
-    if original_handle_exception is None:
-        return
-
-    if getattr(original_handle_exception, "__name__", "") == "_handle_exception_compat":
-        return
-
-    def _handle_exception_compat(error: Exception) -> None:
-        if isinstance(error, RuntimeError) and str(error) == "The parent slot of the element has been deleted.":
-            return
-        original_handle_exception(error)
-
-    app_object.handle_exception = _handle_exception_compat
+            subprocess.run(["systemctl", "stop", service_name], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # nosec B603 B607
+        except OSError:
+            # Non-fatal: service manager may be unavailable in some environments.
+            pass
 
 
 def main() -> None:
-    """Start the NiceGUI application with configured runtime settings."""
-    _sync_venv_requirements_if_needed()
+    """Run on-printer deprecation cleanup actions and stop legacy service."""
+    home = _home_dir()
+    removed_any = False
+    for moonraker_cfg in _moonraker_config_candidates(home):
+        try:
+            removed = _remove_update_manager_klippervault_section(moonraker_cfg)
+        except OSError:
+            removed = False
+        removed_any = removed_any or removed
 
-    from klipper_macro_gui import DEFAULT_CONFIG_DIR, build_ui
-    from klipper_vault_config import (
-        ensure_moonraker_update_manager_managed_services as _ensure_moonraker_update_manager_managed_services,
-    )
-    from klipper_vault_config import load_or_create as _load_vault_config
-    from klipper_vault_i18n import t
-    from nicegui import ui
+    if removed_any:
+        print("[KlipperVault] Removed Moonraker update-manager entry for KlipperVault.", flush=True)
+    else:
+        print("[KlipperVault] No Moonraker update-manager KlipperVault entry found.", flush=True)
 
-    _patch_nicegui_disconnect_signature()
-    _patch_nicegui_deleted_parent_slot_event_race()
-    _patch_nicegui_deleted_parent_slot_exception_filter()
+    _send_mainsail_deprecation_notification()
+    print("[KlipperVault] Sent Mainsail deprecation notification (best effort).", flush=True)
 
-    config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
-    vault_cfg = _load_vault_config(config_dir)
-    _ensure_moonraker_update_manager_managed_services(config_dir)
-    favicon_path = REPO_ROOT / "assets" / "favicon.svg"
-    build_ui(app_version=_load_app_version())
-    # Intentional: the web UI must be reachable from other devices on the LAN.
-    ui.run(
-        host="0.0.0.0",  # nosec B104
-        port=vault_cfg.port,
-        title=t("Klipper Vault"),
-        dark=True,
-        favicon=favicon_path,
-        show=False,
-        reload=False,
-    )
+    _stop_legacy_service()
+    print("[KlipperVault] Requested stop for legacy KlipperVault service.", flush=True)
 
 
 if __name__ in {"__main__", "__mp_main__"}:

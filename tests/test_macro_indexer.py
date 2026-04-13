@@ -1,26 +1,41 @@
 import json
 import textwrap
 from pathlib import Path
+from typing import cast
 
 from klipper_macro_online_update import import_online_macro_updates
 from klipper_macro_indexer import (
     export_macro_share_payload,
     get_cfg_load_order,
+    get_cfg_load_order_from_source,
     get_cfg_loading_overview,
+    get_cfg_loading_overview_from_source,
     import_macro_share_payload,
     load_duplicate_macro_groups,
     load_macro_list,
     macro_row_to_section_text,
     parse_macros_from_cfg,
+    remove_deleted_macro,
     remove_inactive_macro_version,
     restore_macro_version,
     run_indexing,
+    run_indexing_from_source,
 )
+from klipper_vault_config_source import LocalConfigSource
+from klipper_vault_db import open_sqlite_connection
 
 
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(content).lstrip("\n"), encoding="utf-8")
+
+
+def _as_int(value: object) -> int:
+    return cast(int, value)
+
+
+def _as_rows(value: object) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], value)
 
 
 def test_parse_macros_trims_trailing_comments_and_preserves_indented_brackets(tmp_path: Path) -> None:
@@ -136,8 +151,9 @@ def test_get_cfg_loading_overview_reports_klipper_vs_scan_order(tmp_path: Path) 
 
     overview = get_cfg_loading_overview(tmp_path)
 
-    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
-    klipper_macro_order = overview["klipper_macro_order"]
+    klipper_order_rows = _as_rows(overview["klipper_order"])
+    klipper_order = [row["file_path"] for row in klipper_order_rows]
+    klipper_macro_order = _as_rows(overview["klipper_macro_order"])
 
     assert klipper_order == ["printer.cfg", "extras/b.cfg", "extras/a.cfg"]
     assert overview["klipper_count"] == 3
@@ -159,7 +175,7 @@ def test_get_cfg_loading_overview_ignores_dynamicmacros_section_like_klipper(tmp
 
     overview = get_cfg_loading_overview(tmp_path)
 
-    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
+    klipper_order = [row["file_path"] for row in _as_rows(overview["klipper_order"])]
     assert klipper_order == ["printer.cfg"]
     assert overview["klipper_count"] == 1
 
@@ -187,7 +203,7 @@ def test_get_cfg_loading_overview_preserves_duplicate_include_entries_like_klipp
     _write(tmp_path / "extras" / "common.cfg", "[printer]\n")
 
     overview = get_cfg_loading_overview(tmp_path)
-    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
+    klipper_order = [row["file_path"] for row in _as_rows(overview["klipper_order"])]
 
     assert klipper_order == [
         "printer.cfg",
@@ -238,12 +254,14 @@ def test_get_cfg_loading_overview_reports_macro_level_inline_include_order(tmp_p
 
         overview = get_cfg_loading_overview(tmp_path)
 
-        assert [row["file_path"] for row in overview["klipper_order"]] == [
+        klipper_order_rows = _as_rows(overview["klipper_order"])
+        assert [row["file_path"] for row in klipper_order_rows] == [
                 "printer.cfg",
                 "macros.cfg",
                 "extras/sub.cfg",
         ]
-        assert [row["macro_name"] for row in overview["klipper_macro_order"]] == [
+        klipper_macro_order = _as_rows(overview["klipper_macro_order"])
+        assert [row["macro_name"] for row in klipper_macro_order] == [
                 "PRINTER_HEAD",
                 "BEFORE_INCLUDE",
                 "SUB_MACRO",
@@ -251,8 +269,8 @@ def test_get_cfg_loading_overview_reports_macro_level_inline_include_order(tmp_p
                 "PRINTER_TAIL",
         ]
         assert overview["klipper_macro_count"] == 5
-        assert overview["klipper_macro_order"][2]["file_path"] == "extras/sub.cfg"
-        assert overview["klipper_macro_order"][2]["line_number"] == 1
+        assert klipper_macro_order[2]["file_path"] == "extras/sub.cfg"
+        assert klipper_macro_order[2]["line_number"] == 1
 
 
 def test_run_indexing_marks_only_last_duplicate_macro_active(tmp_path: Path) -> None:
@@ -587,7 +605,7 @@ def test_remove_inactive_macro_version_removes_selected_inactive_row(tmp_path: P
 
     base_row = next(row for row in load_macro_list(db_path) if row["file_path"] == "base.cfg")
 
-    result = remove_inactive_macro_version(db_path, "base.cfg", "HELLO", int(base_row["version"]))
+    result = remove_inactive_macro_version(db_path, "base.cfg", "HELLO", _as_int(base_row["version"]))
     macros = load_macro_list(db_path)
 
     assert result == {"removed": 1, "reason": "removed"}
@@ -611,9 +629,176 @@ def test_remove_inactive_macro_version_rejects_active_row(tmp_path: Path) -> Non
 
     active_row = load_macro_list(db_path)[0]
 
-    result = remove_inactive_macro_version(db_path, "printer.cfg", "HELLO", int(active_row["version"]))
+    result = remove_inactive_macro_version(db_path, "printer.cfg", "HELLO", _as_int(active_row["version"]))
 
     assert result == {"removed": 0, "reason": "not_inactive"}
+
+
+def test_load_duplicate_macro_groups_scoped_by_printer_profile(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "macros.db"
+
+    config_p1 = tmp_path / "config_p1"
+    _write(
+        config_p1 / "printer.cfg",
+        """
+        [include base.cfg]
+        [include override.cfg]
+        """,
+    )
+    _write(
+        config_p1 / "base.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="base"
+        """,
+    )
+    _write(
+        config_p1 / "override.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="override"
+        """,
+    )
+
+    config_p2 = tmp_path / "config_p2"
+    _write(
+        config_p2 / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="single"
+        """,
+    )
+
+    run_indexing(config_p1, db_path, printer_profile_id=1)
+    run_indexing(config_p2, db_path, printer_profile_id=2)
+
+    scoped_p1 = load_duplicate_macro_groups(db_path, printer_profile_id=1)
+    scoped_p2 = load_duplicate_macro_groups(db_path, printer_profile_id=2)
+
+    assert len(scoped_p1) == 1
+    assert scoped_p1[0]["macro_name"] == "HELLO"
+    assert len(_as_rows(scoped_p1[0]["entries"])) == 2
+    assert scoped_p2 == []
+
+
+def test_remove_inactive_macro_version_scoped_by_printer_profile(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [include base.cfg]
+        [include override.cfg]
+        """,
+    )
+    _write(
+        config_dir / "base.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="base"
+        """,
+    )
+    _write(
+        config_dir / "override.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="override"
+        """,
+    )
+
+    run_indexing(config_dir, db_path, printer_profile_id=1)
+    run_indexing(config_dir, db_path, printer_profile_id=2)
+
+    p1_base = next(row for row in load_macro_list(db_path, printer_profile_id=1) if row["file_path"] == "base.cfg")
+
+    result = remove_inactive_macro_version(
+        db_path,
+        "base.cfg",
+        "HELLO",
+        _as_int(p1_base["version"]),
+        printer_profile_id=1,
+    )
+
+    p1_rows = load_macro_list(db_path, printer_profile_id=1)
+    p2_rows = load_macro_list(db_path, printer_profile_id=2)
+    assert result == {"removed": 1, "reason": "removed"}
+    assert len(p1_rows) == 1
+    assert len(p2_rows) == 2
+
+
+def test_remove_deleted_macro_scoped_by_printer_profile(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="hello"
+        """,
+    )
+
+    run_indexing(config_dir, db_path, printer_profile_id=1)
+    run_indexing(config_dir, db_path, printer_profile_id=2)
+
+    with open_sqlite_connection(db_path) as conn:
+        conn.execute("UPDATE macros SET is_deleted = 1 WHERE printer_profile_id = 1")
+        conn.execute("UPDATE macros SET is_deleted = 1 WHERE printer_profile_id = 2")
+        conn.commit()
+
+    result = remove_deleted_macro(db_path, "printer.cfg", "HELLO", printer_profile_id=1)
+
+    p1_rows = load_macro_list(db_path, printer_profile_id=1)
+    p2_rows = load_macro_list(db_path, printer_profile_id=2)
+    assert result == {"removed": 1, "reason": "removed"}
+    assert p1_rows == []
+    assert len(p2_rows) == 1
+    assert p2_rows[0]["is_deleted"] is True
+
+
+def test_restore_macro_version_scoped_by_printer_profile(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "macros.db"
+
+    config_p1 = tmp_path / "config_p1"
+    _write(
+        config_p1 / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="profile-1"
+        """,
+    )
+    config_p2 = tmp_path / "config_p2"
+    _write(
+        config_p2 / "printer.cfg",
+        """
+        [gcode_macro HELLO]
+        gcode:
+          RESPOND MSG="profile-2"
+        """,
+    )
+
+    run_indexing(config_p1, db_path, printer_profile_id=1)
+    run_indexing(config_p2, db_path, printer_profile_id=2)
+
+    restore_dir = tmp_path / "restore_target"
+    restore_macro_version(
+        db_path,
+        restore_dir,
+        "printer.cfg",
+        "HELLO",
+        1,
+        printer_profile_id=2,
+    )
+
+    restored = (restore_dir / "printer.cfg").read_text(encoding="utf-8")
+    assert "profile-2" in restored
+    assert "profile-1" not in restored
 
 
 def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> None:
@@ -639,7 +824,7 @@ def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> 
 
     assert payload["format"] == "klippervault.macro-share.v1"
     assert payload["source_printer"] == {"vendor": "Voron", "model": "V2.4"}
-    assert len(payload["macros"]) == 1
+    assert len(_as_rows(payload["macros"])) == 1
 
     target_db_path = tmp_path / "target_db" / "macros.db"
     import_result = import_macro_share_payload(target_db_path, payload)
@@ -659,7 +844,7 @@ def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> 
         config_dir=target_config_dir,
         file_path=str(imported_row["file_path"]),
         macro_name="HELLO",
-        version=int(imported_row["version"]),
+        version=_as_int(imported_row["version"]),
     )
 
     assert restore_result["file_path"] == "macros.cfg"
@@ -705,7 +890,7 @@ def test_reindex_keeps_unactivated_imported_macros_marked_new(tmp_path: Path) ->
                 config_dir=target_config_dir,
                 file_path=str(hello_row["file_path"]),
                 macro_name="HELLO",
-                version=int(hello_row["version"]),
+                version=_as_int(hello_row["version"]),
         )
 
         run_indexing(target_config_dir, target_db_path)
@@ -811,7 +996,7 @@ def test_load_macro_list_attaches_true_macro_load_order_when_config_dir_given(tm
     assert by_name["AFTER_INCLUDE_MACRO"]["load_order_index"] == 3
     assert by_name["PRINTER_TAIL_MACRO"]["load_order_index"] == 4
 
-    macros_by_load_order = sorted(macros, key=lambda row: row["load_order_index"])
+    macros_by_load_order = sorted(macros, key=lambda row: _as_int(row["load_order_index"]))
     assert [row["macro_name"] for row in macros_by_load_order] == [
         "PRINTER_MACRO",
         "BEFORE_INCLUDE",
@@ -819,3 +1004,246 @@ def test_load_macro_list_attaches_true_macro_load_order_when_config_dir_given(tm
         "AFTER_INCLUDE_MACRO",
         "PRINTER_TAIL_MACRO",
     ]
+
+
+def test_load_macro_list_attaches_load_order_with_config_source(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [gcode_macro ROOT_MACRO]
+                gcode:
+                    RESPOND MSG="root"
+
+                [include macros.cfg]
+                """,
+        )
+        _write(
+                config_dir / "macros.cfg",
+                """
+                [gcode_macro INCLUDED_MACRO]
+                gcode:
+                    RESPOND MSG="included"
+                """,
+        )
+        run_indexing(config_dir, db_path)
+
+        source = LocalConfigSource(root_dir=config_dir)
+        macros = load_macro_list(db_path, config_source=source)
+        by_name = {row["macro_name"]: row for row in macros}
+
+        assert by_name["ROOT_MACRO"]["load_order_index"] == 0
+        assert by_name["INCLUDED_MACRO"]["load_order_index"] == 1
+
+
+def test_get_cfg_load_order_from_source_matches_path_order(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [include extras/b.cfg]
+        [include extras/a.cfg]
+        """,
+    )
+    _write(tmp_path / "extras" / "a.cfg", "[printer]\n")
+    _write(tmp_path / "extras" / "b.cfg", "[printer]\n")
+
+    source = LocalConfigSource(root_dir=tmp_path)
+    order = get_cfg_load_order_from_source(source)
+
+    assert [path.name for path in order] == ["printer.cfg", "b.cfg", "a.cfg"]
+
+
+def test_get_cfg_loading_overview_from_source_reports_expected_order(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [include macros.cfg]
+        """,
+    )
+    _write(
+        tmp_path / "macros.cfg",
+        """
+        [gcode_macro PRINT_START]
+        gcode:
+          RESPOND MSG="ok"
+        """,
+    )
+
+    source = LocalConfigSource(root_dir=tmp_path)
+    overview = get_cfg_loading_overview_from_source(source)
+
+    assert [row["file_path"] for row in _as_rows(overview["klipper_order"])] == ["printer.cfg", "macros.cfg"]
+    assert overview["klipper_macro_count"] == 1
+    assert _as_rows(overview["klipper_macro_order"])[0]["macro_name"] == "PRINT_START"
+
+
+def test_get_cfg_loading_overview_from_source_preserves_duplicate_include_entries_like_klipper(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "printer.cfg",
+        """
+        [include extras/a.cfg]
+        [include extras/b.cfg]
+        """,
+    )
+    _write(
+        tmp_path / "extras" / "a.cfg",
+        """
+        [include common.cfg]
+        """,
+    )
+    _write(
+        tmp_path / "extras" / "b.cfg",
+        """
+        [include common.cfg]
+        """,
+    )
+    _write(tmp_path / "extras" / "common.cfg", "[printer]\n")
+
+    source = LocalConfigSource(root_dir=tmp_path)
+    overview = get_cfg_loading_overview_from_source(source)
+
+    assert [row["file_path"] for row in _as_rows(overview["klipper_order"])] == [
+        "printer.cfg",
+        "extras/a.cfg",
+        "extras/common.cfg",
+        "extras/b.cfg",
+        "extras/common.cfg",
+    ]
+
+
+def test_run_indexing_from_source_indexes_cfg_tree(tmp_path: Path) -> None:
+    config_dir = tmp_path / "cfg"
+    db_path = tmp_path / "db" / "vault.db"
+    _write(
+        config_dir / "printer.cfg",
+        """
+        [gcode_macro PRINT_START]
+        gcode:
+          RESPOND MSG="from-source"
+        """,
+    )
+
+    source = LocalConfigSource(root_dir=config_dir)
+    result = run_indexing_from_source(source, db_path)
+    macros = load_macro_list(db_path)
+
+    assert result["cfg_files_scanned"] == 1
+    assert result["macros_inserted"] == 1
+    assert len(macros) == 1
+    assert macros[0]["macro_name"] == "PRINT_START"
+
+
+def test_run_indexing_from_source_treats_dynamicmacros_configs_as_loaded(tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        db_path = tmp_path / "db" / "vault.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [dynamicmacros]
+                configs: generated.cfg
+                """,
+        )
+        _write(
+                config_dir / "generated.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="generated"
+                """,
+        )
+        _write(
+                config_dir / "orphan.cfg",
+                """
+                [gcode_macro BYE]
+                gcode:
+                    RESPOND MSG="orphan"
+                """,
+        )
+
+        source = LocalConfigSource(root_dir=config_dir)
+        result = run_indexing_from_source(source, db_path)
+        macros = load_macro_list(db_path)
+        rows_by_path = {row["file_path"]: row for row in macros}
+
+        assert result["cfg_files_scanned"] == 3
+        assert rows_by_path["generated.cfg"]["is_loaded"] is True
+        assert rows_by_path["generated.cfg"]["is_dynamic"] is True
+        assert rows_by_path["generated.cfg"]["is_active"] is True
+        assert rows_by_path["orphan.cfg"]["is_loaded"] is False
+        assert rows_by_path["orphan.cfg"]["is_dynamic"] is False
+
+
+def test_run_indexing_from_source_ignores_dot_dynamicmacros_cfg(tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        db_path = tmp_path / "db" / "vault.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [include loaded.cfg]
+                """,
+        )
+        _write(
+                config_dir / "loaded.cfg",
+                """
+                [gcode_macro HELLO]
+                gcode:
+                    RESPOND MSG="loaded"
+                """,
+        )
+        _write(
+                config_dir / ".dynamicmacros.cfg",
+                """
+                [gcode_macro SHOULD_BE_IGNORED]
+                gcode:
+                    RESPOND MSG="ignored"
+                """,
+        )
+
+        source = LocalConfigSource(root_dir=config_dir)
+        result = run_indexing_from_source(source, db_path)
+        macros = load_macro_list(db_path)
+
+        assert result["cfg_files_scanned"] == 2
+        assert {row["macro_name"] for row in macros} == {"HELLO"}
+
+
+def test_load_order_from_source_stays_available_with_ignored_dot_dynamicmacros_include(tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        db_path = tmp_path / "db" / "vault.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [include .dynamicmacros.cfg]
+                [include macros.cfg]
+
+                [gcode_macro ROOT]
+                gcode:
+                    RESPOND MSG="root"
+                """,
+        )
+        _write(
+                config_dir / "macros.cfg",
+                """
+                [gcode_macro CHILD]
+                gcode:
+                    RESPOND MSG="child"
+                """,
+        )
+        _write(
+                config_dir / ".dynamicmacros.cfg",
+                """
+                [gcode_macro IGNORED]
+                gcode:
+                    RESPOND MSG="ignored"
+                """,
+        )
+
+        source = LocalConfigSource(root_dir=config_dir)
+        run_indexing_from_source(source, db_path)
+        macros = load_macro_list(db_path, config_source=source)
+        by_name = {row["macro_name"]: row for row in macros}
+
+        assert set(by_name) == {"CHILD", "ROOT"}
+        assert by_name["CHILD"]["load_order_index"] == 0
+        assert by_name["ROOT"]["load_order_index"] == 1

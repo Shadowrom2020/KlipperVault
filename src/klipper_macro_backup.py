@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from klipper_vault_config_source import ConfigSource
 from klipper_vault_db import open_sqlite_connection
 
 
@@ -41,6 +42,7 @@ def ensure_backup_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS macro_backups (
             id          INTEGER PRIMARY KEY,
             backup_name TEXT    NOT NULL,
+            printer_profile_id INTEGER NOT NULL DEFAULT 1,
             created_at  INTEGER NOT NULL
         )
         """
@@ -51,6 +53,7 @@ def ensure_backup_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS macro_backup_items (
             id             INTEGER PRIMARY KEY,
             backup_id      INTEGER NOT NULL,
+            printer_profile_id INTEGER NOT NULL DEFAULT 1,
             section_type   TEXT,
             macro_name     TEXT    NOT NULL,
             file_path      TEXT    NOT NULL,
@@ -72,6 +75,7 @@ def ensure_backup_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS macro_backup_files (
             id           INTEGER PRIMARY KEY,
             backup_id    INTEGER NOT NULL,
+            printer_profile_id INTEGER NOT NULL DEFAULT 1,
             file_path    TEXT    NOT NULL,
             file_content TEXT    NOT NULL,
             FOREIGN KEY (backup_id) REFERENCES macro_backups(id) ON DELETE CASCADE
@@ -80,18 +84,38 @@ def ensure_backup_schema(conn: sqlite3.Connection) -> None:
     )
 
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(macro_backup_items)")}
+    backup_cols = {row[1] for row in conn.execute("PRAGMA table_info(macro_backups)")}
+    backup_file_cols = {row[1] for row in conn.execute("PRAGMA table_info(macro_backup_files)")}
+    if backup_cols and "printer_profile_id" not in backup_cols:
+        conn.execute("ALTER TABLE macro_backups ADD COLUMN printer_profile_id INTEGER NOT NULL DEFAULT 1")
     if existing_cols and "section_type" not in existing_cols:
         conn.execute("ALTER TABLE macro_backup_items ADD COLUMN section_type TEXT")
     if existing_cols and "body_checksum" not in existing_cols:
         conn.execute("ALTER TABLE macro_backup_items ADD COLUMN body_checksum TEXT")
+    if existing_cols and "printer_profile_id" not in existing_cols:
+        conn.execute("ALTER TABLE macro_backup_items ADD COLUMN printer_profile_id INTEGER NOT NULL DEFAULT 1")
+    if backup_file_cols and "printer_profile_id" not in backup_file_cols:
+        conn.execute("ALTER TABLE macro_backup_files ADD COLUMN printer_profile_id INTEGER NOT NULL DEFAULT 1")
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_backup_items_backup_id "
         "ON macro_backup_items(backup_id)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_backup_items_profile_id "
+        "ON macro_backup_items(printer_profile_id, backup_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_backups_profile_id "
+        "ON macro_backups(printer_profile_id, created_at DESC)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_backup_files_backup_id "
         "ON macro_backup_files(backup_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_backup_files_profile_id "
+        "ON macro_backup_files(printer_profile_id, backup_id)"
     )
 
 
@@ -119,14 +143,16 @@ def create_macro_backup(
     db_path: Path,
     backup_name: str,
     config_dir: Optional[Path] = None,
+    config_source: ConfigSource | None = None,
     now_ts: Optional[int] = None,
+    printer_profile_id: int = 1,
 ) -> Dict[str, object]:
     """Snapshot the latest row of every macro into a named backup set."""
     name = backup_name.strip()
     if not name:
         raise ValueError("backup name must not be empty")
-    if config_dir is None:
-        raise ValueError("backup aborted: config_dir is required for fully restorable backups")
+    if config_dir is None and config_source is None:
+        raise ValueError("backup aborted: config_dir or config_source is required for fully restorable backups")
 
     ts = now_ts if now_ts is not None else int(time.time())
 
@@ -137,8 +163,8 @@ def create_macro_backup(
     ) as conn:
 
         insert_result = conn.execute(
-            "INSERT INTO macro_backups (backup_name, created_at) VALUES (?, ?)",
-            (name, ts),
+            "INSERT INTO macro_backups (backup_name, printer_profile_id, created_at) VALUES (?, ?, ?)",
+            (name, int(printer_profile_id), ts),
         )
         backup_id_raw = insert_result.lastrowid
         if backup_id_raw is None:
@@ -174,14 +200,18 @@ def create_macro_backup(
                     ON m.file_path = latest.file_path
                    AND m.macro_name = latest.macro_name
                    AND m.version = latest.max_version
+                WHERE m.printer_profile_id = ?
                 ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
                 """
+                ,
+                (int(printer_profile_id),),
             )
             for chunk in _iter_cursor_batches(select_cursor):
                 conn.executemany(
                     """
                     INSERT INTO macro_backup_items (
                         backup_id,
+                        printer_profile_id,
                         section_type,
                         macro_name,
                         file_path,
@@ -194,11 +224,12 @@ def create_macro_backup(
                         body_checksum,
                         is_active
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
                             backup_id,
+                            int(printer_profile_id),
                             str(section_type),
                             str(macro_name),
                             str(file_path),
@@ -217,18 +248,18 @@ def create_macro_backup(
                 macro_count += len(chunk)
 
         cfg_files_count = 0
-        if config_dir.exists() and config_dir.is_dir():
-            cfg_rows: List[tuple[int, str, str]] = []
-            for cfg_file in _iter_cfg_files(config_dir):
-                rel_path = str(cfg_file.relative_to(config_dir))
-                file_content = cfg_file.read_text(encoding="utf-8", errors="ignore")
-                cfg_rows.append((backup_id, rel_path, file_content))
+        if config_source is not None:
+            cfg_rows: List[tuple[int, int, str, str]] = []
+            cfg_files = config_source.list_cfg_files()
+            for rel_path in cfg_files:
+                file_content = config_source.read_text(str(rel_path))
+                cfg_rows.append((backup_id, int(printer_profile_id), rel_path, file_content))
                 cfg_files_count += 1
                 if len(cfg_rows) >= _DB_BATCH_SIZE:
                     conn.executemany(
                         """
-                        INSERT INTO macro_backup_files (backup_id, file_path, file_content)
-                        VALUES (?, ?, ?)
+                        INSERT INTO macro_backup_files (backup_id, printer_profile_id, file_path, file_content)
+                        VALUES (?, ?, ?, ?)
                         """,
                         cfg_rows,
                     )
@@ -236,10 +267,36 @@ def create_macro_backup(
             if cfg_rows:
                 conn.executemany(
                     """
-                    INSERT INTO macro_backup_files (backup_id, file_path, file_content)
-                    VALUES (?, ?, ?)
+                    INSERT INTO macro_backup_files (backup_id, printer_profile_id, file_path, file_content)
+                    VALUES (?, ?, ?, ?)
                     """,
                     cfg_rows,
+                )
+            if cfg_files_count == 0:
+                raise ValueError("backup aborted: no .cfg files found to snapshot")
+        elif config_dir is not None and config_dir.exists() and config_dir.is_dir():
+            cfg_file_rows: List[tuple[int, int, str, str]] = []
+            for cfg_file in _iter_cfg_files(config_dir):
+                rel_path = str(cfg_file.relative_to(config_dir))
+                file_content = cfg_file.read_text(encoding="utf-8", errors="ignore")
+                cfg_file_rows.append((backup_id, int(printer_profile_id), rel_path, file_content))
+                cfg_files_count += 1
+                if len(cfg_file_rows) >= _DB_BATCH_SIZE:
+                    conn.executemany(
+                        """
+                        INSERT INTO macro_backup_files (backup_id, printer_profile_id, file_path, file_content)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        cfg_file_rows,
+                    )
+                    cfg_file_rows.clear()
+            if cfg_file_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO macro_backup_files (backup_id, printer_profile_id, file_path, file_content)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    cfg_file_rows,
                 )
             if cfg_files_count == 0:
                 raise ValueError("backup aborted: no .cfg files found to snapshot")
@@ -257,7 +314,7 @@ def create_macro_backup(
     }
 
 
-def list_macro_backups(db_path: Path, limit: int = 200) -> List[Dict[str, object]]:
+def list_macro_backups(db_path: Path, limit: int = 200, printer_profile_id: int | None = None) -> List[Dict[str, object]]:
     """Return available backups, newest first."""
     with open_sqlite_connection(db_path, ensure_schema=ensure_backup_schema) as conn:
         rows = conn.execute(
@@ -270,11 +327,12 @@ def list_macro_backups(db_path: Path, limit: int = 200) -> List[Dict[str, object
             FROM macro_backups AS b
             LEFT JOIN macro_backup_items AS i
                 ON i.backup_id = b.id
+            WHERE (? IS NULL OR b.printer_profile_id = ?)
             GROUP BY b.id, b.backup_name, b.created_at
             ORDER BY b.created_at DESC, b.id DESC
             LIMIT ?
             """,
-            (limit,),
+            (printer_profile_id, printer_profile_id, limit),
         ).fetchall()
 
     return [
@@ -288,7 +346,7 @@ def list_macro_backups(db_path: Path, limit: int = 200) -> List[Dict[str, object
     ]
 
 
-def load_backup_items(db_path: Path, backup_id: int) -> List[Dict[str, object]]:
+def load_backup_items(db_path: Path, backup_id: int, printer_profile_id: int | None = None) -> List[Dict[str, object]]:
     """Load the macro rows stored in one backup snapshot."""
     with open_sqlite_connection(db_path, ensure_schema=ensure_backup_schema) as conn:
         rows = conn.execute(
@@ -307,9 +365,10 @@ def load_backup_items(db_path: Path, backup_id: int) -> List[Dict[str, object]]:
                 is_active
             FROM macro_backup_items
             WHERE backup_id = ?
+                            AND (? IS NULL OR printer_profile_id = ?)
             ORDER BY macro_name COLLATE NOCASE ASC, file_path ASC
             """,
-            (int(backup_id),),
+                        (int(backup_id), printer_profile_id, printer_profile_id),
         ).fetchall()
 
     return [
@@ -336,6 +395,7 @@ def _ensure_macros_schema_for_restore(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS macros (
             id            INTEGER PRIMARY KEY,
+            printer_profile_id INTEGER NOT NULL DEFAULT 1,
             file_path     TEXT    NOT NULL,
             section_type  TEXT    NOT NULL,
             macro_name    TEXT    NOT NULL,
@@ -351,8 +411,8 @@ def _ensure_macros_schema_for_restore(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_macros_version "
-        "ON macros(file_path, macro_name, version)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_macros_version_profile "
+        "ON macros(printer_profile_id, file_path, macro_name, version)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_macros_name ON macros(macro_name)")
 
@@ -445,13 +505,17 @@ def restore_macro_backup(
     db_path: Path,
     backup_id: int,
     config_dir: Optional[Path] = None,
+    config_source: ConfigSource | None = None,
     now_ts: Optional[int] = None,
+    printer_profile_id: int = 1,
 ) -> Dict[str, object]:
     """Restore one backup snapshot into the active macros table."""
     ts = int(now_ts) if now_ts is not None else int(time.time())
     macro_count = 0
     restored_cfg_files = 0
     removed_cfg_files = 0
+    touched_cfg_files: set[str] = set()
+    removed_cfg_paths: set[str] = set()
 
     with open_sqlite_connection(
         db_path,
@@ -461,8 +525,8 @@ def restore_macro_backup(
         _ensure_macros_schema_for_restore(conn)
 
         backup_meta = conn.execute(
-            "SELECT id, backup_name FROM macro_backups WHERE id = ?",
-            (int(backup_id),),
+            "SELECT id, backup_name FROM macro_backups WHERE id = ? AND printer_profile_id = ?",
+            (int(backup_id), int(printer_profile_id)),
         ).fetchone()
         if not backup_meta:
             raise ValueError("backup not found")
@@ -481,12 +545,13 @@ def restore_macro_backup(
                 is_active
             FROM macro_backup_items
             WHERE backup_id = ?
+              AND printer_profile_id = ?
             ORDER BY macro_name COLLATE NOCASE ASC, file_path ASC
             """
         has_file_snapshot = bool(
             conn.execute(
-                "SELECT 1 FROM macro_backup_files WHERE backup_id = ? LIMIT 1",
-                (int(backup_id),),
+                "SELECT 1 FROM macro_backup_files WHERE backup_id = ? AND printer_profile_id = ? LIMIT 1",
+                (int(backup_id), int(printer_profile_id)),
             ).fetchone()
         )
 
@@ -494,14 +559,15 @@ def restore_macro_backup(
         # reconstructing cfg state from all backup macro items.
         legacy_rows: List[tuple] = []
         legacy_file_rows: List[tuple[str, str]] = []
-        if config_dir is not None and not has_file_snapshot:
-            legacy_rows = conn.execute(rows_query, (int(backup_id),)).fetchall()
+        if (config_dir is not None or config_source is not None) and not has_file_snapshot:
+            legacy_rows = conn.execute(rows_query, (int(backup_id), int(printer_profile_id))).fetchall()
             legacy_file_rows = _reconstruct_cfg_files_from_backup_items(legacy_rows)
 
-        conn.execute("DELETE FROM macros")
+        conn.execute("DELETE FROM macros WHERE printer_profile_id = ?", (int(printer_profile_id),))
 
         insert_sql = """
             INSERT INTO macros (
+                printer_profile_id,
                 file_path,
                 section_type,
                 macro_name,
@@ -514,20 +580,21 @@ def restore_macro_backup(
                 version,
                 indexed_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
 
         rows_iter: Iterable[list[tuple]]
         if legacy_rows:
             rows_iter = (legacy_rows[idx:idx + _DB_BATCH_SIZE] for idx in range(0, len(legacy_rows), _DB_BATCH_SIZE))
         else:
-            rows_iter = _iter_cursor_batches(conn.execute(rows_query, (int(backup_id),)))
+            rows_iter = _iter_cursor_batches(conn.execute(rows_query, (int(backup_id), int(printer_profile_id))))
 
         for chunk in rows_iter:
             conn.executemany(
                 insert_sql,
                 [
                     (
+                        int(printer_profile_id),
                         str(file_path),
                         str(section_type or "gcode_macro"),
                         str(macro_name),
@@ -557,25 +624,58 @@ def restore_macro_backup(
 
         conn.commit()
 
-        if config_dir is not None:
-            config_dir = config_dir.expanduser().resolve()
-            config_dir.mkdir(parents=True, exist_ok=True)
-
+        if config_source is not None:
             snapshot_paths: set[str] = set()
             if has_file_snapshot:
                 file_cursor = conn.execute(
                     """
                     SELECT file_path, file_content
                     FROM macro_backup_files
-                    WHERE backup_id = ?
+                    WHERE backup_id = ? AND printer_profile_id = ?
                     ORDER BY file_path ASC
                     """,
-                    (int(backup_id),),
+                    (int(backup_id), int(printer_profile_id)),
                 )
                 for chunk in _iter_cursor_batches(file_cursor):
                     for rel_path, content in chunk:
                         rel = str(rel_path)
                         snapshot_paths.add(rel)
+                        touched_cfg_files.add(rel)
+                        config_source.write_text(rel, str(content))
+                        restored_cfg_files += 1
+            elif legacy_file_rows:
+                for rel_path, content in legacy_file_rows:
+                    rel = str(rel_path)
+                    snapshot_paths.add(rel)
+                    touched_cfg_files.add(rel)
+                    config_source.write_text(rel, str(content))
+                    restored_cfg_files += 1
+
+            if snapshot_paths:
+                for rel in config_source.list_cfg_files():
+                    if rel not in snapshot_paths and config_source.remove(rel):
+                        removed_cfg_files += 1
+                        removed_cfg_paths.add(rel)
+        elif config_dir is not None:
+            config_dir = config_dir.expanduser().resolve()
+            config_dir.mkdir(parents=True, exist_ok=True)
+
+            snapshot_paths_local: set[str] = set()
+            if has_file_snapshot:
+                file_cursor = conn.execute(
+                    """
+                    SELECT file_path, file_content
+                    FROM macro_backup_files
+                    WHERE backup_id = ? AND printer_profile_id = ?
+                    ORDER BY file_path ASC
+                    """,
+                    (int(backup_id), int(printer_profile_id)),
+                )
+                for chunk in _iter_cursor_batches(file_cursor):
+                    for rel_path, content in chunk:
+                        rel = str(rel_path)
+                        snapshot_paths_local.add(rel)
+                        touched_cfg_files.add(rel)
                         target = _safe_cfg_path(config_dir, rel)
                         target.parent.mkdir(parents=True, exist_ok=True)
                         target.write_text(str(content), encoding="utf-8")
@@ -583,19 +683,21 @@ def restore_macro_backup(
             elif legacy_file_rows:
                 for rel_path, content in legacy_file_rows:
                     rel = str(rel_path)
-                    snapshot_paths.add(rel)
+                    snapshot_paths_local.add(rel)
+                    touched_cfg_files.add(rel)
                     target = _safe_cfg_path(config_dir, rel)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(str(content), encoding="utf-8")
                     restored_cfg_files += 1
 
-            if snapshot_paths:
+            if snapshot_paths_local:
                 existing_cfg = [p for p in _iter_cfg_files(config_dir)]
                 for cfg_file in existing_cfg:
                     rel = str(cfg_file.relative_to(config_dir))
-                    if rel not in snapshot_paths:
+                    if rel not in snapshot_paths_local:
                         cfg_file.unlink(missing_ok=True)
                         removed_cfg_files += 1
+                        removed_cfg_paths.add(rel)
 
     return {
         "backup_id": int(backup_meta[0]),
@@ -604,10 +706,12 @@ def restore_macro_backup(
         "macro_count": macro_count,
         "restored_cfg_files": restored_cfg_files,
         "removed_cfg_files": removed_cfg_files,
+        "touched_cfg_files": sorted(touched_cfg_files),
+        "removed_cfg_paths": sorted(removed_cfg_paths),
     }
 
 
-def delete_macro_backup(db_path: Path, backup_id: int) -> Dict[str, object]:
+def delete_macro_backup(db_path: Path, backup_id: int, printer_profile_id: int | None = None) -> Dict[str, object]:
     """Delete one backup and all its snapshot items."""
     with open_sqlite_connection(
         db_path,
@@ -616,8 +720,8 @@ def delete_macro_backup(db_path: Path, backup_id: int) -> Dict[str, object]:
     ) as conn:
 
         backup_meta = conn.execute(
-            "SELECT id, backup_name FROM macro_backups WHERE id = ?",
-            (int(backup_id),),
+            "SELECT id, backup_name FROM macro_backups WHERE id = ? AND (? IS NULL OR printer_profile_id = ?)",
+            (int(backup_id), printer_profile_id, printer_profile_id),
         ).fetchone()
         if not backup_meta:
             raise ValueError("backup not found")

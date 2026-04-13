@@ -31,6 +31,10 @@ What it does:
 
 VS Code debug configs use `${workspaceFolder}/.venv/bin/python` so launch runs with the project virtualenv.
 
+Generated debug configurations include full app workflows:
+
+- `Python: KlipperVault GUI (off_printer debug)`
+
 Manual setup alternative:
 
 ```bash
@@ -44,21 +48,21 @@ pip install -r requirements.txt
 ## Run Locally
 
 ```bash
-./.venv/bin/python klipper_vault.py
+./.venv/bin/python klipper_vault_gui.py
 ```
 
-Use a custom test config tree:
+Notes:
 
-```bash
-KLIPPER_CONFIG_DIR=/tmp/testcfg ./.venv/bin/python klipper_vault.py
-```
+- In `off_printer` mode, indexing mirrors remote cfg files into a local OS-standard data directory before scan.
+- Mutating operations (edit/delete/restore/duplicate resolve/backup restore) sync changed cfg content back to remote over SSH.
+- Manual/startup scan is intentionally blocked until an active SSH profile with credentials is configured.
 
 ## Project Layout
 
 ```text
-klipper_vault.py                  Application entry point
-install.sh                        Systemd + virtualenv installer
-uninstall.sh                      Service removal helper
+klipper_vault_gui.py              Primary GUI entry point wrapper
+install.sh                        Remote-host virtualenv installer
+uninstall.sh                      Remote-host uninstall helper
 VERSION                           App version string
 src/
   klipper_macro_gui.py            NiceGUI page and UI wiring
@@ -71,10 +75,33 @@ src/
   klipper_macro_backup.py         Backup and restore support
   klipper_macro_compare.py        Version compare UI
   klipper_macro_compare_core.py   Diff logic used by compare dialog
-  klipper_macro_watcher.py        Config file watcher
-  klipper_vault_config.py         klippervault.cfg handling
+  klipper_vault_ssh_transport.py  SSH/SFTP read-write transport for off_printer mode
+  klipper_vault_remote_profiles.py SQLite profile metadata and credential index tables
+  klipper_vault_secret_store.py   Keyring-first secret storage with DB fallback
+  klipper_vault_config.py         SQLite-backed app settings handling
+  klipper_vault_paths.py          Runtime-aware default config/db path resolution
   klipper_vault_db.py             Shared SQLite helpers
 ```
+
+## Runtime Mode
+
+Supported `runtime_mode` value from app settings:
+
+- `off_printer`: SSH/SFTP-driven remote config workflow.
+
+Off-printer persistence model:
+
+- App settings are stored in SQLite (`vault_settings`).
+- SSH host profiles are stored in SQLite (`ssh_host_profiles`).
+- Secret backend metadata is tracked in `credential_store_index`.
+- Credential values are stored in OS keyring when available; SQLite fallback is used otherwise.
+
+Primary APIs and modules:
+
+- [src/klipper_macro_gui_service.py](src/klipper_macro_gui_service.py)
+- [src/klipper_vault_remote_profiles.py](src/klipper_vault_remote_profiles.py)
+- [src/klipper_vault_secret_store.py](src/klipper_vault_secret_store.py)
+- [src/klipper_vault_ssh_transport.py](src/klipper_vault_ssh_transport.py)
 
 ## Macro Sharing Implementation Notes
 
@@ -105,7 +132,7 @@ KlipperVault now uses a gettext-first translation workflow with Babel:
 Refresh translation catalogs after adding or changing `t("...")` strings:
 
 ```bash
-./.venv/bin/pybabel extract -F babel.ini -o src/locales/klippervault.pot src klipper_vault.py
+./.venv/bin/pybabel extract -F babel.ini -o src/locales/klippervault.pot src klipper_vault_gui.py
 ./.venv/bin/pybabel update -i src/locales/klippervault.pot -d src/locales -D klippervault
 ./.venv/bin/pybabel compile -d src/locales -D klippervault
 ```
@@ -135,6 +162,7 @@ Run syntax checks on changed Python files (minimum requirement):
 python3 -m py_compile src/klipper_macro_gui.py
 python3 -m py_compile src/klipper_macro_indexer.py src/klipper_macro_backup.py
 python3 -m py_compile src/klipper_macro_gui_service.py src/klipper_macro_viewer.py
+python3 -m py_compile src/klipper_vault_remote_profiles.py src/klipper_vault_secret_store.py src/klipper_vault_ssh_transport.py
 ```
 
 Run tests:
@@ -177,7 +205,7 @@ Modes:
 When UI or behavior changes, update docs in the same PR and verify:
 
 - Menu/action names match current UI labels exactly.
-- Config keys and defaults match `klipper_vault_config.py` and `klippervault.cfg` examples.
+- Config keys and defaults match `klipper_vault_config.py` and the in-app `Macro actions -> Settings` dialog.
 - Feature descriptions align across [README.md](README.md), [overview.md](overview.md), and [Macro_Developer.md](Macro_Developer.md).
 - Any startup/background behavior changes are described in user-facing docs.
 - Security/token handling text reflects implemented behavior only.
@@ -196,6 +224,5 @@ VS Code debug cannot import `nicegui`:
 
 Local app startup problems:
 
-- Check `klippervault.cfg` for malformed values.
+- Check app settings in `Macro actions -> Settings` for malformed values.
 - Validate the `.venv` interpreter exists and dependencies installed.
-- Read service logs (`journalctl`) if running as systemd service.

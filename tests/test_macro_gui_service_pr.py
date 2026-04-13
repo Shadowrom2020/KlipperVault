@@ -1,6 +1,7 @@
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any, cast
+from unittest.mock import Mock, patch
 
 from klipper_macro_gui_service import MacroGuiService
 
@@ -10,11 +11,12 @@ def _service() -> MacroGuiService:
         db_path=Path("/tmp/test.db"),
         config_dir=Path("/tmp/config"),
         version_history_size=5,
+        moonraker_base_url="http://moonraker.local:7125",
     )
 
 
-def _create_pr(service: MacroGuiService, **overrides: str) -> dict[str, object]:
-    payload = {
+def _create_pr(service: MacroGuiService, **overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
         "source_vendor": "Voron",
         "source_model": "Trident",
         "repo_url": "https://github.com/example/repo",
@@ -26,7 +28,7 @@ def _create_pr(service: MacroGuiService, **overrides: str) -> dict[str, object]:
         "pull_request_body": "Body",
     }
     payload.update(overrides)
-    return service.create_online_update_pull_request(**payload)
+    return service.create_online_update_pull_request(**cast(Any, payload))
 
 
 def _run_create_pr_with_common_patches(
@@ -34,7 +36,7 @@ def _run_create_pr_with_common_patches(
     *,
     artifacts: dict[str, object],
     changed_files: int,
-) -> tuple[dict[str, object], object, object]:
+) -> tuple[dict[str, object], Mock, Mock]:
     with ExitStack() as stack:
         stack.enter_context(patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None))
         stack.enter_context(
@@ -64,7 +66,7 @@ def _run_create_pr_with_common_patches(
         )
 
         result = _create_pr(service)
-        return result, commit_mock, pr_mock
+        return result, cast(Mock, commit_mock), cast(Mock, pr_mock)
 
 
 def test_create_online_update_pull_request_returns_existing_open_pr() -> None:
@@ -214,6 +216,44 @@ def test_restart_klipper_posts_restart_endpoint() -> None:
     assert str(captured["url"]).endswith("/printer/restart")
     assert result["ok"] is True
     assert result["status"] == 200
+    assert result["restart_method"] == "endpoint"
+
+
+def test_restart_klipper_falls_back_to_gcode_restart_when_endpoint_fails() -> None:
+    service = _service()
+
+    class _Response:
+        def __init__(self, status_code: int, text: str) -> None:
+            self.status_code = status_code
+            self.reason_phrase = "OK" if status_code < 400 else "Not Found"
+            self.text = text
+
+        def json(self) -> dict[str, object]:
+            if self.status_code >= 400:
+                return {"error": {"message": "Not Found"}}
+            return {"result": "ok"}
+
+    calls: list[tuple[str, object | None]] = []
+
+    def _mock_post(url: str, *, timeout: float, json: dict[str, object] | None = None) -> _Response:
+        _ = timeout
+        calls.append((url, json))
+        if str(url).endswith("/printer/restart"):
+            return _Response(404, '{"error":{"message":"Not Found"}}')
+        if str(url).endswith("/printer/gcode/script"):
+            return _Response(200, '{"result":"ok"}')
+        return _Response(500, "")
+
+    with patch("klipper_macro_gui_service.httpx.post", side_effect=_mock_post):
+        result = service.restart_klipper()
+
+    assert len(calls) == 2
+    assert str(calls[0][0]).endswith("/printer/restart")
+    assert str(calls[1][0]).endswith("/printer/gcode/script")
+    assert calls[1][1] == {"script": "RESTART"}
+    assert result["ok"] is True
+    assert result["status"] == 200
+    assert result["restart_method"] == "gcode_script"
 
 
 def test_reload_dynamic_macros_posts_dynamic_macro_script() -> None:

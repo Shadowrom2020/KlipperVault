@@ -10,14 +10,10 @@ from typing import Callable
 from nicegui import ui
 
 from klipper_macro_explainer import explain_macro_script, load_command_pack
+from klipper_type_utils import to_dict_list as _as_dict_list
+from klipper_type_utils import to_int as _as_int
+from klipper_type_utils import to_str_list as _as_str_list
 from klipper_vault_i18n import t
-
-
-def _as_dict_list(value: object) -> list[dict[str, object]]:
-    """Normalize dynamic explain payload entries into list[dict[str, object]]."""
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
 
 
 def _as_count_dict(value: object) -> dict[str, int]:
@@ -36,29 +32,6 @@ def _as_count_dict(value: object) -> dict[str, int]:
         if count > 0:
             counts[key] = count
     return counts
-
-
-def _as_str_list(value: object) -> list[str]:
-    """Normalize dynamic explain payload entries into list[str]."""
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
-
-
-def _as_int(value: object, default: int = 0) -> int:
-    """Convert dynamic payload values to int with fallback."""
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-    return default
 
 
 def _confidence_classes(confidence: str) -> str:

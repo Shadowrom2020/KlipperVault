@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from klipper_macro_indexer import load_macro_list, restore_macro_version, run_indexing
@@ -197,7 +198,7 @@ def test_online_update_restore_overwrites_existing_cfg_file(tmp_path: Path) -> N
         config_dir=config_dir,
         file_path=str(imported_row["file_path"]),
         macro_name="PRINT_START",
-        version=int(imported_row["version"]),
+        version=cast(int, imported_row["version"]),
     )
 
     assert restore_result["file_path"] == "printer.cfg"

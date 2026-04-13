@@ -48,7 +48,7 @@ install_system_dependencies() {
 
     if have_cmd pacman; then
         as_root pacman -Sy --noconfirm \
-            base-devel git curl openssl zlib xz tk bzip2 libffi readline sqlite
+            base-devel git curl openssl zlib-ng-compat xz tk bzip2 libffi readline sqlite
         return
     fi
 
@@ -154,16 +154,30 @@ setup_vscode_workspace_files() {
         local vscode_dir="$REPO_ROOT/.vscode"
         local settings_file="$vscode_dir/settings.json"
         local launch_file="$vscode_dir/launch.json"
+        local env_file="$vscode_dir/.env"
 
         echo "==> Configuring VS Code workspace files..."
         mkdir -p "$vscode_dir"
+
+        cat > "$env_file" <<ENV
+PYTHONUNBUFFERED=1
+PYTHONPATH=$REPO_ROOT:$REPO_ROOT/src
+KLIPPERVAULT_AUTO_UPDATE_VENV=0
+ENV
+        echo "    Wrote .vscode/.env"
 
         cat > "$settings_file" <<'JSON'
 {
     "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
     "python.terminal.activateEnvironment": true,
+    "python.envFile": "${workspaceFolder}/.vscode/.env",
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
     "python.analysis.extraPaths": [
-        "${workspaceFolder}"
+        "${workspaceFolder}",
+        "${workspaceFolder}/src"
     ]
 }
 JSON
@@ -174,55 +188,18 @@ JSON
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: NiceGUI App (configured port)",
+            "name": "Python: KlipperVault GUI (primary launcher)",
             "type": "python",
             "request": "launch",
             "python": "${config:python.defaultInterpreterPath}",
-            "program": "${workspaceFolder}/klipper_vault.py",
+            "program": "${workspaceFolder}/klipper_vault_gui.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "justMyCode": true,
+            "envFile": "${workspaceFolder}/.vscode/.env",
+            "justMyCode": false,
             "env": {
-                "PYTHONUNBUFFERED": "1"
-            }
-        },
-        {
-            "name": "Python: Index Macros (CLI)",
-            "type": "python",
-            "request": "launch",
-            "python": "${config:python.defaultInterpreterPath}",
-            "program": "${workspaceFolder}/src/klipper_macro_indexer.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true,
-            "args": [
-                "--config-dir",
-                "${env:HOME}/printer_data/config",
-                "--db-path",
-                "${env:HOME}/printer_data/db/klipper_macros.db"
-            ],
-            "env": {
-                "PYTHONUNBUFFERED": "1"
-            }
-        },
-        {
-            "name": "Python: Index Macros (CLI, prune stale)",
-            "type": "python",
-            "request": "launch",
-            "python": "${config:python.defaultInterpreterPath}",
-            "program": "${workspaceFolder}/src/klipper_macro_indexer.py",
-            "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "justMyCode": true,
-            "args": [
-                "--config-dir",
-                "${env:HOME}/printer_data/config",
-                "--db-path",
-                "${env:HOME}/printer_data/db/klipper_macros.db",
-                "--prune"
-            ],
-            "env": {
-                "PYTHONUNBUFFERED": "1"
+                "PYTHONUNBUFFERED": "1",
+                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
             }
         }
     ]
@@ -244,6 +221,11 @@ echo ""
 
 if [[ ! -f "$REPO_ROOT/requirements.txt" ]]; then
     echo "requirements.txt not found in $REPO_ROOT"
+    exit 1
+fi
+
+if [[ ! -f "$REPO_ROOT/klipper_vault_gui.py" ]]; then
+    echo "klipper_vault_gui.py not found in $REPO_ROOT"
     exit 1
 fi
 
@@ -312,8 +294,12 @@ echo "==> Done! Development environment initialized."
 echo "==> Activate the environment with:"
 echo "    source .venv/bin/activate"
 echo ""
+echo "==> Debug defaults are in .vscode/.env"
+echo "==> VS Code launch target for deep debugging:"
+echo "    Python: KlipperVault GUI (primary launcher)"
+echo ""
 echo "==> Then launch the app with:"
-echo "    python klipper_vault.py"
+echo "    python klipper_vault_gui.py"
 echo ""
 echo "==> To skip system dependencies next run:"
 echo "    INSTALL_SYSTEM_DEPS=0 ./scripts/setup_dev.sh"

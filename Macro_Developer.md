@@ -65,24 +65,15 @@ Current toolbar/menu locations for developer workflows:
 
 ### 1. Enable Developer Mode
 
-Edit `~/printer_data/config/klippervault.cfg`:
-
-```ini
-[vault]
-developer: true
-```
+In the app, open `Macro actions -> Settings`, then enable `Developer mode` and save.
 
 ### 2. Configure Repository URL
 
-Set your macro repository URL in `klippervault.cfg`:
+In `Macro actions -> Settings`, set:
 
-```ini
-[vault]
-developer: true
-online_update_repo_url: https://github.com/your-username/klipper-macros
-online_update_manifest_path: updates/manifest.json
-online_update_ref: main
-```
+- `Online update repository URL`: `https://github.com/your-username/klipper-macros`
+- `Online update manifest path`: `updates/manifest.json`
+- `Online update reference`: `main`
 
 - **online_update_repo_url**: Full GitHub repository URL (HTTPS)
 - **online_update_manifest_path**: Path to manifest file (relative to repo root)
@@ -90,13 +81,7 @@ online_update_ref: main
 
 ### 3. Set Printer Vendor/Model
 
-Macros are organized by printer vendor and model:
-
-```ini
-[vault]
-printer_vendor: Artillery
-printer_model: X1
-```
+Set the active printer profile in `Manage printer connections` so vendor/model are available.
 
 This ensures your exported macros are placed in `[vendor]/[model]` subdirectories.
 
@@ -241,15 +226,16 @@ git push
 
 ### Step 2: Configure KlipperVault
 
-```ini
-[vault]
-developer: true
-printer_vendor: Artillery
-printer_model: X1
-online_update_repo_url: https://github.com/your-username/klipper-macros
-online_update_manifest_path: updates/manifest.json
-online_update_ref: main
-```
+In `Macro actions -> Settings`:
+
+- Enable `Developer mode`
+- Set `Online update repository URL` to `https://github.com/your-username/klipper-macros`
+- Set `Online update manifest path` to `updates/manifest.json`
+- Set `Online update reference` to `main`
+
+In `Manage printer connections`:
+
+- Ensure the active printer profile has vendor/model metadata configured
 
 ### Step 3: Export and Create PR
 

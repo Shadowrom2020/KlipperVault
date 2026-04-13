@@ -75,6 +75,7 @@ class MacroViewer:
             with ui.row().classes("w-full items-center gap-2 mt-1"):
                 self._rename_hint = ui.label("").classes("text-sm text-blue-4")
                 self._inactive_hint = ui.label("").classes("text-sm text-yellow-7")
+                self._protected_hint = ui.label("").classes("text-sm text-warning")
                 self._open_active_button = ui.button(
                     t("Open active macro"),
                     on_click=self._open_active_macro,
@@ -82,6 +83,7 @@ class MacroViewer:
                 self._open_active_button.classes("text-yellow-5")
                 self._rename_hint.set_visibility(False)
                 self._inactive_hint.set_visibility(False)
+                self._protected_hint.set_visibility(False)
                 self._open_active_button.set_visibility(False)
             self._desc_label = ui.label(t("Description: -")).classes("text-sm mt-2")
             self._editor_panel = MacroEditor()
@@ -168,13 +170,29 @@ class MacroViewer:
         """Return True when selected macro is editable in-place."""
         return (
             macro is not None
+            and not self._is_protected_macro(macro)
             and not macro.get("is_deleted", False)
             and self._is_latest_version_selected(macro)
         )
 
+    @staticmethod
+    def _is_protected_macro(macro: dict | None) -> bool:
+        """Return True for macros sourced from protected printer.cfg."""
+        if macro is None:
+            return False
+        return str(macro.get("file_path", "")).strip().lower().endswith("printer.cfg")
+
     def _remove_deleted_macro(self) -> None:
         """Invoke callback to purge selected deleted macro from DB."""
         if self._remove_deleted_handler is None or self._current_macro is None:
+            return
+        if self._is_protected_macro(self._current_macro):
+            ui.notify(
+                t(
+                    "This macro is defined in printer.cfg and is read-only. Move it to a separate included .cfg file to enable updates."
+                ),
+                type="warning",
+            )
             return
         if not self._current_macro.get("is_deleted", False):
             return
@@ -187,6 +205,14 @@ class MacroViewer:
         """Invoke callback to purge selected inactive macro version from DB."""
         if self._remove_inactive_handler is None or self._current_macro is None:
             return
+        if self._is_protected_macro(self._current_macro):
+            ui.notify(
+                t(
+                    "This macro is defined in printer.cfg and is read-only. Move it to a separate included .cfg file to enable updates."
+                ),
+                type="warning",
+            )
+            return
         if self._current_macro.get("is_active", False) or self._current_macro.get("is_deleted", False):
             return
         self._remove_inactive_handler(self._current_macro)
@@ -194,6 +220,14 @@ class MacroViewer:
     def _restore_selected_version(self) -> None:
         """Invoke callback to restore selected version to cfg file."""
         if self._restore_version_handler is None or self._current_macro is None:
+            return
+        if self._is_protected_macro(self._current_macro):
+            ui.notify(
+                t(
+                    "This macro is defined in printer.cfg and is read-only. Move it to a separate included .cfg file to enable updates."
+                ),
+                type="warning",
+            )
             return
         self._restore_version_handler(self._current_macro)
 
@@ -208,6 +242,10 @@ class MacroViewer:
     def _update_restore_button(self, macro: dict | None) -> None:
         """Show revert/restore action only for old versions or deleted macros."""
         if macro is None:
+            self._restore_version_button.set_visibility(False)
+            return
+
+        if self._is_protected_macro(macro):
             self._restore_version_button.set_visibility(False)
             return
 
@@ -319,6 +357,7 @@ class MacroViewer:
             self._active_star_label.set_visibility(False)
             self._rename_hint.set_visibility(False)
             self._inactive_hint.set_visibility(False)
+            self._protected_hint.set_visibility(False)
             self._open_active_button.set_visibility(False)
             self._desc_label.set_text(t("Description: -"))
             self._remove_deleted_button.set_visibility(False)
@@ -347,14 +386,26 @@ class MacroViewer:
             f"{status_text}"
         )
         # Only allow purge when the macro identity is currently deleted (latest version is deleted).
-        self._remove_deleted_button.set_visibility(self._is_macro_currently_deleted())
+        protected_macro = self._is_protected_macro(macro)
+        self._remove_deleted_button.set_visibility((not protected_macro) and self._is_macro_currently_deleted())
         self._remove_inactive_button.set_visibility(
+            (not protected_macro)
+            and
             (not bool(macro.get("is_active", False)))
             and (not bool(macro.get("is_deleted", False)))
         )
         self._update_restore_button(macro)
         self._update_rename_hint(macro)
         self._update_inactive_hint(macro)
+        if protected_macro:
+            self._protected_hint.set_text(
+                t(
+                    "Read-only (printer.cfg): This macro cannot be updated from KlipperVault because printer.cfg is protected and may contain critical printer settings. Move it to a separate included .cfg file."
+                )
+            )
+            self._protected_hint.set_visibility(True)
+        else:
+            self._protected_hint.set_visibility(False)
         description = str(macro.get("description") or "-")
         rename_existing = str(macro.get("rename_existing") or "").strip()
         self._desc_label.set_text(t("Description: {description}", description=description))

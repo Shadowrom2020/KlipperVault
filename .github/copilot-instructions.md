@@ -11,7 +11,7 @@ Maintain a lightweight Klipper macro vault with:
 - Mainsail UI integration for macro editing and management
 
 ## Codebase Facts
-- Runtime starts from `klipper_vault.py`.
+- Runtime starts from `klipper_vault_gui.py`.
 - All source files are under `src/`.
 - The GUI module builds UI only; launcher handles `main()` and `ui.run(...)`.
 - Current app version is stored in `VERSION`.
@@ -23,8 +23,8 @@ Maintain a lightweight Klipper macro vault with:
 - Trailing comment-only lines at end of gcode are trimmed before storage.
 
 ## Config Rules
-- Config path: `~/printer_data/config/klippervault.cfg`.
-- Settings in `[vault]`:
+- App settings are stored in SQLite table `vault_settings`.
+- Runtime-critical settings include:
   - `version_history_size`
   - `port`
 - Do not hardcode static UI port values in runtime logic.
@@ -36,6 +36,6 @@ Maintain a lightweight Klipper macro vault with:
 - Run `py_compile` on changed Python files before finishing.
 
 ## Helpful Commands
-- `python3 klipper_vault.py`
+- `python3 klipper_vault_gui.py`
 - `python3 -m py_compile src/klipper_macro_gui.py`
 - `python3 -m py_compile src/klipper_macro_indexer.py src/klipper_macro_backup.py`

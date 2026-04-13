@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import concurrent.futures
 import functools
+import sqlite3
 import time
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -22,6 +23,7 @@ from klipper_macro_indexer import (
     _parse_macro_section_text,
     ensure_schema,
 )
+from klipper_type_utils import to_text as _as_text
 from klipper_vault_db import open_sqlite_connection
 from klipper_repo_url_utils import build_raw_githubusercontent_url
 
@@ -30,11 +32,6 @@ from klipper_repo_url_utils import build_raw_githubusercontent_url
 def _normalize_identity_component(value: str) -> str:
     """Normalize one identity component for case-insensitive comparisons."""
     return str(value or "").strip().lower()
-
-
-def _as_text(value: object) -> str:
-    """Normalize dynamic values into stripped text."""
-    return str(value or "").strip()
 
 
 class OnlineImportCandidate(BaseModel):
@@ -524,6 +521,7 @@ def import_online_macro_updates(
     updates: List[Dict[str, object]],
     repo_url: str,
     repo_ref: str,
+    printer_profile_id: int | None = None,
     now_ts: int | None = None,
 ) -> Dict[str, object]:
     """Insert changed remote macros as new inactive versions."""
@@ -538,6 +536,45 @@ def import_online_macro_updates(
         ensure_schema=ensure_schema,
         pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
     ) as conn:
+        fallback_printer_profile_id: int | None = int(printer_profile_id) if printer_profile_id is not None else None
+        if fallback_printer_profile_id is None:
+            row = conn.execute(
+                """
+                SELECT printer_profile_id
+                FROM macros
+                WHERE printer_profile_id IS NOT NULL
+                ORDER BY indexed_at DESC, version DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is not None and row[0] is not None:
+                fallback_printer_profile_id = int(row[0])
+
+        if fallback_printer_profile_id is None:
+            try:
+                row = conn.execute(
+                """
+                SELECT id
+                FROM printer_profiles
+                WHERE is_active = 1
+                ORDER BY id DESC
+                LIMIT 1
+                """
+                ).fetchone()
+                if row is None:
+                    row = conn.execute(
+                        """
+                        SELECT id
+                        FROM printer_profiles
+                        ORDER BY id ASC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                if row is not None:
+                    fallback_printer_profile_id = int(row[0])
+            except sqlite3.OperationalError:
+                pass
+
         for item in updates:
             candidate = _parse_online_import_candidate(item)
             if candidate is None:
@@ -552,11 +589,21 @@ def import_online_macro_updates(
                 candidate.source_vendor,
                 candidate.source_model,
             )
+            local_latest = _local_latest_source_row(
+                conn,
+                candidate.source_vendor,
+                candidate.source_model,
+                macro_name,
+            )
+            if local_latest is not None:
+                resolved_file_path = str(local_latest[6] or "").strip()
+                if resolved_file_path:
+                    file_path = resolved_file_path
             body_checksum = _make_checksum(str(parsed.get("section_text", candidate.section_text)))
 
             latest = conn.execute(
                 """
-                SELECT version, body_checksum
+                    SELECT version, body_checksum, printer_profile_id
                 FROM macros
                 WHERE file_path = ? AND macro_name = ?
                 ORDER BY version DESC
@@ -567,6 +614,12 @@ def import_online_macro_updates(
             latest_version = int(latest[0]) if latest is not None else 0
             if latest is not None and str(latest[1]) == body_checksum:
                 continue
+            row_printer_profile_id = fallback_printer_profile_id
+            if latest is not None and latest[2] is not None:
+                row_printer_profile_id = int(latest[2])
+            if row_printer_profile_id is None:
+                # Last-resort fallback keeps inserts valid even in unusual bootstrap states.
+                row_printer_profile_id = 1
 
             new_version = latest_version + 1
             conn.execute(
@@ -595,10 +648,11 @@ def import_online_macro_updates(
                     remote_ref,
                     remote_path,
                     remote_version,
+                    printer_profile_id,
                     version,
                     indexed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     file_path,
@@ -624,6 +678,7 @@ def import_online_macro_updates(
                     _as_text(repo_ref),
                     candidate.remote_path,
                     candidate.remote_version,
+                    row_printer_profile_id,
                     new_version,
                     ts,
                 ),

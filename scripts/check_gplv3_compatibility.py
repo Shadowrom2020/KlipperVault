@@ -8,9 +8,10 @@ and validates each package's detected license against a GPLv3-compatible allowli
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from importlib import metadata
 from pathlib import Path
+from typing import cast
 
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
@@ -19,7 +20,10 @@ from packaging.requirements import Requirement
 # Metadata quality varies across packages. These overrides are used only when a
 # package does not expose a usable license in `License` or classifier fields.
 LICENSE_OVERRIDES: dict[str, str] = {
+    "cffi": "MIT",
+    "more-itertools": "MIT",
     "nicegui": "mit",
+    "paramiko": "LGPL-2.1",
 }
 
 
@@ -32,6 +36,8 @@ ALLOWED_LICENSE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"mozilla public license\s*2", re.IGNORECASE),
     re.compile(r"python software foundation", re.IGNORECASE),
     re.compile(r"\bpsf\b", re.IGNORECASE),
+    re.compile(r"\blgpl\b", re.IGNORECASE),
+    re.compile(r"lesser general public license", re.IGNORECASE),
     re.compile(r"public domain", re.IGNORECASE),
 )
 
@@ -40,16 +46,40 @@ REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
 
 
 def parse_requirement_names(requirements_file: Path) -> list[str]:
+    return _parse_requirement_names(requirements_file, visited=set())
+
+
+def _parse_requirement_names(requirements_file: Path, visited: set[Path]) -> list[str]:
+    resolved_requirements_file = requirements_file.resolve()
+    if resolved_requirements_file in visited:
+        return []
+    visited.add(resolved_requirements_file)
+
     names: list[str] = []
     for line in requirements_file.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            continue
+        include_target = _parse_requirements_include(stripped)
+        if include_target is not None:
+            include_path = (requirements_file.parent / include_target).resolve()
+            if include_path.exists() and include_path.is_file():
+                names.extend(_parse_requirement_names(include_path, visited=visited))
             continue
         match = REQ_NAME_RE.match(stripped)
         if not match:
             continue
         names.append(match.group(1))
     return names
+
+
+def _parse_requirements_include(line: str) -> str | None:
+    parts = line.split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    if parts[0] not in {"-r", "--requirement"}:
+        return None
+    return parts[1].strip()
 
 
 def normalize(name: str) -> str:
@@ -62,9 +92,9 @@ def parse_dependency_requirement(requirement_line: str) -> str | None:
     except Exception:
         return None
 
-    env = default_environment()
+    env = {str(key): str(value) for key, value in default_environment().items()}
     env["extra"] = ""
-    if requirement.marker and not requirement.marker.evaluate(env):
+    if requirement.marker and not requirement.marker.evaluate(cast(Mapping[str, str], env)):
         return None
     return requirement.name
 
@@ -123,7 +153,7 @@ def collect_license_candidates(dist: metadata.Distribution) -> list[str]:
         if "license" not in rel_text and not rel_text.endswith("copying"):
             continue
         try:
-            path = dist.locate_file(rel)
+            path = Path(str(dist.locate_file(rel)))
             if not path.is_file():
                 continue
             blob = path.read_text(encoding="utf-8", errors="ignore")[:6000].lower()
