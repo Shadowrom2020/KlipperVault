@@ -1,8 +1,10 @@
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from klipper_vault_config_source import LocalConfigSource, SshConfigSource
+from klipper_vault_ssh_transport import SshTransport
 
 
 class _FakeTransport:
@@ -62,7 +64,7 @@ def test_local_config_source_rejects_path_escape(tmp_path: Path) -> None:
 
 def test_ssh_config_source_relative_path_mapping() -> None:
     transport = _FakeTransport()
-    source = SshConfigSource(transport=transport, remote_root="/remote/config")
+    source = SshConfigSource(transport=cast(SshTransport, transport), remote_root="/remote/config")
 
     assert source.list_cfg_files() == ["macros/toolhead.cfg", "printer.cfg"]
     assert source.read_text("printer.cfg") == "read:/remote/config/printer.cfg"
@@ -76,7 +78,7 @@ def test_ssh_config_source_relative_path_mapping() -> None:
 
 def test_ssh_config_source_rejects_path_escape() -> None:
     transport = _FakeTransport()
-    source = SshConfigSource(transport=transport, remote_root="/remote/config")
+    source = SshConfigSource(transport=cast(SshTransport, transport), remote_root="/remote/config")
 
     with pytest.raises(ValueError):
         source.read_text("../escape.cfg")

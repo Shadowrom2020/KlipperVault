@@ -1,7 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-import paramiko
-import pytest
+import paramiko  # type: ignore[import-untyped]
 
 from klipper_vault_ssh_transport import (
     SshConnectionConfig,
@@ -33,7 +32,7 @@ def test_known_hosts_path_is_inside_config_dir() -> None:
     assert "klippervault" in str(path).lower()
 
 
-def test_ensure_host_trusted_skips_when_already_known(tmp_path: pytest.FixtureRequest) -> None:
+def test_ensure_host_trusted_skips_when_already_known(tmp_path) -> None:
     """When the host key is already stored, no Transport connection is opened."""
     kh_file = tmp_path / "known_hosts"
     # Write a minimal RSA dummy key entry so lookup succeeds
@@ -48,7 +47,7 @@ def test_ensure_host_trusted_skips_when_already_known(tmp_path: pytest.FixtureRe
             mock_transport_cls.assert_not_called()
 
 
-def test_ensure_host_trusted_tofu_for_unknown_host(tmp_path: pytest.FixtureRequest) -> None:
+def test_ensure_host_trusted_tofu_for_unknown_host(tmp_path) -> None:
     """When the host is unknown, the key is fetched and saved to known_hosts."""
     kh_file = tmp_path / "known_hosts"
     dummy_key = paramiko.RSAKey.generate(1024)
@@ -70,7 +69,7 @@ def test_ensure_host_trusted_tofu_for_unknown_host(tmp_path: pytest.FixtureReque
     assert saved.lookup("newhost.local") is not None
 
 
-def test_ensure_host_trusted_non_standard_port_formats_correctly(tmp_path: pytest.FixtureRequest) -> None:
+def test_ensure_host_trusted_non_standard_port_formats_correctly(tmp_path) -> None:
     """Non-standard ports should use bracket notation in known_hosts."""
     kh_file = tmp_path / "known_hosts"
     dummy_key = paramiko.RSAKey.generate(1024)

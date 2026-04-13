@@ -8,9 +8,10 @@ and validates each package's detected license against a GPLv3-compatible allowli
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from importlib import metadata
 from pathlib import Path
+from typing import cast
 
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
@@ -91,9 +92,9 @@ def parse_dependency_requirement(requirement_line: str) -> str | None:
     except Exception:
         return None
 
-    env = default_environment()
+    env = {str(key): str(value) for key, value in default_environment().items()}
     env["extra"] = ""
-    if requirement.marker and not requirement.marker.evaluate(env):
+    if requirement.marker and not requirement.marker.evaluate(cast(Mapping[str, str], env)):
         return None
     return requirement.name
 
@@ -152,7 +153,7 @@ def collect_license_candidates(dist: metadata.Distribution) -> list[str]:
         if "license" not in rel_text and not rel_text.endswith("copying"):
             continue
         try:
-            path = dist.locate_file(rel)
+            path = Path(str(dist.locate_file(rel)))
             if not path.is_file():
                 continue
             blob = path.read_text(encoding="utf-8", errors="ignore")[:6000].lower()

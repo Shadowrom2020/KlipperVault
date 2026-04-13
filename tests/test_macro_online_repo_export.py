@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 import zipfile
 
@@ -39,6 +40,22 @@ def _fake_urlopen_factory(url_to_payload: dict[str, object]):
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _manifest_dict(value: object) -> dict[str, object]:
+    return cast(dict[str, object], value)
+
+
+def _manifest_entries(value: object) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], value)
+
+
+def _path_list(value: object) -> list[str]:
+    return cast(list[str], value)
+
+
+def _text_map(value: object) -> dict[str, str]:
+    return cast(dict[str, str], value)
 
 
 def test_export_online_update_repository_zip_contains_manifest_and_active_macros(tmp_path: Path) -> None:
@@ -211,10 +228,10 @@ def test_build_artifacts_skips_unchanged_macros_in_files_to_write(tmp_path: Path
     # File must not be written because content is identical.
     assert result["files_to_write"] == {}
     # generated_at must not be advanced because nothing changed.
-    manifest = result["manifest"]
+    manifest = _manifest_dict(result["manifest"])
     assert manifest.get("generated_at") == 999
     # The manifest entry version should be preserved.
-    entries = manifest["macros"]
+    entries = _manifest_entries(manifest["macros"])
     assert len(entries) == 1
     assert entries[0]["version"] == "2025-01-01"
 
@@ -252,11 +269,12 @@ def test_build_artifacts_includes_changed_macro_and_updates_generated_at(tmp_pat
     )
 
     # File must be included because content changed.
-    assert "voron/trident/PRINT_START.json" in result["files_to_write"]
+    assert "voron/trident/PRINT_START.json" in _text_map(result["files_to_write"])
     # generated_at must be updated.
-    assert result["manifest"].get("generated_at") == 1_775_560_000
+    manifest = _manifest_dict(result["manifest"])
+    assert manifest.get("generated_at") == 1_775_560_000
     # Version must differ from the stale "old" value.
-    entries = result["manifest"]["macros"]
+    entries = _manifest_entries(manifest["macros"])
     assert entries[0]["version"] != "2025-01-01"
 
 
@@ -307,8 +325,9 @@ gcode:
         now_ts=1_775_560_000,
     )
 
-    assert "voron/trident/PRINT_START.json" in result["files_to_delete"]
-    manifest_entries = result["manifest"]["macros"]
+    assert "voron/trident/PRINT_START.json" in _path_list(result["files_to_delete"])
+    manifest = _manifest_dict(result["manifest"])
+    manifest_entries = _manifest_entries(manifest["macros"])
     assert len(manifest_entries) == 1
     assert manifest_entries[0]["macro_name"] == "PRINT_END"
-    assert result["manifest"].get("generated_at") == 1_775_560_000
+    assert manifest.get("generated_at") == 1_775_560_000

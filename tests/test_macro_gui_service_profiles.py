@@ -1,7 +1,20 @@
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from klipper_macro_gui_service import MacroGuiService
+
+
+def _as_int(value: object) -> int:
+    return cast(int, value)
+
+
+def _as_dict(value: object) -> dict[str, object]:
+    return cast(dict[str, object], value)
+
+
+def _as_rows(value: object) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], value)
 
 
 def _service(tmp_path: Path) -> MacroGuiService:
@@ -59,12 +72,12 @@ def test_activate_profile_switches_active_row(tmp_path: Path) -> None:
         is_active=True,
     )
 
-    assert service.activate_ssh_profile(int(a["profile_id"]))["ok"] is True
+    assert service.activate_ssh_profile(_as_int(a["profile_id"]))["ok"] is True
     active = service.get_active_ssh_profile()
     assert active is not None
     assert active["profile_name"] == "A"
 
-    assert service.activate_ssh_profile(int(b["profile_id"]))["ok"] is True
+    assert service.activate_ssh_profile(_as_int(b["profile_id"]))["ok"] is True
     active = service.get_active_ssh_profile()
     assert active is not None
     assert active["profile_name"] == "B"
@@ -240,7 +253,7 @@ def test_off_printer_index_syncs_remote_before_index(tmp_path: Path) -> None:
 
     assert result["cfg_files_scanned"] == 2
     assert "remote_sync" in result
-    assert result["remote_sync"]["synced_files"] == 2
+    assert _as_dict(result["remote_sync"])["synced_files"] == 2
     runtime_dir = Path(str(result.get("runtime_config_dir", "")))
     assert (runtime_dir / "printer.cfg").exists()
     assert (runtime_dir / "macros.cfg").exists()
@@ -279,7 +292,7 @@ def test_off_printer_cfg_loading_overview_reads_active_remote_source(tmp_path: P
     ):
         overview = service.load_cfg_loading_overview()
 
-    assert [row["file_path"] for row in overview["klipper_order"]] == ["printer.cfg", "macros.cfg"]
+    assert [row["file_path"] for row in _as_rows(overview["klipper_order"])] == ["printer.cfg", "macros.cfg"]
     assert overview["klipper_macro_count"] == 1
 
 
@@ -319,7 +332,7 @@ def test_off_printer_index_syncs_with_tilde_remote_root(tmp_path: Path) -> None:
 
     assert result["cfg_files_scanned"] == 1
     assert "remote_sync" in result
-    assert result["remote_sync"]["synced_files"] == 1
+    assert _as_dict(result["remote_sync"])["synced_files"] == 1
     runtime_dir = Path(str(result.get("runtime_config_dir", "")))
     assert (runtime_dir / "printer.cfg").exists()
 
@@ -372,7 +385,7 @@ def test_delete_ssh_profile_removes_row(tmp_path: Path) -> None:
         is_active=False,
     )
 
-    deleted = service.delete_ssh_profile(int(saved["profile_id"]))
+    deleted = service.delete_ssh_profile(_as_int(saved["profile_id"]))
     assert deleted["ok"] is True
 
     profiles = service.list_ssh_profiles()
@@ -391,7 +404,7 @@ def test_delete_active_ssh_profile_clears_active_state(tmp_path: Path) -> None:
         is_active=True,
     )
 
-    deleted = service.delete_ssh_profile(int(saved["profile_id"]))
+    deleted = service.delete_ssh_profile(_as_int(saved["profile_id"]))
     assert deleted["ok"] is True
     assert deleted["was_active"] is True
     assert service.get_active_ssh_profile() is None
@@ -411,7 +424,7 @@ def test_ensure_printer_profile_for_ssh_profile_creates_and_activates(tmp_path: 
     )
 
     result = service.ensure_printer_profile_for_ssh_profile(
-        ssh_profile_id=int(saved["profile_id"]),
+        ssh_profile_id=_as_int(saved["profile_id"]),
         profile_name="Workshop",
         activate=True,
     )
@@ -419,7 +432,7 @@ def test_ensure_printer_profile_for_ssh_profile_creates_and_activates(tmp_path: 
 
     active = service.get_active_printer_profile()
     assert active is not None
-    assert active["ssh_profile_id"] == int(saved["profile_id"])
+    assert active["ssh_profile_id"] == _as_int(saved["profile_id"])
 
 
 def test_save_active_ssh_profile_auto_creates_active_printer_profile(tmp_path: Path) -> None:
@@ -439,7 +452,7 @@ def test_save_active_ssh_profile_auto_creates_active_printer_profile(tmp_path: P
     assert saved["ok"] is True
     active_printer = service.get_active_printer_profile()
     assert active_printer is not None
-    assert active_printer["ssh_profile_id"] == int(saved["profile_id"])
+    assert active_printer["ssh_profile_id"] == _as_int(saved["profile_id"])
 
 
 def test_activate_ssh_profile_switches_active_printer_profile(tmp_path: Path) -> None:
@@ -467,12 +480,12 @@ def test_activate_ssh_profile_switches_active_printer_profile(tmp_path: Path) ->
     assert left["ok"] is True
     assert right["ok"] is True
 
-    activated = service.activate_ssh_profile(int(right["profile_id"]))
+    activated = service.activate_ssh_profile(_as_int(right["profile_id"]))
     assert activated["ok"] is True
 
     active_printer = service.get_active_printer_profile()
     assert active_printer is not None
-    assert active_printer["ssh_profile_id"] == int(right["profile_id"])
+    assert active_printer["ssh_profile_id"] == _as_int(right["profile_id"])
 
 
 def test_off_printer_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) -> None:

@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import tempfile
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from nicegui import ui
 
@@ -934,7 +934,7 @@ def build_ui(app_version: str = "unknown") -> None:
         ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
         with ui.row().classes("w-full gap-2"):
             ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
-            ssh_profile_host_input = ui.input(label=t("Host")).props("outlined dense").classes("flex-1")
+            ssh_profile_host_input = ui.input(label=t("Host"), on_change=lambda e: _sync_moonraker_url_host(str(e.value or ""))).props("outlined dense").classes("flex-1")
         with ui.row().classes("w-full gap-2"):
             ssh_profile_port_input = ui.number(label=t("Port"), value=22).props("outlined dense").classes("w-32")
             ssh_profile_username_input = ui.input(label=t("Username")).props("outlined dense").classes("flex-1")
@@ -2713,6 +2713,38 @@ def build_ui(app_version: str = "unknown") -> None:
         _set_selected_profile_secret_state(None)
         _set_auth_mode_fields()
         _refresh_ssh_profile_action_buttons()
+
+    def _format_moonraker_url_host(host: str) -> str:
+        """Return a URL-safe host string for the Moonraker endpoint."""
+        normalized_host = str(host or "").strip() or "127.0.0.1"
+        if ":" in normalized_host and not normalized_host.startswith("["):
+            return f"[{normalized_host}]"
+        return normalized_host
+
+    def _sync_moonraker_url_host(host: str) -> None:
+        """Keep the Moonraker URL host aligned with the current SSH host field."""
+        raw_url = str(ssh_profile_moonraker_url_input.value or "").strip()
+        if not raw_url:
+            return
+
+        parsed_url = urlparse(raw_url)
+        if parsed_url.scheme not in {"http", "https"}:
+            return
+
+        try:
+            port_suffix = f":{parsed_url.port}" if parsed_url.port is not None else ""
+        except ValueError:
+            return
+
+        userinfo = ""
+        if parsed_url.username:
+            userinfo = parsed_url.username
+            if parsed_url.password:
+                userinfo += f":{parsed_url.password}"
+            userinfo += "@"
+
+        rewritten_url = parsed_url._replace(netloc=f"{userinfo}{_format_moonraker_url_host(host)}{port_suffix}")
+        ssh_profile_moonraker_url_input.set_value(urlunparse(rewritten_url))
 
     def _load_selected_ssh_profile() -> None:
         """Populate profile form from the selected saved profile."""

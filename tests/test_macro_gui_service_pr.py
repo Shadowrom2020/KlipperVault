@@ -1,6 +1,7 @@
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any, cast
+from unittest.mock import Mock, patch
 
 from klipper_macro_gui_service import MacroGuiService
 
@@ -14,8 +15,8 @@ def _service() -> MacroGuiService:
     )
 
 
-def _create_pr(service: MacroGuiService, **overrides: str) -> dict[str, object]:
-    payload = {
+def _create_pr(service: MacroGuiService, **overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
         "source_vendor": "Voron",
         "source_model": "Trident",
         "repo_url": "https://github.com/example/repo",
@@ -27,7 +28,7 @@ def _create_pr(service: MacroGuiService, **overrides: str) -> dict[str, object]:
         "pull_request_body": "Body",
     }
     payload.update(overrides)
-    return service.create_online_update_pull_request(**payload)
+    return service.create_online_update_pull_request(**cast(Any, payload))
 
 
 def _run_create_pr_with_common_patches(
@@ -35,7 +36,7 @@ def _run_create_pr_with_common_patches(
     *,
     artifacts: dict[str, object],
     changed_files: int,
-) -> tuple[dict[str, object], object, object]:
+) -> tuple[dict[str, object], Mock, Mock]:
     with ExitStack() as stack:
         stack.enter_context(patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None))
         stack.enter_context(
@@ -65,7 +66,7 @@ def _run_create_pr_with_common_patches(
         )
 
         result = _create_pr(service)
-        return result, commit_mock, pr_mock
+        return result, cast(Mock, commit_mock), cast(Mock, pr_mock)
 
 
 def test_create_online_update_pull_request_returns_existing_open_pr() -> None:

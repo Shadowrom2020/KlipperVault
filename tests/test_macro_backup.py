@@ -1,5 +1,6 @@
 import textwrap
 from pathlib import Path
+from typing import cast
 
 from klipper_macro_backup import create_macro_backup, list_macro_backups, load_backup_items, restore_macro_backup
 from klipper_macro_indexer import load_macro_list, run_indexing
@@ -20,14 +21,15 @@ def test_backup_creation_listing_and_restore_round_trip(tmp_path: Path) -> None:
     run_indexing(config_dir, db_path)
 
     backup = create_macro_backup(db_path, "nightly", config_dir=config_dir, now_ts=111)
+    backup_id = cast(int, backup["backup_id"])
     backups = list_macro_backups(db_path)
-    items = load_backup_items(db_path, backup["backup_id"])
+    items = load_backup_items(db_path, backup_id)
 
     assert backup["backup_name"] == "nightly"
     assert backup["created_at"] == 111
     assert backup["macro_count"] == 1
     assert backup["cfg_file_count"] == 1
-    assert backups[0]["backup_id"] == backup["backup_id"]
+    assert backups[0]["backup_id"] == backup_id
     assert backups[0]["macro_count"] == 1
     assert items[0]["macro_name"] == "PRINT_TEST"
     assert items[0]["file_path"] == "printer.cfg"
@@ -42,7 +44,7 @@ def test_backup_creation_listing_and_restore_round_trip(tmp_path: Path) -> None:
     )
     _write(config_dir / "extra.cfg", "[printer]\nkinematics: corexy\n")
 
-    restored = restore_macro_backup(db_path, backup["backup_id"], config_dir=config_dir, now_ts=222)
+    restored = restore_macro_backup(db_path, backup_id, config_dir=config_dir, now_ts=222)
     restored_macros = load_macro_list(db_path)
 
     assert restored["backup_name"] == "nightly"
@@ -76,7 +78,7 @@ def test_backup_round_trip_with_config_source(tmp_path: Path) -> None:
         )
         _write(config_dir / "extra.cfg", "[printer]\nkinematics: corexy\n")
 
-        restored = restore_macro_backup(db_path, backup["backup_id"], config_source=source, now_ts=444)
+        restored = restore_macro_backup(db_path, cast(int, backup["backup_id"]), config_source=source, now_ts=444)
 
         assert restored["backup_name"] == "source-backup"
         assert restored["restored_at"] == 444

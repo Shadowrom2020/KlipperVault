@@ -11,6 +11,7 @@ import os
 import subprocess  # nosec B404
 import sys
 from pathlib import Path
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -145,10 +146,11 @@ def _patch_nicegui_deleted_parent_slot_event_race() -> None:
         if handler is None:
             return
         try:
-            if isinstance(arguments, nicegui_events.UiEventArguments):
-                parent_slot = arguments.sender.parent_slot or arguments.sender.client.layout.default_slot
-            else:
-                parent_slot = nicegui_events.nullcontext()
+            parent_slot: Any = (
+                arguments.sender.parent_slot or arguments.sender.client.layout.default_slot
+                if isinstance(arguments, nicegui_events.UiEventArguments)
+                else nicegui_events.nullcontext()
+            )
 
             with parent_slot:
                 if nicegui_events.helpers.expects_arguments(handler):

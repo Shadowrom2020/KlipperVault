@@ -1,6 +1,7 @@
 import json
 import textwrap
 from pathlib import Path
+from typing import cast
 
 from klipper_macro_online_update import import_online_macro_updates
 from klipper_macro_indexer import (
@@ -27,6 +28,14 @@ from klipper_vault_db import open_sqlite_connection
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(textwrap.dedent(content).lstrip("\n"), encoding="utf-8")
+
+
+def _as_int(value: object) -> int:
+    return cast(int, value)
+
+
+def _as_rows(value: object) -> list[dict[str, object]]:
+    return cast(list[dict[str, object]], value)
 
 
 def test_parse_macros_trims_trailing_comments_and_preserves_indented_brackets(tmp_path: Path) -> None:
@@ -142,8 +151,9 @@ def test_get_cfg_loading_overview_reports_klipper_vs_scan_order(tmp_path: Path) 
 
     overview = get_cfg_loading_overview(tmp_path)
 
-    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
-    klipper_macro_order = overview["klipper_macro_order"]
+    klipper_order_rows = _as_rows(overview["klipper_order"])
+    klipper_order = [row["file_path"] for row in klipper_order_rows]
+    klipper_macro_order = _as_rows(overview["klipper_macro_order"])
 
     assert klipper_order == ["printer.cfg", "extras/b.cfg", "extras/a.cfg"]
     assert overview["klipper_count"] == 3
@@ -165,7 +175,7 @@ def test_get_cfg_loading_overview_ignores_dynamicmacros_section_like_klipper(tmp
 
     overview = get_cfg_loading_overview(tmp_path)
 
-    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
+    klipper_order = [row["file_path"] for row in _as_rows(overview["klipper_order"])]
     assert klipper_order == ["printer.cfg"]
     assert overview["klipper_count"] == 1
 
@@ -193,7 +203,7 @@ def test_get_cfg_loading_overview_preserves_duplicate_include_entries_like_klipp
     _write(tmp_path / "extras" / "common.cfg", "[printer]\n")
 
     overview = get_cfg_loading_overview(tmp_path)
-    klipper_order = [row["file_path"] for row in overview["klipper_order"]]
+    klipper_order = [row["file_path"] for row in _as_rows(overview["klipper_order"])]
 
     assert klipper_order == [
         "printer.cfg",
@@ -244,12 +254,14 @@ def test_get_cfg_loading_overview_reports_macro_level_inline_include_order(tmp_p
 
         overview = get_cfg_loading_overview(tmp_path)
 
-        assert [row["file_path"] for row in overview["klipper_order"]] == [
+        klipper_order_rows = _as_rows(overview["klipper_order"])
+        assert [row["file_path"] for row in klipper_order_rows] == [
                 "printer.cfg",
                 "macros.cfg",
                 "extras/sub.cfg",
         ]
-        assert [row["macro_name"] for row in overview["klipper_macro_order"]] == [
+        klipper_macro_order = _as_rows(overview["klipper_macro_order"])
+        assert [row["macro_name"] for row in klipper_macro_order] == [
                 "PRINTER_HEAD",
                 "BEFORE_INCLUDE",
                 "SUB_MACRO",
@@ -257,8 +269,8 @@ def test_get_cfg_loading_overview_reports_macro_level_inline_include_order(tmp_p
                 "PRINTER_TAIL",
         ]
         assert overview["klipper_macro_count"] == 5
-        assert overview["klipper_macro_order"][2]["file_path"] == "extras/sub.cfg"
-        assert overview["klipper_macro_order"][2]["line_number"] == 1
+        assert klipper_macro_order[2]["file_path"] == "extras/sub.cfg"
+        assert klipper_macro_order[2]["line_number"] == 1
 
 
 def test_run_indexing_marks_only_last_duplicate_macro_active(tmp_path: Path) -> None:
@@ -593,7 +605,7 @@ def test_remove_inactive_macro_version_removes_selected_inactive_row(tmp_path: P
 
     base_row = next(row for row in load_macro_list(db_path) if row["file_path"] == "base.cfg")
 
-    result = remove_inactive_macro_version(db_path, "base.cfg", "HELLO", int(base_row["version"]))
+    result = remove_inactive_macro_version(db_path, "base.cfg", "HELLO", _as_int(base_row["version"]))
     macros = load_macro_list(db_path)
 
     assert result == {"removed": 1, "reason": "removed"}
@@ -617,7 +629,7 @@ def test_remove_inactive_macro_version_rejects_active_row(tmp_path: Path) -> Non
 
     active_row = load_macro_list(db_path)[0]
 
-    result = remove_inactive_macro_version(db_path, "printer.cfg", "HELLO", int(active_row["version"]))
+    result = remove_inactive_macro_version(db_path, "printer.cfg", "HELLO", _as_int(active_row["version"]))
 
     assert result == {"removed": 0, "reason": "not_inactive"}
 
@@ -668,7 +680,7 @@ def test_load_duplicate_macro_groups_scoped_by_printer_profile(tmp_path: Path) -
 
     assert len(scoped_p1) == 1
     assert scoped_p1[0]["macro_name"] == "HELLO"
-    assert len(scoped_p1[0]["entries"]) == 2
+    assert len(_as_rows(scoped_p1[0]["entries"])) == 2
     assert scoped_p2 == []
 
 
@@ -708,7 +720,7 @@ def test_remove_inactive_macro_version_scoped_by_printer_profile(tmp_path: Path)
         db_path,
         "base.cfg",
         "HELLO",
-        int(p1_base["version"]),
+        _as_int(p1_base["version"]),
         printer_profile_id=1,
     )
 
@@ -812,7 +824,7 @@ def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> 
 
     assert payload["format"] == "klippervault.macro-share.v1"
     assert payload["source_printer"] == {"vendor": "Voron", "model": "V2.4"}
-    assert len(payload["macros"]) == 1
+    assert len(_as_rows(payload["macros"])) == 1
 
     target_db_path = tmp_path / "target_db" / "macros.db"
     import_result = import_macro_share_payload(target_db_path, payload)
@@ -832,7 +844,7 @@ def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> 
         config_dir=target_config_dir,
         file_path=str(imported_row["file_path"]),
         macro_name="HELLO",
-        version=int(imported_row["version"]),
+        version=_as_int(imported_row["version"]),
     )
 
     assert restore_result["file_path"] == "macros.cfg"
@@ -878,7 +890,7 @@ def test_reindex_keeps_unactivated_imported_macros_marked_new(tmp_path: Path) ->
                 config_dir=target_config_dir,
                 file_path=str(hello_row["file_path"]),
                 macro_name="HELLO",
-                version=int(hello_row["version"]),
+                version=_as_int(hello_row["version"]),
         )
 
         run_indexing(target_config_dir, target_db_path)
@@ -984,7 +996,7 @@ def test_load_macro_list_attaches_true_macro_load_order_when_config_dir_given(tm
     assert by_name["AFTER_INCLUDE_MACRO"]["load_order_index"] == 3
     assert by_name["PRINTER_TAIL_MACRO"]["load_order_index"] == 4
 
-    macros_by_load_order = sorted(macros, key=lambda row: row["load_order_index"])
+    macros_by_load_order = sorted(macros, key=lambda row: _as_int(row["load_order_index"]))
     assert [row["macro_name"] for row in macros_by_load_order] == [
         "PRINTER_MACRO",
         "BEFORE_INCLUDE",
@@ -1061,9 +1073,9 @@ def test_get_cfg_loading_overview_from_source_reports_expected_order(tmp_path: P
     source = LocalConfigSource(root_dir=tmp_path)
     overview = get_cfg_loading_overview_from_source(source)
 
-    assert [row["file_path"] for row in overview["klipper_order"]] == ["printer.cfg", "macros.cfg"]
+    assert [row["file_path"] for row in _as_rows(overview["klipper_order"])] == ["printer.cfg", "macros.cfg"]
     assert overview["klipper_macro_count"] == 1
-    assert overview["klipper_macro_order"][0]["macro_name"] == "PRINT_START"
+    assert _as_rows(overview["klipper_macro_order"])[0]["macro_name"] == "PRINT_START"
 
 
 def test_get_cfg_loading_overview_from_source_preserves_duplicate_include_entries_like_klipper(tmp_path: Path) -> None:
@@ -1091,7 +1103,7 @@ def test_get_cfg_loading_overview_from_source_preserves_duplicate_include_entrie
     source = LocalConfigSource(root_dir=tmp_path)
     overview = get_cfg_loading_overview_from_source(source)
 
-    assert [row["file_path"] for row in overview["klipper_order"]] == [
+    assert [row["file_path"] for row in _as_rows(overview["klipper_order"])] == [
         "printer.cfg",
         "extras/a.cfg",
         "extras/common.cfg",
