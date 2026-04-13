@@ -45,10 +45,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -70,6 +70,8 @@ jobs:
             chmod +x appimagetool-x86_64.AppImage
             sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool
           fi
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
 
       - name: Archive packaged executable
         run: python scripts/package_executable_artifact.py --platform ${{ matrix.platform }}
@@ -106,7 +108,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: KlipperVault-${{ matrix.platform }}
           path: release/*
@@ -124,7 +126,7 @@ jobs:
 
     steps:
       - name: Download packaged artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: release-assets
           pattern: KlipperVault-*

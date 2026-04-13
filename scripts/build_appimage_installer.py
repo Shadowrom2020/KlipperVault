@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -87,6 +88,7 @@ def main() -> None:
             [appimagetool, str(appdir), str(appimage_path)],
             check=True,
             capture_output=True,
+            env={**os.environ, "APPIMAGE_EXTRACT_AND_RUN": "1"},
         )
     except subprocess.CalledProcessError as e:
         print(f"ERROR: Failed to create AppImage: {e.stderr.decode()}")
