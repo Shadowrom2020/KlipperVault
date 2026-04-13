@@ -7,11 +7,45 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from pathlib import PurePosixPath
+import logging
+from pathlib import Path, PurePosixPath
 import posixpath
 import time
 
 import paramiko  # type: ignore[import-untyped]
+
+log = logging.getLogger(__name__)
+
+
+def _known_hosts_path() -> Path:
+    """Path to the app-managed known_hosts file inside the config directory."""
+    from klipper_vault_paths import DEFAULT_CONFIG_DIR  # local import avoids circular deps
+    return Path(DEFAULT_CONFIG_DIR) / "known_hosts"
+
+
+def _ensure_host_trusted(host: str, port: int, timeout: float) -> None:
+    """Trust-On-First-Use: fetch and persist the host key when not yet known."""
+    lookup_name = f"[{host}]:{port}" if port != 22 else host
+
+    kh_path = _known_hosts_path()
+    host_keys = paramiko.HostKeys()
+    if kh_path.exists():
+        host_keys.load(str(kh_path))
+        if host_keys.lookup(lookup_name):
+            return  # already trusted
+
+    log.info("TOFU: fetching host key for %s:%d", host, port)
+    transport = paramiko.Transport((host, port))
+    try:
+        transport.start_client(timeout=max(timeout, 1.0))
+        key = transport.get_remote_server_key()
+    finally:
+        transport.close()
+
+    host_keys.add(lookup_name, key.get_name(), key)
+    kh_path.parent.mkdir(parents=True, exist_ok=True)
+    host_keys.save(str(kh_path))
+    log.info("TOFU: saved %s key for %s", key.get_name(), lookup_name)
 
 
 @dataclass
@@ -33,17 +67,26 @@ class SshTransport:
         self._config = config
 
     def _connect(self) -> paramiko.SSHClient:
+        host = self._config.host
+        port = int(self._config.port)
+        timeout = max(float(self._config.timeout_seconds), 1.0)
+
+        _ensure_host_trusted(host, port, timeout)
+
+        kh_path = _known_hosts_path()
         client = paramiko.SSHClient()
         client.load_system_host_keys()
+        if kh_path.exists():
+            client.load_host_keys(str(kh_path))
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
         auth_mode = str(self._config.auth_mode or "").strip().lower()
         secret = str(self._config.secret_value or "").strip()
         kwargs: dict[str, object] = {
-            "hostname": self._config.host,
-            "port": int(self._config.port),
+            "hostname": host,
+            "port": port,
             "username": self._config.username,
-            "timeout": max(float(self._config.timeout_seconds), 1.0),
+            "timeout": timeout,
         }
 
         if auth_mode == "password":
