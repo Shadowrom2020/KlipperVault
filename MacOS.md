@@ -1,11 +1,11 @@
-# macOS installation
+# macOS Installation
 
-This guide installs KlipperVault in remote-only `off_printer` mode on macOS.
+This guide covers source installation and running KlipperVault on macOS in remote-only off_printer mode.
 
 ## Prerequisites
 
 - macOS (Apple Silicon or Intel)
-- Python 3 with `venv` support (`python3 -m venv --help` should work)
+- Python 3 with venv support (python3 -m venv --help should work)
 - `sudo` for user-context install steps
 
 If `python3` is missing, install it first (for example with Homebrew):
@@ -14,7 +14,7 @@ If `python3` is missing, install it first (for example with Homebrew):
 brew install python
 ```
 
-## Install
+## Install From Source
 
 From repository root:
 
@@ -31,11 +31,17 @@ Installer summary:
 4. Install dependencies from `requirements.txt`
 5. Initialize runtime defaults (stored in SQLite on first app start)
 
-## Run
+## Run From Source
 
 ```bash
 ~/klippervault-venv/bin/python ./klipper_vault_gui.py
 ```
+
+Then open:
+
+- http://127.0.0.1:10090
+
+Port 10090 is fixed.
 
 ## Build a Standalone Executable
 
@@ -46,7 +52,15 @@ python3 -m pip install -r requirements.txt -r requirements-build.txt
 make bundle
 ```
 
-Build artifacts are written under `dist/` by PyInstaller. macOS app bundles must be built on macOS.
+Build artifacts are written under dist/ by PyInstaller. macOS app bundles must be built on macOS.
+
+Run the packaged app:
+
+```bash
+open dist/KlipperVault.app
+```
+
+On macOS packaged runs use native window mode (pywebview). You do not need to open a browser manually.
 
 ### Build DMG Installer (Automatic)
 
@@ -56,9 +70,9 @@ After running `make bundle`, you can optionally create a DMG disk image:
 python3 scripts/build_dmg_installer.py
 ```
 
-This generates a `.dmg` file in the `release/` directory that is ready for distribution.
+This generates a .dmg file in the release/ directory that is ready for distribution.
 
-## Uninstall
+## Uninstall Source Install
 
 Remove installed artifacts manually:
 

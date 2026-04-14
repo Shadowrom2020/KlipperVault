@@ -87,8 +87,8 @@ This happens because the app is not yet notarized by Apple. Code signing and not
 If you see "Address already in use" on startup:
 
 1. Check if another instance is running: `lsof -i :10090` (Linux/macOS) or `netstat -ano | findstr :10090` (Windows)
-2. Close the other instance or change the port in Settings (gear icon) → Web UI Port
-3. Restart KlipperVault
+2. Close the other instance using port 10090
+3. Restart KlipperVault (port 10090 is fixed)
 
 ### Database corruption or config reset
 

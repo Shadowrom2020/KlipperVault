@@ -1,14 +1,14 @@
-# Linux installation
+# Linux Installation
 
-This guide installs KlipperVault in remote-only `off_printer` mode on Linux.
+This guide covers source installation and running KlipperVault on Linux in remote-only off_printer mode.
 
 ## Prerequisites
 
 - Linux host
-- Python 3 with `venv`
-- `sudo` (recommended) for privilege escalation when needed
+- Python 3 with venv
+- sudo (recommended) for privilege escalation when needed
 
-## Install
+## Install From Source
 
 From repository root:
 
@@ -16,7 +16,7 @@ From repository root:
 sudo ./install.sh
 ```
 
-Installer summary (GUI/off-printer default):
+Installer summary:
 
 1. Detect target user
 2. Create runtime directories under `~/.config/klippervault` and `~/.local/share/klippervault`
@@ -24,29 +24,43 @@ Installer summary (GUI/off-printer default):
 4. Install dependencies from `requirements.txt`
 5. Initialize runtime defaults (stored in SQLite on first app start)
 
-## Uninstall
+## Run From Source
+
+From repository root:
+
+```bash
+~/klippervault-venv/bin/python ./klipper_vault_gui.py
+```
+
+On Linux, source and packaged runs use browser/server mode. Open:
+
+- http://127.0.0.1:10090
+
+Port 10090 is fixed.
+
+## Uninstall Source Install
 
 ```bash
 ./uninstall.sh
 ./uninstall.sh --remove-venv --remove-config --remove-db
 ```
 
-## Run
-
-```bash
-~/klippervault-venv/bin/python ./klipper_vault_gui.py
-```
-
 ## Build a Standalone Executable
-
-From repository root:
 
 ```bash
 python3 -m pip install -r requirements.txt -r requirements-build.txt
 make bundle
 ```
 
-Build artifacts are written under `dist/` by PyInstaller. Linux binaries must be built on Linux.
+Build artifacts are written under dist/ by PyInstaller. Linux binaries must be built on Linux.
+
+Run the packaged binary:
+
+```bash
+./dist/KlipperVault
+```
+
+Then open http://127.0.0.1:10090 in your browser.
 
 ### Build AppImage Installer (Optional)
 
@@ -58,4 +72,4 @@ make bundle
 python3 scripts/build_appimage_installer.py
 ```
 
-This generates an `.AppImage` file in the `release/` directory. See [AppImageKit](https://github.com/AppImage/AppImageKit) for installation instructions.
+This generates an .AppImage file in the release/ directory. See [AppImageKit](https://github.com/AppImage/AppImageKit) for installation instructions.

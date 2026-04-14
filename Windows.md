@@ -1,22 +1,22 @@
-# Windows installation (Windows 10 and up)
+# Windows Installation (Windows 10 and up)
 
-This guide installs KlipperVault in remote-only `off_printer` mode on Windows 10+.
+This guide covers source installation and running KlipperVault on Windows in remote-only off_printer mode.
 
 ## Prerequisites
 
 - Windows 10 or newer
-- Python 3 with `venv` support
+- Python 3 with venv support
 - PowerShell or Command Prompt
 
 If Python is not installed, download it from:
 
 - https://www.python.org/downloads/windows/
 
-During installation, enable "Add Python to PATH".
+During installation, enable Add Python to PATH.
 
-## Install
+## Install From Source
 
-From repository root in Command Prompt:
+From repository root in Command Prompt or PowerShell:
 
 ```bat
 install_windows.bat
@@ -30,11 +30,17 @@ Installer summary:
 4. Install dependencies from `requirements.txt`
 5. Initialize runtime defaults (stored in SQLite on first app start)
 
-## Run
+## Run From Source
 
 ```bat
-%USERPROFILE%\\klippervault-venv\\Scripts\\python.exe klipper_vault_gui.py
+%USERPROFILE%\klippervault-venv\Scripts\python.exe klipper_vault_gui.py
 ```
+
+Then open:
+
+- http://127.0.0.1:10090
+
+Port 10090 is fixed.
 
 ## Build a Standalone Executable
 
@@ -45,7 +51,15 @@ py -3 -m pip install -r requirements.txt -r requirements-build.txt
 py -3 scripts\build_executable.py
 ```
 
-Build artifacts are written under `dist\` by PyInstaller. Windows executables must be built on Windows.
+Build artifacts are written under dist\ by PyInstaller. Windows executables must be built on Windows.
+
+Run the packaged binary:
+
+```bat
+dist\KlipperVault.exe
+```
+
+On Windows packaged runs use native window mode (pywebview). You do not need to open a browser manually.
 
 ### Build Inno Setup Installer (Optional)
 
@@ -57,14 +71,14 @@ py -3 scripts\build_executable.py
 py -3 scripts\build_msi_installer.py
 ```
 
-This generates a `.exe` setup file in the `release\` directory. The installer includes desktop and Start Menu shortcuts.
+This generates a .exe setup file in the release\ directory. The installer includes desktop and Start Menu shortcuts.
 
-## Uninstall
+## Uninstall Source Install
 
 Remove installed artifacts manually:
 
 ```bat
-rmdir /s /q "%USERPROFILE%\\klippervault-venv"
-rmdir /s /q "%APPDATA%\\KlipperVault"
-del /q "%LOCALAPPDATA%\\KlipperVault\\klipper_macros.db"
+rmdir /s /q "%USERPROFILE%\klippervault-venv"
+rmdir /s /q "%APPDATA%\KlipperVault"
+del /q "%LOCALAPPDATA%\KlipperVault\klipper_macros.db"
 ```
