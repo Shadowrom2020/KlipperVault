@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,8 +35,10 @@ def main() -> None:
         print(f"ERROR: Built executable not found at {DIST_DIR}")
         sys.exit(1)
     
-    # For local builds, try to find iscc.exe in common paths
+    # Find iscc.exe: check PATH first, then well-known installation directories
+    _which = shutil.which("iscc")
     iscc_paths = [
+        Path(_which) if _which else None,
         Path("C:/Program Files (x86)/Inno Setup 6/iscc.exe"),
         Path("C:/Program Files/Inno Setup 6/iscc.exe"),
         Path(os.environ.get("INNO_SETUP_PATH", "")) / "iscc.exe" if os.environ.get("INNO_SETUP_PATH") else None,

@@ -86,17 +86,14 @@ jobs:
       - name: Build Windows installer (Windows only)
         if: runner.os == 'Windows'
         run: |
-          # Try to install Inno Setup if not already present
+          # Install Inno Setup if not already present
+          # NOTE: choco does not refresh the current session's PATH, so we
+          # cannot gate on Get-Command iscc after installation. The Python
+          # script searches known installation paths directly.
           if (!(Get-Command iscc -ErrorAction SilentlyContinue)) {
             choco install innosetup --yes
           }
-          
-          # Check if Inno Setup is available and build if so
-          if (Get-Command iscc -ErrorAction SilentlyContinue) {
-            python scripts/build_msi_installer.py
-          } else {
-            Write-Host "Inno Setup not found, skipping installer build"
-          }
+          python scripts/build_msi_installer.py
         shell: pwsh
         continue-on-error: true
 
