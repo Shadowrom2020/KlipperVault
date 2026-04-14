@@ -82,6 +82,7 @@ def build_ui(app_version: str = "unknown") -> None:
         last_activity_monotonic=time.monotonic(),
         duplicate_compare_view=MacroCompareView(),
     )
+    _print_state_refresh_inflight = False
 
     # ── Top toolbar ──────────────────────────────────────────────────────────
     with ui.header().classes("items-center gap-2 px-4 py-2 bg-grey-9 flex-wrap"):
@@ -311,6 +312,13 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         _set_off_printer_profile_state(True, profile_name)
+        if state.printer_state == "unknown" and state.off_printer_profile_label is not None:
+            detail = str(state.printer_status_message or "").strip()
+            offline_text = t("Printer offline")
+            if detail:
+                offline_text = t("Printer offline: {detail}", detail=detail)
+            state.off_printer_profile_label.classes(replace="text-xs text-negative")
+            state.off_printer_profile_label.set_text(offline_text)
         if not was_ready and state.off_printer_profile_ready:
             _maybe_run_deferred_startup_scan("printer connection became ready")
 
@@ -589,7 +597,7 @@ def build_ui(app_version: str = "unknown") -> None:
         settings_ref_input.set_value(str(vault_cfg.online_update_ref or "").strip())
         settings_developer_toggle.set_value(bool(vault_cfg.developer))
         settings_error_label.set_text("")
-        settings_info_label.set_text(t("Changing UI language or developer mode requires app restart."))
+        settings_info_label.set_text(t("UI language changes apply immediately. Developer mode still requires app restart."))
         app_settings_dialog.open()
 
     def save_app_settings_dialog() -> None:
@@ -614,10 +622,8 @@ def build_ui(app_version: str = "unknown") -> None:
             settings_error_label.set_text(t("Online update reference is required."))
             return
 
-        restart_required = (
-            str(vault_cfg.ui_language or "en").strip().lower() != ui_language
-            or bool(vault_cfg.developer) != developer_mode
-        )
+        language_changed = str(vault_cfg.ui_language or "en").strip().lower() != ui_language
+        restart_required = bool(vault_cfg.developer) != developer_mode
 
         new_cfg = VaultConfig(
             version_history_size=version_history_size,
@@ -648,6 +654,12 @@ def build_ui(app_version: str = "unknown") -> None:
         service.set_version_history_size(vault_cfg.version_history_size)
 
         app_settings_dialog.close()
+        if language_changed:
+            set_language(vault_cfg.ui_language)
+            # Rebuild all translated labels in the active client without restarting backend runtime.
+            ui.run_javascript("window.location.reload()")
+            return
+
         if restart_required:
             state.status_label.set_text(t("Settings saved. Restart KlipperVault to apply all changes."))
         else:
@@ -2546,6 +2558,7 @@ def build_ui(app_version: str = "unknown") -> None:
         """Toggle UI mutation lock while printer is actively printing."""
         state.printer_is_printing = locked
         state.printer_state = moonraker_state
+        state.printer_status_message = str(moonraker_message or "")
         state.printer_is_busy = moonraker_state not in {"standby", "ready", "complete", "cancelled"}
         local_actions_enabled = _remote_actions_available()
 
@@ -2574,6 +2587,18 @@ def build_ui(app_version: str = "unknown") -> None:
         _refresh_reload_buttons()
         _refresh_save_config_button()
 
+        if off_printer_mode_enabled and state.off_printer_profile_ready and state.off_printer_profile_label is not None:
+            detail = str(moonraker_message or "").strip()
+            if moonraker_state == "unknown":
+                offline_text = t("Printer offline")
+                if detail:
+                    offline_text = t("Printer offline: {detail}", detail=detail)
+                state.off_printer_profile_label.classes(replace="text-xs text-negative")
+                state.off_printer_profile_label.set_text(offline_text)
+            else:
+                state.off_printer_profile_label.classes(replace="text-xs text-positive")
+                state.off_printer_profile_label.set_text(state.off_printer_profile_status_text)
+
         if locked:
             status_label.set_text(
                 t(
@@ -2593,6 +2618,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def refresh_print_state() -> None:
         """Poll Moonraker printer state and apply UI lock policy."""
+        nonlocal _print_state_refresh_inflight
         if off_printer_mode_enabled and not state.off_printer_profile_ready:
             _set_printer_connecting_modal(False)
             set_print_lock(
@@ -2601,21 +2627,52 @@ def build_ui(app_version: str = "unknown") -> None:
                 moonraker_message=t("Off-printer mode active but no printer connection is ready."),
             )
             return
+
+        if _print_state_refresh_inflight:
+            return
+
+        async def _refresh_print_state_async() -> None:
+            """Run Moonraker status query off the UI path to keep GUI responsive."""
+            nonlocal _print_state_refresh_inflight
+            _print_state_refresh_inflight = True
+            try:
+                status = await asyncio.to_thread(service.query_printer_status, 1.5)
+                _set_printer_connecting_modal(False)
+            except Exception as exc:
+                _set_printer_connecting_modal(True, str(exc))
+                status = {
+                    "is_printing": False,
+                    "state": "unknown",
+                    "message": str(exc),
+                }
+            finally:
+                _print_state_refresh_inflight = False
+
+            set_print_lock(
+                locked=bool(status.get("is_printing", False)),
+                moonraker_state=str(status.get("state", "unknown")),
+                moonraker_message=str(status.get("message", "")),
+            )
+
         try:
-            status = service.query_printer_status(timeout=1.5)
-            _set_printer_connecting_modal(False)
-        except Exception as exc:
-            _set_printer_connecting_modal(True, str(exc))
-            status = {
-                "is_printing": False,
-                "state": "unknown",
-                "message": str(exc),
-            }
-        set_print_lock(
-            locked=bool(status.get("is_printing", False)),
-            moonraker_state=str(status.get("state", "unknown")),
-            moonraker_message=str(status.get("message", "")),
-        )
+            asyncio.create_task(_refresh_print_state_async())
+        except RuntimeError:
+            # Fallback for contexts without a running loop (e.g., early startup paths).
+            try:
+                status = service.query_printer_status(timeout=1.5)
+                _set_printer_connecting_modal(False)
+            except Exception as exc:
+                _set_printer_connecting_modal(True, str(exc))
+                status = {
+                    "is_printing": False,
+                    "state": "unknown",
+                    "message": str(exc),
+                }
+            set_print_lock(
+                locked=bool(status.get("is_printing", False)),
+                moonraker_state=str(status.get("state", "unknown")),
+                moonraker_message=str(status.get("message", "")),
+            )
 
     def test_off_printer_profile_connection() -> None:
         """Run active SSH profile connectivity test and report status."""

@@ -52,6 +52,7 @@ class UIState:
     printer_is_printing: bool = False
     printer_is_busy: bool = True
     printer_state: str = "unknown"
+    printer_status_message: str = ""
     restart_required: bool = False
     dynamic_reload_required: bool = False
     print_lock_popup_open: bool = False

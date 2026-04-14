@@ -249,9 +249,7 @@ def main() -> None:
 
     from klipper_macro_gui import build_ui
     from klipper_vault_config import _FIXED_WEB_UI_PORT
-    from klipper_vault_config import load_or_create as _load_vault_config
     from klipper_vault_i18n import t
-    from klipper_vault_paths import DEFAULT_CONFIG_DIR, DEFAULT_DB_PATH
     from nicegui import ui
 
     _patch_nicegui_disconnect_signature()
@@ -264,9 +262,6 @@ def main() -> None:
         os.environ["NICEGUI_AUTORELOAD"] = "False"
         os.environ["NICEGUI_RELOAD"] = "no"
 
-    config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
-    db_path = Path(DEFAULT_DB_PATH).expanduser().resolve()
-    vault_cfg = _load_vault_config(config_dir, db_path)
     favicon_path = _bundle_root() / "assets" / "favicon.svg"
     app_version = _load_app_version()
 
@@ -285,7 +280,7 @@ def main() -> None:
         show=False,
         native=use_native_window,
         reload=False,
-        root=build_ui_root if _is_frozen_runtime() else None,
+        root=build_ui_root,
     )
 
 
