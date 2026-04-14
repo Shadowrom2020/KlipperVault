@@ -7,6 +7,7 @@ services:
     restart: unless-stopped
     environment:
       KLIPPERVAULT_AUTO_UPDATE_VENV: "0"
+      KLIPPERVAULT_SERVER_MODE: "1"
     ports:
       - "10090:10090"
     volumes:

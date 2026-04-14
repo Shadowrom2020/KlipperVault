@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Jürgen Herrmann
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Primary remote-only GUI launcher for KlipperVault."""
+"""Primary GUI launcher for KlipperVault."""
 
 from __future__ import annotations
 
 import hashlib
 import inspect
 import os
+import platform
 import subprocess  # nosec B404
 import sys
 from pathlib import Path
@@ -29,6 +30,20 @@ if sys.stderr is None:
 def _is_frozen_runtime() -> bool:
     """Return True when running from a packaged executable."""
     return bool(getattr(sys, "frozen", False))
+
+
+def _is_server_mode() -> bool:
+    """Return True when runtime is explicitly configured for server mode."""
+    raw = os.environ.get("KLIPPERVAULT_SERVER_MODE", "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _use_native_window() -> bool:
+    """Use desktop native window only in packaged non-server local runtimes."""
+    # Linux native windows require system webview libraries that are not bundled.
+    if platform.system() == "Linux":
+        return False
+    return _is_frozen_runtime() and not _is_server_mode()
 
 
 def _bundle_root() -> Path:
@@ -233,6 +248,7 @@ def main() -> None:
     _sync_venv_requirements_if_needed()
 
     from klipper_macro_gui import build_ui
+    from klipper_vault_config import _FIXED_WEB_UI_PORT
     from klipper_vault_config import load_or_create as _load_vault_config
     from klipper_vault_i18n import t
     from klipper_vault_paths import DEFAULT_CONFIG_DIR, DEFAULT_DB_PATH
@@ -258,13 +274,16 @@ def main() -> None:
         """Wrap UI building in a root function to prevent NiceGUI script mode detection."""
         build_ui(app_version=app_version)
 
+    use_native_window = _use_native_window()
+
     ui.run(
-        host="0.0.0.0",  # nosec B104
-        port=vault_cfg.port,
+        host="127.0.0.1" if use_native_window else "0.0.0.0",  # nosec B104
+        port=_FIXED_WEB_UI_PORT,
         title=t("Klipper Vault"),
         dark=True,
         favicon=favicon_path,
-        show=_is_frozen_runtime(),
+        show=False,
+        native=use_native_window,
         reload=False,
         root=build_ui_root if _is_frozen_runtime() else None,
     )

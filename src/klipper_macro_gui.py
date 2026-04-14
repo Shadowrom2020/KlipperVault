@@ -460,11 +460,6 @@ def build_ui(app_version: str = "unknown") -> None:
             .props("outlined dense")
             .classes("w-full mt-2")
         )
-        settings_port_input = (
-            ui.number(label=t("Web UI port"), value=vault_cfg.port)
-            .props("outlined dense")
-            .classes("w-full")
-        )
         settings_language_select = (
             ui.select(
                 options={"en": "English", "de": "Deutsch", "fr": "Francais"},
@@ -588,20 +583,18 @@ def build_ui(app_version: str = "unknown") -> None:
     def open_app_settings_dialog() -> None:
         """Open settings dialog populated from current persisted app config."""
         settings_version_history_input.set_value(int(vault_cfg.version_history_size))
-        settings_port_input.set_value(int(vault_cfg.port))
         settings_language_select.set_value(str(vault_cfg.ui_language or "en").strip().lower() or "en")
         settings_repo_url_input.set_value(str(vault_cfg.online_update_repo_url or "").strip())
         settings_manifest_input.set_value(str(vault_cfg.online_update_manifest_path or "").strip())
         settings_ref_input.set_value(str(vault_cfg.online_update_ref or "").strip())
         settings_developer_toggle.set_value(bool(vault_cfg.developer))
         settings_error_label.set_text("")
-        settings_info_label.set_text(t("Changing port, UI language, or developer mode requires app restart."))
+        settings_info_label.set_text(t("Changing UI language or developer mode requires app restart."))
         app_settings_dialog.open()
 
     def save_app_settings_dialog() -> None:
         """Validate and persist app settings in the SQLite configuration store."""
         version_history_size = _to_int(settings_version_history_input.value, default=0)
-        port_value = _to_int(settings_port_input.value, default=0)
         ui_language = str(settings_language_select.value or "").strip().lower()
         repo_url = str(settings_repo_url_input.value or "").strip()
         manifest_path = str(settings_manifest_input.value or "").strip()
@@ -610,9 +603,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
         if version_history_size < 1:
             settings_error_label.set_text(t("Version history size must be at least 1."))
-            return
-        if port_value < 1 or port_value > 65535:
-            settings_error_label.set_text(t("Port must be between 1 and 65535."))
             return
         if ui_language not in {"en", "de", "fr"}:
             settings_error_label.set_text(t("Unsupported UI language."))
@@ -625,14 +615,13 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         restart_required = (
-            int(vault_cfg.port) != int(port_value)
-            or str(vault_cfg.ui_language or "en").strip().lower() != ui_language
+            str(vault_cfg.ui_language or "en").strip().lower() != ui_language
             or bool(vault_cfg.developer) != developer_mode
         )
 
         new_cfg = VaultConfig(
             version_history_size=version_history_size,
-            port=port_value,
+            port=10090,
             runtime_mode="off_printer",
             ui_language=ui_language,
             printer_vendor=str(vault_cfg.printer_vendor or "").strip(),
@@ -651,7 +640,6 @@ def build_ui(app_version: str = "unknown") -> None:
 
         # Update in-memory values so runtime operations pick up new settings immediately.
         vault_cfg.version_history_size = int(new_cfg.version_history_size)
-        vault_cfg.port = int(new_cfg.port)
         vault_cfg.ui_language = str(new_cfg.ui_language)
         vault_cfg.online_update_repo_url = str(new_cfg.online_update_repo_url)
         vault_cfg.online_update_manifest_path = str(new_cfg.online_update_manifest_path)

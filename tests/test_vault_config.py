@@ -91,7 +91,7 @@ def test_save_persists_settings_in_db(tmp_path: Path) -> None:
 
     config = load_or_create(tmp_path, db_path)
     assert config.version_history_size == 9
-    assert config.port == 12000
+    assert config.port == 10090
     assert config.ui_language == "fr"
     assert config.printer_vendor == "Voron"
     assert config.printer_model == "Trident"

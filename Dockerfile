@@ -10,7 +10,7 @@ WORKDIR /app
 
 RUN useradd --create-home --home-dir /home/klippervault --shell /usr/sbin/nologin klippervault
 
-COPY requirements.txt requirements-printer.txt ./
+COPY requirements.txt ./
 RUN python3 -m venv "$VIRTUAL_ENV" \
     && "$VIRTUAL_ENV/bin/pip" install --no-cache-dir --upgrade pip \
     && "$VIRTUAL_ENV/bin/pip" install --no-cache-dir -r requirements.txt

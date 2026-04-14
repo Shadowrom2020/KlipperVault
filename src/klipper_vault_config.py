@@ -12,6 +12,7 @@ import time
 from klipper_vault_db import open_sqlite_connection
 
 _SETTINGS_TABLE = "vault_settings"
+_FIXED_WEB_UI_PORT = 10090
 _DEFAULT_ONLINE_UPDATE_REPO_URL = "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
 _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
 _DEFAULT_ONLINE_UPDATE_REF = "main"
@@ -19,7 +20,7 @@ _DEFAULT_ONLINE_UPDATE_REF = "main"
 @dataclass
 class VaultConfig:
     version_history_size: int = 5
-    port: int = 10090
+    port: int = _FIXED_WEB_UI_PORT
     runtime_mode: str = "off_printer"
     ui_language: str = "en"
     printer_vendor: str = ""
@@ -73,9 +74,7 @@ def _default_db_path(config_dir: Path) -> Path:
 def _normalized_config(config: VaultConfig) -> VaultConfig:
     """Return one normalized configuration payload with clamped defaults."""
     version_history_size = max(int(config.version_history_size), 1)
-    port = int(config.port)
-    if port < 1 or port > 65535:
-        port = 10090
+    port = _FIXED_WEB_UI_PORT
     ui_language = str(config.ui_language or "en").strip().lower() or "en"
     runtime_mode = "off_printer"
     printer_vendor = str(config.printer_vendor or "").strip()
@@ -170,10 +169,11 @@ def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
     port = _read_int(
         rows,
         "port",
-        default=10090,
+        default=_FIXED_WEB_UI_PORT,
         minimum=1,
         maximum=65535,
     )
+    port = _FIXED_WEB_UI_PORT
     ui_language = _read_str(
         rows,
         "ui_language",

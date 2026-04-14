@@ -10,6 +10,7 @@ from PyInstaller.utils.hooks import collect_all
 project_root = Path(SPECPATH)
 
 nicegui_datas, nicegui_binaries, nicegui_hiddenimports = collect_all("nicegui")
+webview_datas, webview_binaries, webview_hiddenimports = collect_all("webview")
 keyring_datas, keyring_binaries, keyring_hiddenimports = collect_all("keyring")
 paramiko_datas, paramiko_binaries, paramiko_hiddenimports = collect_all("paramiko")
 
@@ -17,10 +18,10 @@ datas = [
     (str(project_root / "VERSION"), "."),
     (str(project_root / "assets" / "favicon.svg"), "assets"),
     (str(project_root / "src" / "locales"), "locales"),
-] + nicegui_datas + keyring_datas + paramiko_datas
+] + nicegui_datas + webview_datas + keyring_datas + paramiko_datas
 
-binaries = nicegui_binaries + keyring_binaries + paramiko_binaries
-hiddenimports = nicegui_hiddenimports + keyring_hiddenimports + paramiko_hiddenimports
+binaries = nicegui_binaries + webview_binaries + keyring_binaries + paramiko_binaries
+hiddenimports = nicegui_hiddenimports + webview_hiddenimports + keyring_hiddenimports + paramiko_hiddenimports
 
 
 a = Analysis(
