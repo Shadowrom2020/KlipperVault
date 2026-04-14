@@ -1110,7 +1110,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
-        perform_index("macro restore")
+        perform_index("macro restore", sync_remote=False)
 
     state.viewer.set_restore_version_handler(restore_macro_version_from_viewer)
 
@@ -1146,7 +1146,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
-        perform_index("macro edit")
+        perform_index("macro edit", sync_remote=False)
 
     state.viewer.set_save_macro_edit_handler(save_macro_edit_from_viewer)
 
@@ -1187,7 +1187,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
-        perform_index("macro delete")
+        perform_index("macro delete", sync_remote=False)
 
     def delete_macro_source_from_viewer(version_row: dict) -> None:
         """Open confirmation dialog before deleting selected macro from cfg."""
@@ -1485,7 +1485,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _mark_local_changes_pending()
         touched_files = [str(path) for path in touched_files_raw] if isinstance(touched_files_raw, list) else []
         _mark_reload_required(is_dynamic=_files_include_dynamic_macros(touched_files))
-        perform_index("duplicate wizard")
+        perform_index("duplicate wizard", sync_remote=False)
 
     def render_macro_list() -> None:
         """Render the left macro list with filters, badges, and selection state."""
@@ -1731,7 +1731,7 @@ def build_ui(app_version: str = "unknown") -> None:
             )
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=False)
-        perform_index("backup restore")
+        perform_index("backup restore", sync_remote=False)
 
     def perform_delete_backup() -> None:
         """Delete selected backup and refresh the backup list."""
@@ -1793,7 +1793,7 @@ def build_ui(app_version: str = "unknown") -> None:
         render_macro_list()
         render_backup_list()
 
-    def perform_index(trigger: str) -> None:
+    def perform_index(trigger: str, *, sync_remote: bool = True) -> None:
         """Run cfg indexing and refresh UI when complete."""
         if state.is_indexing:
             return
@@ -1810,7 +1810,7 @@ def build_ui(app_version: str = "unknown") -> None:
             state.status_label.set_text(t("Scanning macros ({trigger})...", trigger=trigger))
             result = _run_with_file_operation_modal(
                 t("Scanning and parsing cfg files"),
-                lambda: service.index(progress_callback=_set_file_operation_progress),
+                lambda: service.index(progress_callback=_set_file_operation_progress, sync_remote=sync_remote),
             )
             status_text = t(
                 "Stored {inserted} new version(s), {unchanged} unchanged - {scanned} .cfg files scanned",
@@ -2445,7 +2445,7 @@ def build_ui(app_version: str = "unknown") -> None:
         # Re-index immediately only when every imported update was activated.
         # Otherwise keep imported-but-not-activated rows visible as inactive.
         if activated > 0 and activated == imported:
-            perform_index("online updates")
+            perform_index("online updates", sync_remote=False)
         else:
             refresh_data()
 

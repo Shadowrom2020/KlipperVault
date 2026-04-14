@@ -1289,11 +1289,16 @@ class MacroGuiService:
             notification=notification_text,
         ).as_dict()
 
-    def index(self, progress_callback: Callable[[str, int, int], None] | None = None) -> dict[str, object]:
+    def index(
+        self,
+        progress_callback: Callable[[str, int, int], None] | None = None,
+        *,
+        sync_remote: bool = True,
+    ) -> dict[str, object]:
         """Run config indexing with configured retention settings."""
         sync_result: dict[str, object] | None = None
         runtime_config_dir = self._resolve_runtime_config_dir()
-        if self._runtime_mode == "off_printer":
+        if self._runtime_mode == "off_printer" and sync_remote:
             sync_result = self.sync_active_remote_cfg_to_local(
                 prune_missing=True,
                 progress_callback=progress_callback,

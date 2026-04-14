@@ -259,6 +259,28 @@ def test_off_printer_index_syncs_remote_before_index(tmp_path: Path) -> None:
     assert (runtime_dir / "macros.cfg").exists()
 
 
+def test_off_printer_index_can_skip_remote_sync(tmp_path: Path) -> None:
+    service = MacroGuiService(
+        db_path=tmp_path / "vault.db",
+        config_dir=tmp_path / "config",
+        version_history_size=5,
+        runtime_mode="off_printer",
+    )
+
+    with (
+        patch("klipper_macro_gui_service.MacroGuiService.sync_active_remote_cfg_to_local") as sync_mock,
+        patch(
+            "klipper_macro_gui_service.run_indexing_from_source",
+            return_value={"cfg_files_scanned": 1, "macros_inserted": 1, "macros_unchanged": 0},
+        ),
+    ):
+        result = service.index(sync_remote=False)
+
+    sync_mock.assert_not_called()
+    assert "remote_sync" not in result
+    assert result["cfg_files_scanned"] == 1
+
+
 def test_off_printer_cfg_loading_overview_reads_active_remote_source(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
