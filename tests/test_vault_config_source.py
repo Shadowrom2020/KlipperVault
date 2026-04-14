@@ -62,6 +62,17 @@ def test_local_config_source_rejects_path_escape(tmp_path: Path) -> None:
         source.read_text("../escape.cfg")
 
 
+def test_local_config_source_accepts_windows_style_relative_path(tmp_path: Path) -> None:
+    root = tmp_path / "cfg"
+    root.mkdir(parents=True, exist_ok=True)
+    source = LocalConfigSource(root_dir=root)
+
+    source.write_text("macros\\win_path.cfg", "[gcode_macro WIN_PATH]\n")
+
+    assert (root / "macros" / "win_path.cfg").exists()
+    assert "WIN_PATH" in source.read_text("macros\\win_path.cfg")
+
+
 def test_ssh_config_source_relative_path_mapping() -> None:
     transport = _FakeTransport()
     source = SshConfigSource(transport=cast(SshTransport, transport), remote_root="/remote/config")

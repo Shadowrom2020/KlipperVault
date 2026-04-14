@@ -41,9 +41,9 @@ class LocalConfigSource(ConfigSource):
 		rel = str(relative_path or "").strip().replace("\\", "/").lstrip("/")
 		target = (self.root_dir / rel).resolve()
 		root = self.root_dir.resolve()
-		target_str = str(target)
-		root_str = str(root)
-		if target_str != root_str and not target_str.startswith(root_str + "/"):
+		try:
+			target.relative_to(root)
+		except ValueError:
 			raise ValueError(f"Path escapes config root: {relative_path}")
 		return target
 
