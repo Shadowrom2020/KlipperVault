@@ -14,6 +14,7 @@ release/
 .venv/
 venv/
 env/
+build_env/
 
 # Database
 *.db
@@ -31,3 +32,8 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Tool caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
