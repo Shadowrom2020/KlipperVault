@@ -2556,6 +2556,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def set_print_lock(locked: bool, moonraker_state: str, moonraker_message: str) -> None:
         """Toggle UI mutation lock while printer is actively printing."""
+        _prev_printer_state = state.printer_state
         state.printer_is_printing = locked
         state.printer_state = moonraker_state
         state.printer_status_message = str(moonraker_message or "")
@@ -2609,12 +2610,22 @@ def build_ui(app_version: str = "unknown") -> None:
         else:
             if off_printer_mode_enabled and not state.off_printer_profile_ready:
                 status_label.set_text(t("Ready (waiting for active printer connection)."))
-                return
-            if moonraker_state == "unknown":
+            elif moonraker_state == "unknown":
                 status_label.set_text(t("Ready (Moonraker status unknown)."))
             else:
                 status_label.set_text(t("Ready (printer state: {state}).", state=moonraker_state))
             _maybe_run_deferred_startup_scan("printer became idle")
+
+        # Detect printer coming back online after being unreachable and auto-rescan.
+        if moonraker_state != "unknown":
+            if (
+                _prev_printer_state == "unknown"
+                and state.printer_seen_connected
+                and not locked
+                and not state.is_indexing
+            ):
+                perform_index("printer came online")
+            state.printer_seen_connected = True
 
     def refresh_print_state() -> None:
         """Poll Moonraker printer state and apply UI lock policy."""
