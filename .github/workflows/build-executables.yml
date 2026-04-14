@@ -1,9 +1,6 @@
 name: Build Executables
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 concurrency:

@@ -16,6 +16,15 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent
 
+# On Windows, PyInstaller's windowed (console=False) mode sets sys.stdout and
+# sys.stderr to None.  Uvicorn's DefaultFormatter calls stream.isatty() during
+# logging setup, which raises AttributeError: 'NoneType' has no attribute 'isatty'.
+# Redirect both streams to devnull before any library imports touch them.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: WPS515
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")  # noqa: WPS515
+
 
 def _is_frozen_runtime() -> bool:
     """Return True when running from a packaged executable."""

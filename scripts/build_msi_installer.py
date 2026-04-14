@@ -54,12 +54,24 @@ def main() -> None:
     output_dir = RELEASE_DIR / "inno-setup-output"
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    app_exe_path = DIST_DIR / "KlipperVault.exe"
     setup_env = os.environ.copy()
     setup_env["KV_VERSION"] = version
-    setup_env["KV_APP_DIR"] = str(DIST_DIR / "KlipperVault.exe")
+    setup_env["KV_APP_DIR"] = str(app_exe_path)
     setup_env["KV_OUTPUT_DIR"] = str(output_dir)
-    
-    subprocess.run([str(iscc), str(ISS_TEMPLATE)], env=setup_env, check=True)
+
+    # Inno Setup preprocessor symbols must be passed via /D flags.
+    subprocess.run(
+        [
+            str(iscc),
+            f"/DKV_VERSION={version}",
+            f"/DKV_APP_DIR={app_exe_path}",
+            f"/DKV_OUTPUT_DIR={output_dir}",
+            str(ISS_TEMPLATE),
+        ],
+        env=setup_env,
+        check=True,
+    )
     
     msi_file = output_dir / f"KlipperVault-{version}-windows-x64.exe"
     if msi_file.exists():
