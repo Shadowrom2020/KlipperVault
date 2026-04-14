@@ -132,4 +132,5 @@ jobs:
       - name: Publish release asset bundle
         uses: softprops/action-gh-release@v3
         with:
+          draft: true
           files: release-assets/**/*
