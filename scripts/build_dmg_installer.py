@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,14 @@ def _read_version() -> str:
 
 def main() -> None:
     """Build macOS DMG installer."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--platform",
+        default="macos",
+        help="Platform suffix used in the DMG filename (e.g. macos-x64, macos-arm64)",
+    )
+    args = parser.parse_args()
+
     version = _read_version()
     
     app_bundle = DIST_DIR / "KlipperVault.app"
@@ -31,7 +40,7 @@ def main() -> None:
         sys.exit(1)
     
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    dmg_path = RELEASE_DIR / f"KlipperVault-{version}-macos.dmg"
+    dmg_path = RELEASE_DIR / f"KlipperVault-{version}-{args.platform}.dmg"
     
     # Create temporary staging directory
     staging = RELEASE_DIR / "dmg-staging"

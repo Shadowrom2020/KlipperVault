@@ -75,7 +75,7 @@ jobs:
 
       - name: Build macOS DMG installer (macOS only)
         if: runner.os == 'macOS'
-        run: python scripts/build_dmg_installer.py
+        run: python scripts/build_dmg_installer.py --platform ${{ matrix.platform }}
         continue-on-error: true
 
       - name: Build Linux AppImage installer (Linux only)
@@ -108,7 +108,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: KlipperVault-${{ matrix.platform }}
-          path: release/*
+          path: release/**/*
           if-no-files-found: warn
 
   publish-release:
@@ -132,4 +132,4 @@ jobs:
       - name: Publish release asset bundle
         uses: softprops/action-gh-release@v3
         with:
-          files: release-assets/*
+          files: release-assets/**/*
