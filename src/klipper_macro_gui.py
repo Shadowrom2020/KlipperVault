@@ -436,13 +436,21 @@ def build_ui(app_version: str = "unknown") -> None:
         file_operation_progress.value = value
         file_operation_progress.update()
 
-    def _run_with_file_operation_modal(title_text: str, action):
-        """Run one sync file operation while showing a blocking progress modal."""
+    async def _run_with_file_operation_modal(title_text: str, action):
+        """Run a blocking file operation in a thread while showing a progress modal.
+
+        Opening the dialog and then immediately `await asyncio.sleep(0)` lets
+        the NiceGUI event loop flush the dialog-open message to the browser
+        before the worker thread starts, so the user actually sees the modal.
+        The blocking `action` runs in a thread-pool executor so the event loop
+        (and therefore the browser WebSocket) stays responsive throughout.
+        """
         file_operation_title.set_text(str(title_text))
         _set_file_operation_progress("", 0, 1)
         file_operation_dialog.open()
+        await asyncio.sleep(0)  # yield so the browser renders the dialog
         try:
-            return action()
+            return await asyncio.to_thread(action)
         finally:
             file_operation_dialog.close()
 
@@ -970,7 +978,7 @@ def build_ui(app_version: str = "unknown") -> None:
     def _sync_after_remote_conflict() -> None:
         """Close conflict dialog and run a one-click recovery sync/index."""
         remote_conflict_dialog.close()
-        perform_index("remote conflict recovery")
+        asyncio.create_task(perform_index("remote conflict recovery"))
 
     sync_after_conflict_button.on_click(_sync_after_remote_conflict)
 
@@ -1110,7 +1118,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
-        perform_index("macro restore", sync_remote=False)
+        asyncio.create_task(perform_index("macro restore", sync_remote=False))
 
     state.viewer.set_restore_version_handler(restore_macro_version_from_viewer)
 
@@ -1146,7 +1154,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
-        perform_index("macro edit", sync_remote=False)
+        asyncio.create_task(perform_index("macro edit", sync_remote=False))
 
     state.viewer.set_save_macro_edit_handler(save_macro_edit_from_viewer)
 
@@ -1187,7 +1195,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
-        perform_index("macro delete", sync_remote=False)
+        asyncio.create_task(perform_index("macro delete", sync_remote=False))
 
     def delete_macro_source_from_viewer(version_row: dict) -> None:
         """Open confirmation dialog before deleting selected macro from cfg."""
@@ -1485,7 +1493,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _mark_local_changes_pending()
         touched_files = [str(path) for path in touched_files_raw] if isinstance(touched_files_raw, list) else []
         _mark_reload_required(is_dynamic=_files_include_dynamic_macros(touched_files))
-        perform_index("duplicate wizard", sync_remote=False)
+        asyncio.create_task(perform_index("duplicate wizard", sync_remote=False))
 
     def render_macro_list() -> None:
         """Render the left macro list with filters, badges, and selection state."""
@@ -1731,7 +1739,7 @@ def build_ui(app_version: str = "unknown") -> None:
             )
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=False)
-        perform_index("backup restore", sync_remote=False)
+        asyncio.create_task(perform_index("backup restore", sync_remote=False))
 
     def perform_delete_backup() -> None:
         """Delete selected backup and refresh the backup list."""
@@ -1793,7 +1801,7 @@ def build_ui(app_version: str = "unknown") -> None:
         render_macro_list()
         render_backup_list()
 
-    def perform_index(trigger: str, *, sync_remote: bool = True) -> None:
+    async def perform_index(trigger: str, *, sync_remote: bool = True) -> None:
         """Run cfg indexing and refresh UI when complete."""
         if state.is_indexing:
             return
@@ -1808,7 +1816,7 @@ def build_ui(app_version: str = "unknown") -> None:
         state.is_indexing = True
         try:
             state.status_label.set_text(t("Scanning macros ({trigger})...", trigger=trigger))
-            result = _run_with_file_operation_modal(
+            result = await _run_with_file_operation_modal(
                 t("Scanning and parsing cfg files"),
                 lambda: service.index(progress_callback=_set_file_operation_progress, sync_remote=sync_remote),
             )
@@ -1863,7 +1871,7 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         state.deferred_startup_scan = False
-        perform_index("startup")
+        asyncio.create_task(perform_index("startup"))
 
     def open_backup_dialog() -> None:
         """Open backup creation dialog with generated default name."""
@@ -2445,7 +2453,7 @@ def build_ui(app_version: str = "unknown") -> None:
         # Re-index immediately only when every imported update was activated.
         # Otherwise keep imported-but-not-activated rows visible as inactive.
         if activated > 0 and activated == imported:
-            perform_index("online updates", sync_remote=False)
+            asyncio.create_task(perform_index("online updates", sync_remote=False))
         else:
             refresh_data()
 
@@ -2469,7 +2477,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def run_index() -> None:
         """Manual scan button handler."""
-        perform_index("manual")
+        asyncio.create_task(perform_index("manual"))
 
     def restart_klipper() -> None:
         """Request Klipper restart when macro changes are pending and printer is idle."""
@@ -2506,7 +2514,7 @@ def build_ui(app_version: str = "unknown") -> None:
             t("Dynamic macro reload requested. The reload button will reappear after another dynamic macro change.")
         )
 
-    def save_config_to_printer() -> None:
+    async def save_config_to_printer() -> None:
         """Explicitly upload local cfg changes to printer via SFTP when printer is idle."""
         if not off_printer_mode_enabled:
             status_label.set_text(t("Save Config is only available in off-printer mode."))
@@ -2524,7 +2532,7 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         try:
-            result = _run_with_file_operation_modal(
+            result = await _run_with_file_operation_modal(
                 t("Uploading local cfg files to printer"),
                 lambda: service.save_config_to_remote(progress_callback=_set_file_operation_progress),
             )
@@ -2624,7 +2632,7 @@ def build_ui(app_version: str = "unknown") -> None:
                 and not locked
                 and not state.is_indexing
             ):
-                perform_index("printer came online")
+                asyncio.create_task(perform_index("printer came online"))
             state.printer_seen_connected = True
 
     def refresh_print_state() -> None:
@@ -3166,7 +3174,7 @@ def build_ui(app_version: str = "unknown") -> None:
             state.deferred_startup_scan = True
             refresh_data()
         else:
-            perform_index("startup")
+            asyncio.create_task(perform_index("startup"))
     else:
         if off_printer_mode_enabled and not state.off_printer_profile_ready:
             state.deferred_startup_scan = True
