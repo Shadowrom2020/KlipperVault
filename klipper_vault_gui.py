@@ -243,6 +243,33 @@ def _patch_nicegui_deleted_parent_slot_exception_filter() -> None:
     app_object.handle_exception = _handle_exception_compat
 
 
+def _is_benign_shutdown_exception(error: BaseException) -> bool:
+    """Return True for known benign asyncio/uvicorn teardown exceptions on any platform."""
+    # Ctrl-C / SIGINT raises KeyboardInterrupt through the asyncio runner on all platforms.
+    if isinstance(error, KeyboardInterrupt):
+        return True
+
+    message = str(error)
+
+    # Cross-platform: asyncio event loop closed after the server stops.
+    if isinstance(error, RuntimeError) and "Event loop is closed" in message:
+        return True
+
+    # Cross-platform: pipe/socket closed during asyncio teardown (e.g. on Linux/macOS).
+    if isinstance(error, ValueError) and "I/O operation on closed" in message:
+        return True
+
+    if isinstance(error, OSError):
+        # Windows ProactorEventLoop teardown races (winerror 6=ERROR_INVALID_HANDLE,
+        # 995=ERROR_OPERATION_ABORTED, 10038=WSAENOTSOCK).
+        if platform.system() == "Windows":
+            return getattr(error, "winerror", None) in {6, 995, 10038}
+        # Linux/macOS: EBADF (9) or ENOTSOCK (88/38) from SelectorEventLoop teardown.
+        return error.errno in {9, 38, 88}
+
+    return False
+
+
 def main() -> None:
     """Start the KlipperVault GUI runtime."""
     _sync_venv_requirements_if_needed()
@@ -271,17 +298,22 @@ def main() -> None:
 
     use_native_window = _use_native_window()
 
-    ui.run(
-        host="127.0.0.1" if use_native_window else "0.0.0.0",  # nosec B104
-        port=_FIXED_WEB_UI_PORT,
-        title=t("Klipper Vault"),
-        dark=True,
-        favicon=favicon_path,
-        show=False,
-        native=use_native_window,
-        reload=False,
-        root=build_ui_root,
-    )
+    try:
+        ui.run(
+            host="127.0.0.1" if use_native_window else "0.0.0.0",  # nosec B104
+            port=_FIXED_WEB_UI_PORT,
+            title=t("Klipper Vault"),
+            dark=True,
+            favicon=favicon_path,
+            show=False,
+            native=use_native_window,
+            reload=False,
+            root=build_ui_root,
+        )
+    except (KeyboardInterrupt, OSError, RuntimeError, ValueError) as error:
+        if _is_benign_shutdown_exception(error):
+            return
+        raise
 
 
 if __name__ in {"__main__", "__mp_main__"}:

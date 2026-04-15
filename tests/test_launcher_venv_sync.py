@@ -4,6 +4,62 @@ from pathlib import Path
 import klipper_vault_gui as klipper_vault
 
 
+def test_is_benign_shutdown_exception_for_keyboard_interrupt() -> None:
+    assert klipper_vault._is_benign_shutdown_exception(KeyboardInterrupt()) is True
+
+
+def test_is_benign_shutdown_exception_for_known_winerrors(monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault.platform, "system", lambda: "Windows")
+
+    error = OSError(995, "The I/O operation has been aborted")
+    error.winerror = 995  # type: ignore[attr-defined]
+    assert klipper_vault._is_benign_shutdown_exception(error) is True
+
+
+def test_is_benign_shutdown_exception_for_event_loop_closed_windows(monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault.platform, "system", lambda: "Windows")
+
+    error = RuntimeError("Event loop is closed")
+    assert klipper_vault._is_benign_shutdown_exception(error) is True
+
+
+def test_is_benign_shutdown_exception_for_event_loop_closed_linux(monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault.platform, "system", lambda: "Linux")
+
+    error = RuntimeError("Event loop is closed")
+    assert klipper_vault._is_benign_shutdown_exception(error) is True
+
+
+def test_is_benign_shutdown_exception_for_event_loop_closed_macos(monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault.platform, "system", lambda: "Darwin")
+
+    error = RuntimeError("Event loop is closed")
+    assert klipper_vault._is_benign_shutdown_exception(error) is True
+
+
+def test_is_benign_shutdown_exception_for_io_closed_pipe_linux(monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault.platform, "system", lambda: "Linux")
+
+    error = ValueError("I/O operation on closed file")
+    assert klipper_vault._is_benign_shutdown_exception(error) is True
+
+
+def test_is_benign_shutdown_exception_for_ebadf_linux(monkeypatch) -> None:
+    import errno
+
+    monkeypatch.setattr(klipper_vault.platform, "system", lambda: "Linux")
+
+    error = OSError(errno.EBADF, "Bad file descriptor")
+    assert klipper_vault._is_benign_shutdown_exception(error) is True
+
+
+def test_is_benign_shutdown_exception_unrelated_error_not_suppressed(monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault.platform, "system", lambda: "Linux")
+
+    error = RuntimeError("Something went wrong")
+    assert klipper_vault._is_benign_shutdown_exception(error) is False
+
+
 def test_sync_venv_requirements_skips_when_hash_matches(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("KLIPPERVAULT_AUTO_UPDATE_VENV", raising=False)
     requirements = tmp_path / "requirements.txt"
