@@ -4,6 +4,44 @@ from pathlib import Path
 import klipper_vault_gui as klipper_vault
 
 
+def test_container_runtime_enabled_by_env(monkeypatch) -> None:
+    monkeypatch.setenv("KLIPPERVAULT_CONTAINER", "1")
+
+    assert klipper_vault._is_container_runtime() is True
+
+
+def test_container_runtime_disabled_by_env(monkeypatch) -> None:
+    monkeypatch.setenv("KLIPPERVAULT_CONTAINER", "0")
+
+    assert klipper_vault._is_container_runtime() is False
+
+
+def test_container_runtime_detected_by_container_marker(monkeypatch) -> None:
+    monkeypatch.delenv("KLIPPERVAULT_CONTAINER", raising=False)
+    original_exists = klipper_vault.Path.exists
+
+    def _fake_exists(path: Path) -> bool:
+        if str(path) == "/.dockerenv":
+            return True
+        return original_exists(path)
+
+    monkeypatch.setattr(klipper_vault.Path, "exists", _fake_exists)
+
+    assert klipper_vault._is_container_runtime() is True
+
+
+def test_ui_host_binding_uses_loopback_locally(monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault, "_is_container_runtime", lambda: False)
+
+    assert klipper_vault._ui_host_binding() == "127.0.0.1"
+
+
+def test_ui_host_binding_uses_all_interfaces_in_container(monkeypatch) -> None:
+    monkeypatch.setattr(klipper_vault, "_is_container_runtime", lambda: True)
+
+    assert klipper_vault._ui_host_binding() == "0.0.0.0"
+
+
 def test_is_benign_shutdown_exception_for_keyboard_interrupt() -> None:
     assert klipper_vault._is_benign_shutdown_exception(KeyboardInterrupt()) is True
 

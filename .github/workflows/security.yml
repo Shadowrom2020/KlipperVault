@@ -32,6 +32,7 @@ jobs:
           cache: "pip"
           cache-dependency-path: |
             requirements.txt
+            requirements-build.txt
 
       - name: Ensure CI parity script is executable
         run: |

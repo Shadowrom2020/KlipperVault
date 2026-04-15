@@ -38,6 +38,21 @@ def _is_server_mode() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _is_container_runtime() -> bool:
+    """Return True when running inside a containerized runtime."""
+    raw = os.environ.get("KLIPPERVAULT_CONTAINER", "").strip().lower()
+    if raw in {"1", "true", "yes", "on", "docker", "container"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
+def _ui_host_binding() -> str:
+    """Return the preferred bind host for the NiceGUI server."""
+    return "0.0.0.0" if _is_container_runtime() else "127.0.0.1"  # nosec
+
+
 def _use_native_window() -> bool:
     """Use desktop native window only in packaged non-server local runtimes."""
     # Linux native windows require system webview libraries that are not bundled.
@@ -300,7 +315,7 @@ def main() -> None:
 
     try:
         ui.run(
-            host="127.0.0.1" if use_native_window else "0.0.0.0",  # nosec B104
+            host=_ui_host_binding(),  # nosec B104
             port=_FIXED_WEB_UI_PORT,
             title=t("Klipper Vault"),
             dark=True,

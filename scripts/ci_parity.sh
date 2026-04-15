@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ci_parity.sh — Run local checks equivalent to GitHub CI workflows.
+# ci_parity.sh — Run local checks equivalent to GitHub CI workflows. 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -144,6 +144,12 @@ fi
 if [[ "$RUN_SECURITY" == "1" ]]; then
     echo "==> Running security parity checks"
     "$PYTHON_BIN" -m pip_audit
+    echo "==> Auditing declared runtime dependencies"
+    "$PYTHON_BIN" -m pip_audit -r requirements.txt
+    if [[ -f "$REPO_ROOT/requirements-build.txt" ]]; then
+        echo "==> Auditing declared build dependencies"
+        "$PYTHON_BIN" -m pip_audit -r requirements-build.txt
+    fi
     "$PYTHON_BIN" -m bandit -q -r src klipper_vault_gui.py -s B608
 fi
 
