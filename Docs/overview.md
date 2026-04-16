@@ -6,7 +6,7 @@ KlipperVault is a lightweight web interface for managing Klipper `gcode_macro` d
 
 The main interface provides a comprehensive view of all indexed macros with their status and actions.
 
-![Main Interface](assets/main_interface.png)
+![Main Interface](../assets/main_interface.png)
 
 **Features:**
 - Left panel: Browse all macros with status badges (Active/Inactive, Loaded/Not-Loaded, Dynamic)
@@ -18,7 +18,7 @@ The main interface provides a comprehensive view of all indexed macros with thei
 
 The toolbar provides quick access to essential operations for managing your macros.
 
-![Toolbar](assets/toolbar.png)
+![Toolbar](../assets/toolbar.png)
 
 **Key Actions:**
 - **Macro Actions Menu**: Consolidated menu containing:
@@ -38,7 +38,7 @@ The toolbar provides quick access to essential operations for managing your macr
 
 Visualize how Klipper processes your configuration and macro sections, including inline include behavior.
 
-![Loading Order Overview](assets/loading_order.png)
+![Loading Order Overview](../assets/loading_order.png)
 
 **What it shows:**
 - File parse order from `printer.cfg` through `[include ...]` chains
@@ -49,7 +49,7 @@ Visualize how Klipper processes your configuration and macro sections, including
 
 Edit macros directly in the web UI with safe write-back to `.cfg` files.
 
-![Macro Editing](assets/macro_editing.png)
+![Macro Editing](../assets/macro_editing.png)
 
 **Editing Features:**
 - Syntax-aware editor for gcode macros
@@ -62,7 +62,7 @@ Edit macros directly in the web UI with safe write-back to `.cfg` files.
 
 Understand complex macros with AI-assisted explanations and cross-linking between related macros.
 
-![Macro Explainer](assets/macro_explainer.png)
+![Macro Explainer](../assets/macro_explainer.png)
 
 **Explanation Features:**
 - Line-by-line breakdown of macro functionality
@@ -74,7 +74,7 @@ Understand complex macros with AI-assisted explanations and cross-linking betwee
 
 Check for and import macro updates from GitHub-hosted repositories with selective activation.
 
-![Online Updates](assets/online_updates.png)
+![Online Updates](../assets/online_updates.png)
 
 **Update Features:**
 - Check for updates from optional GitHub repositories
@@ -123,7 +123,7 @@ Check for and import macro updates from GitHub-hosted repositories with selectiv
 
 KlipperVault enables developers to maintain and distribute macro collections through GitHub repositories.
 
-![Pull Request Creation](assets/pull_request.png)
+![Pull Request Creation](../assets/pull_request.png)
 
 **Publishing Features:**
 - **Create Pull Requests**: Publish local macros directly to GitHub repositories from the KlipperVault UI
@@ -149,4 +149,4 @@ For detailed setup instructions including repository configuration, token genera
 
 ---
 
-**KlipperVault** • [GitHub](https://github.com/3DCoded/KlipperVault) • [License](LICENSE)
+**KlipperVault** • [GitHub](https://github.com/3DCoded/KlipperVault) • [License](../LICENSE)

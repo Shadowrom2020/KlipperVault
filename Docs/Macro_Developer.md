@@ -289,7 +289,7 @@ In `Manage printer connections`:
 
 ## See Also
 
-- [KlipperVault Main README](README.md)
+- [KlipperVault Main README](../README.md)
 - [UI Overview](overview.md)
 - [GitHub Personal Access Tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
 - [Fine-grained Personal Access Tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-fine-grained-personal-access-token)

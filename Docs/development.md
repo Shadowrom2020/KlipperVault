@@ -1,6 +1,6 @@
 # KlipperVault Development Guide
 
-This guide collects developer-focused workflows so [README.md](README.md) stays user-oriented.
+This guide collects developer-focused workflows so [README.md](../README.md) stays user-oriented.
 
 Scope: this file covers extending and maintaining KlipperVault itself (code, architecture, tests, and tooling).
 For online update publishing workflows (Developer menu, Export Update Zip, Create Pull Request), use [Macro_Developer.md](Macro_Developer.md).
@@ -98,10 +98,10 @@ Off-printer persistence model:
 
 Primary APIs and modules:
 
-- [src/klipper_macro_gui_service.py](src/klipper_macro_gui_service.py)
-- [src/klipper_vault_remote_profiles.py](src/klipper_vault_remote_profiles.py)
-- [src/klipper_vault_secret_store.py](src/klipper_vault_secret_store.py)
-- [src/klipper_vault_ssh_transport.py](src/klipper_vault_ssh_transport.py)
+- [src/klipper_macro_gui_service.py](../src/klipper_macro_gui_service.py)
+- [src/klipper_vault_remote_profiles.py](../src/klipper_vault_remote_profiles.py)
+- [src/klipper_vault_secret_store.py](../src/klipper_vault_secret_store.py)
+- [src/klipper_vault_ssh_transport.py](../src/klipper_vault_ssh_transport.py)
 
 ## Macro Sharing Implementation Notes
 
@@ -114,12 +114,12 @@ Current share/import behavior:
 - Imported macros default to `macros.cfg`.
 - Import ensures `[include macros.cfg]` exists in `printer.cfg`.
 
-Relevant backend APIs live in [src/klipper_macro_indexer.py](src/klipper_macro_indexer.py):
+Relevant backend APIs live in [src/klipper_macro_indexer.py](../src/klipper_macro_indexer.py):
 
 - `export_macro_share_payload`
 - `import_macro_share_payload`
 
-UI wiring for export/import dialogs and upload/download lives in [src/klipper_macro_gui.py](src/klipper_macro_gui.py).
+UI wiring for export/import dialogs and upload/download lives in [src/klipper_macro_gui.py](../src/klipper_macro_gui.py).
 
 ## UI Translation Workflow
 
@@ -143,7 +143,7 @@ Convenience target:
 make i18n
 ```
 
-Additional targets in [Makefile](Makefile):
+Additional targets in [Makefile](../Makefile):
 
 - `make i18n-extract`
 - `make i18n-update`
@@ -229,7 +229,7 @@ Results appear on [Releases](https://github.com/Shadowrom2020/KlipperVault/relea
 
 #### 4. Release Notes
 
-Add release notes before tagging by editing [.github/RELEASE_NOTES_TEMPLATE.md](.github/RELEASE_NOTES_TEMPLATE.md).
+Add release notes before tagging by editing [.github/RELEASE_NOTES_TEMPLATE.md](../.github/RELEASE_NOTES_TEMPLATE.md).
 
 The template includes:
 - Features
@@ -323,9 +323,9 @@ Modes:
 
 ## Adding a New UI Action
 
-1. Add backend behavior in [src/klipper_macro_indexer.py](src/klipper_macro_indexer.py) or [src/klipper_macro_backup.py](src/klipper_macro_backup.py).
-2. Expose it in [src/klipper_macro_gui_service.py](src/klipper_macro_gui_service.py).
-3. Wire UI in [src/klipper_macro_gui.py](src/klipper_macro_gui.py).
+1. Add backend behavior in [src/klipper_macro_indexer.py](../src/klipper_macro_indexer.py) or [src/klipper_macro_backup.py](../src/klipper_macro_backup.py).
+2. Expose it in [src/klipper_macro_gui_service.py](../src/klipper_macro_gui_service.py).
+3. Wire UI in [src/klipper_macro_gui.py](../src/klipper_macro_gui.py).
 4. Guard mutating paths when printer is printing.
 5. Run compile checks and tests.
 
@@ -335,7 +335,7 @@ When UI or behavior changes, update docs in the same PR and verify:
 
 - Menu/action names match current UI labels exactly.
 - Config keys and defaults match `klipper_vault_config.py` and the in-app `Macro actions -> Settings` dialog.
-- Feature descriptions align across [README.md](README.md), [overview.md](overview.md), and [Macro_Developer.md](Macro_Developer.md).
+- Feature descriptions align across [README.md](../README.md), [overview.md](overview.md), and [Macro_Developer.md](Macro_Developer.md).
 - Any startup/background behavior changes are described in user-facing docs.
 - Security/token handling text reflects implemented behavior only.
 

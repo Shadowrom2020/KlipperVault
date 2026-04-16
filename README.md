@@ -4,7 +4,7 @@
 
 KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definitions with version history, safe editing workflows, backup/restore, duplicate handling, and Mainsail integration.
 
-**[📸 View UI Overview with Screenshots](overview.md)**
+**[📸 View UI Overview with Screenshots](Docs/overview.md)**
 
 ## Getting Started
 
@@ -16,7 +16,7 @@ KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definiti
 
 No Python installation or virtualenv needed. Works across Windows 10+, macOS, and Linux.
 
-**[Full installation guide](INSTALLATION_GUIDE.md)** — for troubleshooting, upgrading, and source installs
+**[Full installation guide](Docs/INSTALLATION_GUIDE.md)** — for troubleshooting, upgrading, and source installs
 
 ## Deprecation Notice: On-Printer Runtime Removed
 
@@ -129,7 +129,7 @@ All printer interaction is remote-only via SSH/SFTP for config files and Moonrak
   - Top-level `Developer` menu with:
     - `Export Update Zip`
     - `Create Pull Request`
-  - See [**Macro Developer Guide**](Macro_Developer.md) for setup instructions.
+  - See [**Macro Developer Guide**](Docs/Macro_Developer.md) for setup instructions.
 
 Dynamic Macros project:
 - https://github.com/3DCoded/DynamicMacros
@@ -180,18 +180,18 @@ KlipperVault stores application settings in the SQLite database and exposes them
 - `online_update_repo_url`: optional GitHub URL for macro update repository
 - `online_update_manifest_path`: path to manifest file inside the update repository (default: `updates/manifest.json`)
 - `online_update_ref`: branch, tag, or commit SHA for update checks (default: `main`)
-- `developer`: enable developer features (default: `false`) — see [Macro Developer Guide](Macro_Developer.md)
+- `developer`: enable developer features (default: `false`) — see [Macro Developer Guide](Docs/Macro_Developer.md)
 
 Port, UI language, and developer mode changes require app restart to take full effect.
 
 ## Installation
 
-**Quick Start: Use the [standalone executable or native installer](INSTALLATION_GUIDE.md)** — no Python or virtualenv needed.
+**Quick Start: Use the [standalone executable or native installer](Docs/INSTALLATION_GUIDE.md)** — no Python or virtualenv needed.
 
 For developers or source-based deployments:
-- [Linux source installation](Linux.md)
-- [macOS source installation](MacOS.md)
-- [Windows source installation](Windows.md)
+- [Linux source installation](Docs/Linux.md)
+- [macOS source installation](Docs/MacOS.md)
+- [Windows source installation](Docs/Windows.md)
 
 ## Standalone Executable Builds
 
@@ -238,7 +238,7 @@ GitHub Actions automation:
 
 ## Docker Deployment
 
-See [docker.md](docker.md) for Docker build, run, persistence, networking, and upgrade instructions.
+See [docker.md](Docs/docker.md) for Docker build, run, persistence, networking, and upgrade instructions.
 
 ## Usage
 
@@ -282,7 +282,7 @@ Developer mode (publish and export update artifacts):
 2. Use the top-level `Developer` toolbar menu.
 3. Click `Export Update Zip` to download an update ZIP for review or manual distribution.
 4. Click `Create Pull Request` to publish active macros directly to the configured GitHub repository.
-5. See [**Macro Developer Guide**](Macro_Developer.md) for repository setup, token creation, and publishing details.
+5. See [**Macro Developer Guide**](Docs/Macro_Developer.md) for repository setup, token creation, and publishing details.
 
 Compatibility behavior:
 
@@ -322,7 +322,7 @@ Editing is disabled:
 
 ## Developer Docs
 
-Developer setup, architecture, checks, and contribution guidance are in [development.md](development.md).
+Developer setup, architecture, checks, and contribution guidance are in [Docs/development.md](Docs/development.md).
 
 ## Honorable people that helped me to build this:
 @[triadterm](https://github.com/triadterm) - Thanks for being an early adopter and testing this

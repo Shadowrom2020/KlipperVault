@@ -118,5 +118,5 @@ Simply download the newest release and run it. Your config and database persist 
 ## Getting Help
 
 - [GitHub Issues](https://github.com/Shadowrom2020/KlipperVault/issues) — report bugs
-- [README.md](README.md) — feature overview
+- [README.md](../README.md) — feature overview
 - [Macro Developer Guide](Macro_Developer.md) — for macro publishing
