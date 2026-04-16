@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_all
 
 
 project_root = Path(SPECPATH)
+windows_icon = str(project_root / "assets" / "klippervault.ico") if sys.platform == "win32" else None
 
 nicegui_datas, nicegui_binaries, nicegui_hiddenimports = collect_all("nicegui")
 webview_datas, webview_binaries, webview_hiddenimports = collect_all("webview")
@@ -58,7 +59,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=windows_icon,
 )
 
 if sys.platform == "darwin":

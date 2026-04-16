@@ -41,6 +41,7 @@ Name: "quicklaunchicon"; Description: "Create a &Quick Launch shortcut"; GroupDe
 [Files]
 Source: "{#KV_APP_DIR}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\favicon.svg"; DestDir: "{app}\assets"; Flags: ignoreversion
+Source: "assets\windows_installed_runtime.marker"; DestDir: "{app}"; DestName: ".klippervault_installed"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\KlipperVault"; Filename: "{app}\KlipperVault.exe"

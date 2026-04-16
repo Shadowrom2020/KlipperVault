@@ -53,6 +53,8 @@ py -3 scripts\build_executable.py
 
 Build artifacts are written under dist\ by PyInstaller. Windows executables must be built on Windows.
 
+Note: the `.zip` release artifact is the portable app build. Extract it anywhere and run `KlipperVault.exe` directly (no installer required).
+
 Run the packaged binary:
 
 ```bat

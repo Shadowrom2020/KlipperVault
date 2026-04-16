@@ -7,12 +7,39 @@ from __future__ import annotations
 
 import os
 import platform
+import sys
 from pathlib import Path
+
+
+_WINDOWS_INSTALLER_MARKER = ".klippervault_installed"
 
 
 def _runtime_mode() -> str:
     """Return fixed runtime mode (remote-only)."""
     return "off_printer"
+
+
+def _is_frozen_runtime() -> bool:
+	"""Return True when running from a packaged executable."""
+	return bool(getattr(sys, "frozen", False))
+
+
+def _windows_executable_dir() -> Path | None:
+	"""Return executable directory for Windows frozen runtime, else None."""
+	if platform.system().lower() != "windows" or not _is_frozen_runtime():
+		return None
+	try:
+		return Path(sys.executable).resolve().parent
+	except OSError:
+		return None
+
+
+def _is_windows_installer_runtime() -> bool:
+	"""Return True when executable directory carries installer runtime marker."""
+	exe_dir = _windows_executable_dir()
+	if exe_dir is None:
+		return False
+	return (exe_dir / _WINDOWS_INSTALLER_MARKER).is_file()
 
 
 def _platform_dirs() -> tuple[Path, Path]:
@@ -21,6 +48,13 @@ def _platform_dirs() -> tuple[Path, Path]:
 	system = platform.system().lower()
 
 	if system == "windows":
+		exe_dir = _windows_executable_dir()
+		if exe_dir is not None and not _is_windows_installer_runtime():
+			data_dir = exe_dir / "data"
+			config_dir = data_dir / "config"
+			db_path = data_dir / "klipper_macros.db"
+			return config_dir.resolve(), db_path.resolve()
+
 		appdata = Path(os.environ.get("APPDATA") or (home / "AppData" / "Roaming"))
 		localappdata = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
 		config_dir = appdata / "KlipperVault"

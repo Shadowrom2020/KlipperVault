@@ -50,3 +50,50 @@ def test_legacy_klippervault_env_overrides_are_ignored(monkeypatch, tmp_path):
 
     assert module.DEFAULT_CONFIG_DIR.endswith(os.path.join(".config", "klippervault"))
     assert module.DEFAULT_DB_PATH.endswith(os.path.join(".local", "share", "klippervault", "klipper_macros.db"))
+
+
+def test_windows_standalone_frozen_uses_executable_local_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    exe_path = tmp_path / "KlipperVault.exe"
+    exe_path.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr("sys.executable", str(exe_path))
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    module = _reload_paths_module()
+
+    assert module.DEFAULT_CONFIG_DIR == str((tmp_path / "data" / "config").resolve())
+    assert module.DEFAULT_DB_PATH == str((tmp_path / "data" / "klipper_macros.db").resolve())
+
+
+def test_windows_installer_marker_keeps_appdata_behavior(monkeypatch, tmp_path):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    exe_path = tmp_path / "KlipperVault.exe"
+    exe_path.write_text("stub", encoding="utf-8")
+    (tmp_path / ".klippervault_installed").write_text("installed\n", encoding="utf-8")
+    appdata = tmp_path / "Roaming"
+    localappdata = tmp_path / "Local"
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("LOCALAPPDATA", str(localappdata))
+    monkeypatch.setattr("sys.executable", str(exe_path))
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+
+    module = _reload_paths_module()
+
+    assert module.DEFAULT_CONFIG_DIR == str((appdata / "KlipperVault").resolve())
+    assert module.DEFAULT_DB_PATH == str((localappdata / "KlipperVault" / "klipper_macros.db").resolve())
+
+
+def test_windows_non_frozen_keeps_appdata_behavior(monkeypatch, tmp_path):
+    monkeypatch.setattr("platform.system", lambda: "Windows")
+    appdata = tmp_path / "Roaming"
+    localappdata = tmp_path / "Local"
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setenv("LOCALAPPDATA", str(localappdata))
+    monkeypatch.setattr("sys.frozen", False, raising=False)
+
+    module = _reload_paths_module()
+
+    assert module.DEFAULT_CONFIG_DIR == str((appdata / "KlipperVault").resolve())
+    assert module.DEFAULT_DB_PATH == str((localappdata / "KlipperVault" / "klipper_macros.db").resolve())
