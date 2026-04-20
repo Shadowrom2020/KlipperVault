@@ -20,7 +20,7 @@ from typing import Callable
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from klipper_macro_backup import (
@@ -1580,7 +1580,7 @@ class MacroGuiService:
 
         try:
             return ImportedUpdateItem(**item)
-        except Exception:
+        except ValidationError:
             return None
 
     def export_macro_share_file(

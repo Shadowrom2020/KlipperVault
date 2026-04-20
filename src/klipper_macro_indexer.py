@@ -2348,7 +2348,7 @@ def _macro_version_to_section_text(row: tuple) -> str:
 
     try:
         variables = json.loads(str(variables_json))
-    except Exception:
+    except (TypeError, json.JSONDecodeError):
         variables = {}
     if isinstance(variables, dict):
         for key in sorted(variables.keys()):

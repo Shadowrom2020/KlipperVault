@@ -27,7 +27,7 @@ def _detect_os_keyring() -> tuple[bool, str]:
     """Detect whether a usable keyring backend exists in this runtime."""
     try:
         import keyring  # type: ignore[import-not-found]
-    except Exception:
+    except ImportError:
         return False, "keyring package unavailable"
 
     try:
@@ -82,20 +82,23 @@ class CredentialStore:
         if self._status.keyring_available:
             try:
                 import keyring  # type: ignore[import-not-found]
-
-                keyring.set_password(self._service_name, ref, secret_value)
-                set_credential_backend(
-                    self._db_path,
-                    credential_ref=ref,
-                    secret_type=secret_type,
-                    backend=_BACKEND_OS_KEYRING,
-                )
-                # Clean up stale fallback records after successful keyring write.
-                clear_fallback_secret(self._db_path, ref)
-                return _BACKEND_OS_KEYRING
-            except Exception:
-                # Fall through to DB fallback when keyring is not operational.
-                _LOG.debug("OS keyring write failed; falling back to DB secret storage", exc_info=True)
+            except ImportError:
+                _LOG.debug("OS keyring package import failed; falling back to DB secret storage", exc_info=True)
+            else:
+                try:
+                    keyring.set_password(self._service_name, ref, secret_value)
+                    set_credential_backend(
+                        self._db_path,
+                        credential_ref=ref,
+                        secret_type=secret_type,
+                        backend=_BACKEND_OS_KEYRING,
+                    )
+                    # Clean up stale fallback records after successful keyring write.
+                    clear_fallback_secret(self._db_path, ref)
+                    return _BACKEND_OS_KEYRING
+                except Exception:
+                    # Fall through to DB fallback when keyring is not operational.
+                    _LOG.debug("OS keyring write failed; falling back to DB secret storage", exc_info=True)
 
         set_credential_backend(
             self._db_path,
@@ -120,13 +123,16 @@ class CredentialStore:
         if backend == _BACKEND_OS_KEYRING and self._status.keyring_available:
             try:
                 import keyring  # type: ignore[import-not-found]
-
-                value = keyring.get_password(self._service_name, ref)
-                if value:
-                    return value
-            except Exception:
-                # Fallback read for migration/recovery scenarios.
-                _LOG.debug("OS keyring read failed; using DB fallback secret", exc_info=True)
+            except ImportError:
+                _LOG.debug("OS keyring package import failed; using DB fallback secret", exc_info=True)
+            else:
+                try:
+                    value = keyring.get_password(self._service_name, ref)
+                    if value:
+                        return value
+                except Exception:
+                    # Fallback read for migration/recovery scenarios.
+                    _LOG.debug("OS keyring read failed; using DB fallback secret", exc_info=True)
 
         return get_fallback_secret(self._db_path, ref)
 
@@ -139,10 +145,13 @@ class CredentialStore:
         if self._status.keyring_available:
             try:
                 import keyring  # type: ignore[import-not-found]
-
-                keyring.delete_password(self._service_name, ref)
-            except Exception:
-                # Ignore keyring deletion failures and continue with DB fallback cleanup.
-                _LOG.debug("OS keyring delete failed; continuing DB fallback cleanup", exc_info=True)
+            except ImportError:
+                _LOG.debug("OS keyring package import failed; continuing DB fallback cleanup", exc_info=True)
+            else:
+                try:
+                    keyring.delete_password(self._service_name, ref)
+                except Exception:
+                    # Ignore keyring deletion failures and continue with DB fallback cleanup.
+                    _LOG.debug("OS keyring delete failed; continuing DB fallback cleanup", exc_info=True)
 
         clear_fallback_secret(self._db_path, ref)

@@ -457,7 +457,7 @@ def _macro_item_to_section_text(
 
     try:
         variables = json.loads(variables_json)
-    except Exception:
+    except (TypeError, json.JSONDecodeError):
         variables = {}
     if isinstance(variables, dict):
         for key in sorted(variables.keys()):
