@@ -15,7 +15,7 @@ from typing import Callable, Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 
 from klipper_macro_indexer import (
     _gcode_equivalent,
@@ -77,7 +77,7 @@ def _parse_online_import_candidate(item: object) -> OnlineImportCandidate | None
 
     try:
         return OnlineImportCandidate(**item)
-    except Exception:
+    except ValidationError:
         return None
 
 

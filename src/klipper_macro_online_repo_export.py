@@ -14,26 +14,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 import zipfile
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 
 from klipper_macro_indexer import load_macro_list, macro_row_to_section_text
 from klipper_repo_url_utils import build_raw_githubusercontent_url
-
-
-def _as_int(value: object, default: int = 0) -> int:
-    """Convert dynamic values to int with a safe fallback."""
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-    return default
+from klipper_type_utils import to_int as _as_int
 
 
 def _normalize_component(value: str) -> str:
@@ -99,7 +84,7 @@ def _normalize_manifest_entry(entry: object) -> dict[str, object] | None:
     try:
         validated = ManifestEntry(**entry)
         return validated.model_dump()
-    except Exception:
+    except ValidationError:
         return None
 
 

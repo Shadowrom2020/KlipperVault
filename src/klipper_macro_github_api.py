@@ -15,27 +15,12 @@ from urllib.parse import quote, urlencode, urlparse
 import httpx
 from pydantic import BaseModel, field_validator
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from klipper_type_utils import to_int as _as_int
 
 
 _API_HOST = "api.github.com"
 _USER_AGENT = "KlipperVault/github-pr"
 _API_BASE_URL = f"https://{_API_HOST}"
-
-
-def _as_int(value: object) -> int:
-    """Convert dynamic API values to int with fallback to zero."""
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    return 0
 
 
 def _git_blob_sha(content_text: str) -> str:

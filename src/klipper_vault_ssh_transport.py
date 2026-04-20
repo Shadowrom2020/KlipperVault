@@ -14,7 +14,7 @@ import time
 
 import paramiko  # type: ignore[import-untyped]
 
-log = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
 def _known_hosts_path() -> Path:
@@ -34,7 +34,7 @@ def _ensure_host_trusted(host: str, port: int, timeout: float) -> None:
         if host_keys.lookup(lookup_name):
             return  # already trusted
 
-    log.info("TOFU: fetching host key for %s:%d", host, port)
+    _LOG.info("TOFU: fetching host key for %s:%d", host, port)
     transport = paramiko.Transport((host, port))
     try:
         transport.start_client(timeout=max(timeout, 1.0))
@@ -45,7 +45,7 @@ def _ensure_host_trusted(host: str, port: int, timeout: float) -> None:
     host_keys.add(lookup_name, key.get_name(), key)
     kh_path.parent.mkdir(parents=True, exist_ok=True)
     host_keys.save(str(kh_path))
-    log.info("TOFU: saved %s key for %s", key.get_name(), lookup_name)
+    _LOG.info("TOFU: saved %s key for %s", key.get_name(), lookup_name)
 
 
 @dataclass
