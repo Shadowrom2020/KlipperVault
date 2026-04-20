@@ -104,7 +104,7 @@ class MacroEditor:
         gcode_text = str(macro.get("gcode") or "")
         try:
             variables = json.loads(str(macro.get("variables_json") or "{}"))
-        except Exception:
+        except (TypeError, json.JSONDecodeError):
             variables = {}
 
         macro_lines = [f"[gcode_macro {macro.get('macro_name', '')}]"]
@@ -120,6 +120,11 @@ class MacroEditor:
             for line in gcode_text.splitlines():
                 macro_lines.append(f"{line}")
         return "\n".join(macro_lines) + "\n"
+
+    def _show_edit_error(self, error: Exception) -> None:
+        """Display one editor error message consistently."""
+        self._edit_status_label.set_text(str(error))
+        self._edit_status_label.set_visibility(True)
 
     def _set_edit_mode(self, editing: bool) -> None:
         """Switch between read-only code view and editable text area."""
@@ -160,8 +165,7 @@ class MacroEditor:
         try:
             self._save_handler(self._current_macro, self._get_editor_value())
         except Exception as exc:
-            self._edit_status_label.set_text(str(exc))
-            self._edit_status_label.set_visibility(True)
+            self._show_edit_error(exc)
             return
 
         self._set_edit_mode(False)
@@ -194,8 +198,7 @@ class MacroEditor:
         try:
             self._delete_handler(self._current_macro)
         except Exception as exc:
-            self._edit_status_label.set_text(str(exc))
-            self._edit_status_label.set_visibility(True)
+            self._show_edit_error(exc)
 
     def _restore_macro(self) -> None:
         """Invoke callback to restore selected deleted macro."""
@@ -204,8 +207,7 @@ class MacroEditor:
         try:
             self._restore_handler(self._current_macro)
         except Exception as exc:
-            self._edit_status_label.set_text(str(exc))
-            self._edit_status_label.set_visibility(True)
+            self._show_edit_error(exc)
 
     def set_editing_enabled(self, enabled: bool) -> None:
         """Enable or disable mutating actions while keeping read-only view active."""

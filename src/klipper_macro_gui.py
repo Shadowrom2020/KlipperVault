@@ -53,6 +53,169 @@ def _to_optional_int(value: object) -> int | None:
     return _to_int(value)
 
 
+def _file_operation_phase_text(phase: str) -> str:
+    """Map backend phase keys to user-facing file-operation text."""
+    normalized = str(phase or "").strip().lower()
+    if normalized == "download":
+        return t("Downloading cfg files from printer...")
+    if normalized == "upload":
+        return t("Uploading changed cfg files to printer...")
+    if normalized == "parse":
+        return t("Parsing local cfg files...")
+    return t("Working on files...")
+
+
+def _translated_active_filter_state(active_filter: str) -> str:
+    """Return localized active-filter state label for button text."""
+    normalized = str(active_filter or "").strip().lower()
+    if normalized == "active":
+        return t("active")
+    if normalized == "inactive":
+        return t("inactive")
+    return t("all")
+
+
+def _status_badge_key(macro: dict[str, object]) -> str:
+    """Resolve macro row status key for consistent badge rendering."""
+    if macro.get("is_deleted", False):
+        return "deleted"
+    if macro.get("is_new", False):
+        return "new"
+    if not macro.get("is_loaded", True):
+        return "not_loaded"
+    if macro.get("is_active", False) and macro.get("is_dynamic", False):
+        return "dynamic"
+    if macro.get("is_active", False) and macro.get("renamed_from"):
+        return "renamed"
+    if macro.get("is_active", False):
+        return "active"
+    return "inactive"
+
+
+def _default_keep_file(entries: list[dict[str, object]]) -> str:
+    """Choose default keep target, preferring currently active entry."""
+    for entry in entries:
+        if entry.get("is_active", False):
+            return str(entry.get("file_path", ""))
+    return str(entries[0].get("file_path", "")) if entries else ""
+
+
+def _format_moonraker_url_host(host: str) -> str:
+    """Return a URL-safe host string for the Moonraker endpoint."""
+    normalized_host = str(host or "").strip() or "127.0.0.1"
+    if ":" in normalized_host and not normalized_host.startswith("["):
+        return f"[{normalized_host}]"
+    return normalized_host
+
+
+def _is_remote_conflict_error(error: Exception | str) -> bool:
+    """Return True when an error indicates stale remote cfg state."""
+    text = str(error or "").lower()
+    return "remote cfg conflict" in text
+
+
+def _is_dynamic_version_row(version_row: dict[str, object]) -> bool:
+    """Return True when selected macro version is sourced from dynamic configs."""
+    return bool(version_row.get("is_dynamic", False))
+
+
+def _default_pr_head_branch(source_vendor: str, source_model: str) -> str:
+    """Build a unique default branch name for PR publishing."""
+    vendor = str(source_vendor or "").lower().replace(" ", "-") or "printer"
+    model = str(source_model or "").lower().replace(" ", "-") or "model"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"klippervault/{vendor}-{model}/{stamp}"
+
+
+def _dynamic_macro_file_paths(macros: list[dict[str, object]]) -> set[str]:
+    """Collect dynamic macro file paths from cached macro rows."""
+    return {
+        str(macro.get("file_path", ""))
+        for macro in macros
+        if bool(macro.get("is_dynamic", False))
+    }
+
+
+def _normalize_touched_cfg_paths(paths: list[str], config_dir: Path) -> set[str]:
+    """Normalize touched cfg paths to relative and basename match keys."""
+    normalized: set[str] = set()
+    for raw in paths:
+        path_str = str(raw or "").strip()
+        if not path_str:
+            continue
+        candidate = Path(path_str)
+        if candidate.is_absolute():
+            try:
+                path_str = str(candidate.resolve().relative_to(config_dir.resolve()))
+            except Exception:
+                path_str = str(candidate)
+        normalized.add(path_str)
+        normalized.add(str(Path(path_str).name))
+    return normalized
+
+
+def _paths_include_dynamic_macros(normalized_paths: set[str], dynamic_files: set[str]) -> bool:
+    """Return True when normalized touched paths include any dynamic macro file."""
+    for dynamic_file in dynamic_files:
+        if dynamic_file in normalized_paths:
+            return True
+        if Path(dynamic_file).name in normalized_paths:
+            return True
+    return False
+
+
+def _off_printer_profile_status(ready: bool, detail: str) -> tuple[str, str]:
+    """Return status text and label class for off-printer profile readiness."""
+    detail_text = str(detail or "").strip()
+    if ready:
+        status_text = t("Printer connection ready")
+        if detail_text:
+            status_text = t("Printer connection ready: {detail}", detail=detail_text)
+        return status_text, "text-xs text-positive"
+
+    status_text = t("No active printer connection configured")
+    if detail_text:
+        status_text = t("No active printer connection configured: {detail}", detail=detail_text)
+    return status_text, "text-xs text-negative"
+
+
+def _printer_offline_status_text(detail: str) -> str:
+    """Return printer-offline status text with optional detail."""
+    detail_text = str(detail or "").strip()
+    if detail_text:
+        return t("Printer offline: {detail}", detail=detail_text)
+    return t("Printer offline")
+
+
+def _progress_value_and_percent(current: int, total: int) -> tuple[float, int]:
+    """Normalize progress inputs into clamped value and rounded percent."""
+    display_total = max(int(total), 1)
+    progress_value = min(max(int(current) / display_total, 0.0), 1.0)
+    percent = int(round(progress_value * 100.0))
+    return progress_value, percent
+
+
+def _reload_button_state(
+    *,
+    printer_is_printing: bool,
+    printer_is_busy: bool,
+    restart_required: bool,
+    dynamic_reload_required: bool,
+) -> tuple[bool, bool]:
+    """Return visibility/enabled flags for restart and dynamic reload actions."""
+    is_allowed = (not printer_is_printing) and (not printer_is_busy)
+    show_restart = restart_required and is_allowed
+    # Dynamic macros can be reloaded while printing.
+    show_dynamic_reload = (not restart_required) and dynamic_reload_required
+    return show_restart, show_dynamic_reload
+
+
+def _save_config_button_enabled(*, is_ready: bool, printer_is_printing: bool, has_unsynced_local_changes: bool) -> bool:
+    """Return True when Save Config action should be enabled."""
+    can_upload_now = is_ready and (not printer_is_printing)
+    return can_upload_now and has_unsynced_local_changes
+
+
 def build_ui(app_version: str = "unknown") -> None:
     """Build the full NiceGUI interface and wire all callbacks."""
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
@@ -159,10 +322,12 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def _refresh_reload_buttons() -> None:
         """Show exactly one pending reload action button when printer is idle."""
-        is_allowed = (not state.printer_is_printing) and (not state.printer_is_busy)
-        show_restart = state.restart_required and is_allowed
-        # Dynamic macros can be reloaded while printing.
-        show_dynamic_reload = (not state.restart_required) and state.dynamic_reload_required
+        show_restart, show_dynamic_reload = _reload_button_state(
+            printer_is_printing=state.printer_is_printing,
+            printer_is_busy=state.printer_is_busy,
+            restart_required=state.restart_required,
+            dynamic_reload_required=state.dynamic_reload_required,
+        )
 
         if state.restart_klipper_button:
             state.restart_klipper_button.set_enabled(show_restart)
@@ -177,8 +342,11 @@ def build_ui(app_version: str = "unknown") -> None:
         if state.save_config_button is None:
             return
         is_ready = _remote_actions_available()
-        can_upload_now = is_ready and (not state.printer_is_printing)
-        enabled = can_upload_now and state.has_unsynced_local_changes
+        enabled = _save_config_button_enabled(
+            is_ready=is_ready,
+            printer_is_printing=state.printer_is_printing,
+            has_unsynced_local_changes=state.has_unsynced_local_changes,
+        )
         state.save_config_button.set_enabled(enabled)
 
     def _mark_local_changes_pending() -> None:
@@ -195,52 +363,6 @@ def build_ui(app_version: str = "unknown") -> None:
         """Return True when backend actions are currently available."""
         off_printer_ready = (not off_printer_mode_enabled) or state.off_printer_profile_ready
         return off_printer_ready
-
-    def _remote_sync_status_suffix(result: dict[str, object]) -> str:
-        """Build a compact status suffix for off-printer remote sync metadata."""
-        if not off_printer_mode_enabled or not isinstance(result, dict):
-            return ""
-
-        remote_sync = result.get("remote_sync")
-        if isinstance(remote_sync, dict):
-            uploaded = _to_int(remote_sync.get("uploaded_files", 0), default=0)
-            removed = _to_int(remote_sync.get("removed_remote_files", 0), default=0)
-            fetched = _to_int(remote_sync.get("synced_files", 0), default=0)
-            blocked = _to_int(remote_sync.get("blocked_files", 0), default=0)
-            if uploaded > 0 or removed > 0:
-                suffix = " | " + t("Remote sync: {uploaded} uploaded, {removed} removed", uploaded=uploaded, removed=removed)
-                if blocked > 0:
-                    suffix += " | " + t("Protected file skipped")
-                return suffix
-            if fetched > 0:
-                return " | " + t("Remote sync: {fetched} fetched", fetched=fetched)
-            if blocked > 0:
-                return " | " + t("Protected file skipped")
-
-        uploaded_paths = result.get("remote_uploaded_paths")
-        if isinstance(uploaded_paths, list) and uploaded_paths:
-            return " | " + t("Remote sync: {count} uploaded", count=len(uploaded_paths))
-
-        remote_path = str(result.get("remote_path", "")).strip()
-        if remote_path:
-            return " | " + t("Remote updated")
-
-        if bool(result.get("remote_synced", False)):
-            suffix = " | " + t("Remote sync complete")
-            restart_message = str(result.get("restart_message", "")).strip()
-            if restart_message:
-                suffix += " | " + restart_message
-            return suffix
-
-        restart_message = str(result.get("restart_message", "")).strip()
-        if restart_message:
-            return " | " + restart_message
-        return ""
-
-    def _is_remote_conflict_error(error: Exception | str) -> bool:
-        """Return True when an error indicates stale remote cfg state."""
-        text = str(error or "").lower()
-        return "remote cfg conflict" in text
 
     def _show_remote_conflict_guidance(
         *,
@@ -269,23 +391,12 @@ def build_ui(app_version: str = "unknown") -> None:
     def _set_off_printer_profile_state(ready: bool, detail: str = "") -> None:
         """Update off-printer profile status indicators."""
         state.off_printer_profile_ready = ready
-        detail_text = str(detail or "").strip()
         label = state.off_printer_profile_label
         if label is None:
             return
-        if ready:
-            state.off_printer_profile_status_text = t("Printer connection ready")
-            if detail_text:
-                state.off_printer_profile_status_text = t("Printer connection ready: {detail}", detail=detail_text)
-            label.classes(replace="text-xs text-positive")
-        else:
-            state.off_printer_profile_status_text = t("No active printer connection configured")
-            if detail_text:
-                state.off_printer_profile_status_text = t(
-                    "No active printer connection configured: {detail}",
-                    detail=detail_text,
-                )
-            label.classes(replace="text-xs text-negative")
+        status_text, label_class = _off_printer_profile_status(ready, detail)
+        state.off_printer_profile_status_text = status_text
+        label.classes(replace=label_class)
         label.set_text(state.off_printer_profile_status_text)
         _refresh_save_config_button()
 
@@ -314,11 +425,8 @@ def build_ui(app_version: str = "unknown") -> None:
         _set_off_printer_profile_state(True, profile_name)
         if state.printer_state == "unknown" and state.off_printer_profile_label is not None:
             detail = str(state.printer_status_message or "").strip()
-            offline_text = t("Printer offline")
-            if detail:
-                offline_text = t("Printer offline: {detail}", detail=detail)
             state.off_printer_profile_label.classes(replace="text-xs text-negative")
-            state.off_printer_profile_label.set_text(offline_text)
+            state.off_printer_profile_label.set_text(_printer_offline_status_text(detail))
         if not was_ready and state.off_printer_profile_ready:
             _maybe_run_deferred_startup_scan("printer connection became ready")
 
@@ -337,43 +445,17 @@ def build_ui(app_version: str = "unknown") -> None:
         state.dynamic_reload_required = False
         _refresh_reload_buttons()
 
-    def _is_dynamic_version_row(version_row: dict[str, object]) -> bool:
-        """Return True when selected macro version is sourced from dynamic configs."""
-        return bool(version_row.get("is_dynamic", False))
-
     def _files_include_dynamic_macros(paths: list[str]) -> bool:
         """Return True when any touched cfg path maps to known dynamic macros."""
         if not paths:
             return False
 
-        dynamic_files = {
-            str(macro.get("file_path", ""))
-            for macro in state.cached_macros
-            if bool(macro.get("is_dynamic", False))
-        }
+        dynamic_files = _dynamic_macro_file_paths(state.cached_macros)
         if not dynamic_files:
             return False
 
-        normalized: set[str] = set()
-        for raw in paths:
-            path_str = str(raw or "").strip()
-            if not path_str:
-                continue
-            candidate = Path(path_str)
-            if candidate.is_absolute():
-                try:
-                    path_str = str(candidate.resolve().relative_to(config_dir.resolve()))
-                except Exception:
-                    path_str = str(candidate)
-            normalized.add(path_str)
-            normalized.add(str(Path(path_str).name))
-
-        for dynamic_file in dynamic_files:
-            if dynamic_file in normalized:
-                return True
-            if Path(dynamic_file).name in normalized:
-                return True
-        return False
+        normalized = _normalize_touched_cfg_paths(paths, config_dir)
+        return _paths_include_dynamic_macros(normalized, dynamic_files)
 
     with ui.dialog().props("persistent") as printer_connecting_dialog, ui.card().classes("w-[30rem] max-w-[94vw]"):
         ui.label(t("Connecting to printer...")).classes("text-lg font-semibold")
@@ -413,17 +495,6 @@ def build_ui(app_version: str = "unknown") -> None:
         file_operation_phase = ui.label("").classes("text-sm text-grey-5")
         file_operation_percent = ui.label("0%").classes("text-sm text-grey-5 mt-1")
         file_operation_progress = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
-
-    def _file_operation_phase_text(phase: str) -> str:
-        """Map backend phase keys to user-facing file-operation text."""
-        normalized = str(phase or "").strip().lower()
-        if normalized == "download":
-            return t("Downloading cfg files from printer...")
-        if normalized == "upload":
-            return t("Uploading changed cfg files to printer...")
-        if normalized == "parse":
-            return t("Parsing local cfg files...")
-        return t("Working on files...")
 
     def _set_file_operation_progress(phase: str, current: int, total: int) -> None:
         """Update blocking file-operation modal progress in percent."""
@@ -1241,33 +1312,9 @@ def build_ui(app_version: str = "unknown") -> None:
         """Sync new-macros filter button text with current filter state."""
         new_button.set_text(t("Show all macros") if state.show_new_only else t("Show new"))
 
-    def _translated_active_filter_state() -> str:
-        """Return localized active-filter state label for button text."""
-        if state.active_filter == "active":
-            return t("active")
-        if state.active_filter == "inactive":
-            return t("inactive")
-        return t("all")
-
     def update_active_filter_button_label() -> None:
         """Sync active/inactive cycle button text with current filter state."""
-        active_filter_button.set_text(t("Filter: {state}", state=_translated_active_filter_state()))
-
-    def status_badge_key(macro: dict[str, object]) -> str:
-        """Resolve macro row status key for consistent badge rendering."""
-        if macro.get("is_deleted", False):
-            return "deleted"
-        if macro.get("is_new", False):
-            return "new"
-        if not macro.get("is_loaded", True):
-            return "not_loaded"
-        if macro.get("is_active", False) and macro.get("is_dynamic", False):
-            return "dynamic"
-        if macro.get("is_active", False) and macro.get("renamed_from"):
-            return "renamed"
-        if macro.get("is_active", False):
-            return "active"
-        return "inactive"
+        active_filter_button.set_text(t("Filter: {state}", state=_translated_active_filter_state(state.active_filter)))
 
     def render_status_badge(status_key: str) -> None:
         """Render a status badge with centralized label/class mapping."""
@@ -1277,13 +1324,6 @@ def build_ui(app_version: str = "unknown") -> None:
         """Radio selection change handler for sort order."""
         state.sort_order = e.value
         render_macro_list()
-
-    def _default_keep_file(entries: list[dict[str, object]]) -> str:
-        """Choose default keep target, preferring currently active entry."""
-        for entry in entries:
-            if entry.get("is_active", False):
-                return str(entry.get("file_path", ""))
-        return str(entries[0].get("file_path", "")) if entries else ""
 
     def _load_latest_macro_for_file(macro_name: str, file_path: str) -> dict | None:
         """Load latest stored row for one macro definition file."""
@@ -1333,7 +1373,7 @@ def build_ui(app_version: str = "unknown") -> None:
                     ui.label(str(entry.get("file_path", "-"))).classes("flex-1 text-sm")
                     ui.label(f"v{entry.get('version', '-')}").classes("text-[11px] text-grey-5")
                     if entry.get("is_active", False):
-                        render_status_badge(status_badge_key(entry))
+                        render_status_badge(_status_badge_key(entry))
 
         options = {
             str(entry.get("file_path", "")): str(entry.get("file_path", ""))
@@ -1597,7 +1637,7 @@ def build_ui(app_version: str = "unknown") -> None:
                                     name_classes += " text-grey-5"
                                 ui.label(str(macro.get("display_name") or macro.get("macro_name", ""))).classes(name_classes)
                                 ui.label(f"({file_name})").classes(file_label_classes + " leading-tight")
-                    render_status_badge(status_badge_key(macro))
+                    render_status_badge(_status_badge_key(macro))
 
         active_macro = find_active_override(selected_macro, state.cached_macros)
 
@@ -2104,14 +2144,6 @@ def build_ui(app_version: str = "unknown") -> None:
             )
         )
 
-    def _default_pr_head_branch() -> str:
-        """Build a unique default branch name for PR publishing."""
-        source_vendor, source_model = _active_printer_identity()
-        vendor = source_vendor.lower().replace(" ", "-") or "printer"
-        model = source_model.lower().replace(" ", "-") or "model"
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        return f"klippervault/{vendor}-{model}/{stamp}"
-
     def _refresh_create_pr_progress_ui() -> None:
         """Sync pull-request progress widgets with current background state."""
         if not state.create_pr_in_progress:
@@ -2119,9 +2151,10 @@ def build_ui(app_version: str = "unknown") -> None:
             create_pr_progress_bar.set_visibility(False)
             return
 
-        display_total = max(state.create_pr_progress_total, 1)
-        progress_value = min(max(state.create_pr_progress_current / display_total, 0.0), 1.0)
-        percent = int(round(progress_value * 100.0))
+        progress_value, percent = _progress_value_and_percent(
+            state.create_pr_progress_current,
+            state.create_pr_progress_total,
+        )
         create_pr_progress_label.set_text(
             t(
                 "Creating pull request: {percent}%",
@@ -2139,7 +2172,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
         state.pr_repo_url_input.set_value(str(vault_cfg.online_update_repo_url or "").strip())
         state.pr_base_branch_input.set_value(str(vault_cfg.online_update_ref or "main").strip() or "main")
-        state.pr_head_branch_input.set_value(_default_pr_head_branch())
+        state.pr_head_branch_input.set_value(_default_pr_head_branch(source_vendor, source_model))
         state.pr_title_input.set_value(
             t(
                 "Update macros for {vendor} {model}",
@@ -2261,9 +2294,10 @@ def build_ui(app_version: str = "unknown") -> None:
             online_update_progress_bar.set_visibility(False)
             return
 
-        display_total = max(state.online_update_progress_total, 1)
-        progress_value = min(max(state.online_update_progress_current / display_total, 0.0), 1.0)
-        percent = int(round(progress_value * 100.0))
+        progress_value, percent = _progress_value_and_percent(
+            state.online_update_progress_current,
+            state.online_update_progress_total,
+        )
         online_update_progress_label.set_text(
             t(
                 "Checking updates: {percent}%",
@@ -2777,13 +2811,6 @@ def build_ui(app_version: str = "unknown") -> None:
         _set_selected_profile_secret_state(None)
         _set_auth_mode_fields()
         _refresh_ssh_profile_action_buttons()
-
-    def _format_moonraker_url_host(host: str) -> str:
-        """Return a URL-safe host string for the Moonraker endpoint."""
-        normalized_host = str(host or "").strip() or "127.0.0.1"
-        if ":" in normalized_host and not normalized_host.startswith("["):
-            return f"[{normalized_host}]"
-        return normalized_host
 
     def _sync_moonraker_url_host(host: str) -> None:
         """Keep the Moonraker URL host aligned with the current SSH host field."""
