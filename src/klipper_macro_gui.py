@@ -216,6 +216,26 @@ def _save_config_button_enabled(*, is_ready: bool, printer_is_printing: bool, ha
     return can_upload_now and has_unsynced_local_changes
 
 
+def _normalized_theme_mode(value: object) -> str:
+    """Normalize a persisted theme mode value to one supported option."""
+    mode = str(value or "auto").strip().lower()
+    if mode in {"auto", "light", "dark"}:
+        return mode
+    return "auto"
+
+
+def _apply_theme_mode(dark_mode: ui.dark_mode, theme_mode: str) -> None:
+    """Apply one theme mode to the NiceGUI dark mode controller."""
+    normalized = _normalized_theme_mode(theme_mode)
+    if normalized == "light":
+        dark_mode.disable()
+        return
+    if normalized == "dark":
+        dark_mode.enable()
+        return
+    dark_mode.auto()
+
+
 def _safe_notify(message: str, notify_type: str = "info") -> None:
     """Best-effort notify helper for callbacks that may outlive their UI slot."""
     try:
@@ -233,6 +253,8 @@ def build_ui(app_version: str = "unknown") -> None:
     # All subsequent indexing runs read settings from this in-memory object.
     vault_cfg = _load_vault_config(config_dir, db_path)
     set_language(os.environ.get("KLIPPERVAULT_LANG", vault_cfg.ui_language))
+    dark_mode = ui.dark_mode()
+    _apply_theme_mode(dark_mode, str(vault_cfg.theme_mode or "auto"))
     ui.page_title(t("Klipper Vault"))
     runtime_mode = "off_printer"
     off_printer_mode_enabled = True
@@ -591,6 +613,19 @@ def build_ui(app_version: str = "unknown") -> None:
             .props("outlined dense")
             .classes("w-full")
         )
+        settings_theme_mode_select = (
+            ui.select(
+                options={
+                    "auto": t("Auto (follow system/browser)"),
+                    "light": t("Light"),
+                    "dark": t("Dark"),
+                },
+                value=_normalized_theme_mode(vault_cfg.theme_mode),
+                label=t("Theme mode"),
+            )
+            .props("outlined dense")
+            .classes("w-full")
+        )
         settings_repo_url_input = ui.input(label=t("Online update repository URL")).props("outlined dense").classes("w-full")
         settings_manifest_input = ui.input(label=t("Online update manifest path")).props("outlined dense").classes("w-full")
         settings_ref_input = ui.input(label=t("Online update reference")).props("outlined dense").classes("w-full")
@@ -842,18 +877,20 @@ def build_ui(app_version: str = "unknown") -> None:
         """Open settings dialog populated from current persisted app config."""
         settings_version_history_input.set_value(int(vault_cfg.version_history_size))
         settings_language_select.set_value(str(vault_cfg.ui_language or "en").strip().lower() or "en")
+        settings_theme_mode_select.set_value(_normalized_theme_mode(vault_cfg.theme_mode))
         settings_repo_url_input.set_value(str(vault_cfg.online_update_repo_url or "").strip())
         settings_manifest_input.set_value(str(vault_cfg.online_update_manifest_path or "").strip())
         settings_ref_input.set_value(str(vault_cfg.online_update_ref or "").strip())
         settings_developer_toggle.set_value(bool(vault_cfg.developer))
         settings_error_label.set_text("")
-        settings_info_label.set_text(t("UI language changes apply immediately. Developer mode still requires app restart."))
+        settings_info_label.set_text(t("UI language and theme changes apply immediately. Developer mode still requires app restart."))
         app_settings_dialog.open()
 
     def save_app_settings_dialog() -> None:
         """Validate and persist app settings in the SQLite configuration store."""
         version_history_size = _to_int(settings_version_history_input.value, default=0)
         ui_language = str(settings_language_select.value or "").strip().lower()
+        theme_mode = _normalized_theme_mode(settings_theme_mode_select.value)
         repo_url = str(settings_repo_url_input.value or "").strip()
         manifest_path = str(settings_manifest_input.value or "").strip()
         update_ref = str(settings_ref_input.value or "").strip()
@@ -864,6 +901,9 @@ def build_ui(app_version: str = "unknown") -> None:
             return
         if ui_language not in {"en", "de", "fr"}:
             settings_error_label.set_text(t("Unsupported UI language."))
+            return
+        if theme_mode not in {"auto", "light", "dark"}:
+            settings_error_label.set_text(t("Unsupported theme mode."))
             return
         if not manifest_path:
             settings_error_label.set_text(t("Online update manifest path is required."))
@@ -885,6 +925,7 @@ def build_ui(app_version: str = "unknown") -> None:
             online_update_repo_url=repo_url,
             online_update_manifest_path=manifest_path,
             online_update_ref=update_ref,
+            theme_mode=theme_mode,
             developer=developer_mode,
         )
 
@@ -900,8 +941,10 @@ def build_ui(app_version: str = "unknown") -> None:
         vault_cfg.online_update_repo_url = str(new_cfg.online_update_repo_url)
         vault_cfg.online_update_manifest_path = str(new_cfg.online_update_manifest_path)
         vault_cfg.online_update_ref = str(new_cfg.online_update_ref)
+        vault_cfg.theme_mode = str(new_cfg.theme_mode)
         vault_cfg.developer = bool(new_cfg.developer)
         service.set_version_history_size(vault_cfg.version_history_size)
+        _apply_theme_mode(dark_mode, vault_cfg.theme_mode)
 
         app_settings_dialog.close()
         if language_changed:

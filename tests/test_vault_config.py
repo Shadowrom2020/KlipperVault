@@ -17,6 +17,7 @@ def test_load_or_create_bootstraps_defaults_in_db(tmp_path: Path) -> None:
     assert config.online_update_repo_url == "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
     assert config.online_update_manifest_path == "updates/manifest.json"
     assert config.online_update_ref == "main"
+    assert config.theme_mode == "auto"
     assert config.developer is False
     assert config.printer_profile_prompt_required is True
     assert not (tmp_path / "klippervault.cfg").exists()
@@ -49,6 +50,7 @@ developer: true
     assert loaded.ui_language == "en"
     assert loaded.printer_vendor == ""
     assert loaded.printer_model == ""
+    assert loaded.theme_mode == "auto"
     assert loaded.developer is False
 
 
@@ -60,6 +62,7 @@ def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
         conn.execute("INSERT INTO vault_settings(key, value, updated_at) VALUES ('version_history_size', '0', 1)")
         conn.execute("INSERT INTO vault_settings(key, value, updated_at) VALUES ('port', '70000', 1)")
         conn.execute("INSERT INTO vault_settings(key, value, updated_at) VALUES ('ui_language', 'DE', 1)")
+        conn.execute("INSERT INTO vault_settings(key, value, updated_at) VALUES ('theme_mode', 'invalid', 1)")
         conn.commit()
 
     config = load_or_create(tmp_path, db_path)
@@ -67,6 +70,7 @@ def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
     assert config.version_history_size == 1
     assert config.port == 10090
     assert config.ui_language == "de"
+    assert config.theme_mode == "auto"
     assert config.runtime_mode == "off_printer"
 
 
@@ -84,6 +88,7 @@ def test_save_persists_settings_in_db(tmp_path: Path) -> None:
             online_update_repo_url="https://github.com/example/repo",
             online_update_manifest_path="updates/custom.json",
             online_update_ref="dev",
+            theme_mode="dark",
             developer=True,
         ),
         db_path,
@@ -98,6 +103,7 @@ def test_save_persists_settings_in_db(tmp_path: Path) -> None:
     assert config.online_update_repo_url == "https://github.com/example/repo"
     assert config.online_update_manifest_path == "updates/custom.json"
     assert config.online_update_ref == "dev"
+    assert config.theme_mode == "dark"
     assert config.developer is True
     assert config.runtime_mode == "off_printer"
 

@@ -318,7 +318,6 @@ def main() -> None:
             host=_ui_host_binding(),  # nosec B104
             port=_FIXED_WEB_UI_PORT,
             title=t("Klipper Vault"),
-            dark=True,
             favicon=favicon_path,
             show=False,
             native=use_native_window,

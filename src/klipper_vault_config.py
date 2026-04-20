@@ -16,6 +16,7 @@ _FIXED_WEB_UI_PORT = 10090
 _DEFAULT_ONLINE_UPDATE_REPO_URL = "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
 _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
 _DEFAULT_ONLINE_UPDATE_REF = "main"
+_ALLOWED_THEME_MODES = {"auto", "light", "dark"}
 
 @dataclass
 class VaultConfig:
@@ -28,6 +29,7 @@ class VaultConfig:
     online_update_repo_url: str = _DEFAULT_ONLINE_UPDATE_REPO_URL
     online_update_manifest_path: str = _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
     online_update_ref: str = _DEFAULT_ONLINE_UPDATE_REF
+    theme_mode: str = "auto"
     developer: bool = False
     printer_profile_prompt_required: bool = True
 
@@ -91,6 +93,9 @@ def _normalized_config(config: VaultConfig) -> VaultConfig:
         str(config.online_update_ref or _DEFAULT_ONLINE_UPDATE_REF).strip()
         or _DEFAULT_ONLINE_UPDATE_REF
     )
+    theme_mode = str(config.theme_mode or "auto").strip().lower() or "auto"
+    if theme_mode not in _ALLOWED_THEME_MODES:
+        theme_mode = "auto"
     developer = bool(config.developer)
 
     return VaultConfig(
@@ -103,6 +108,7 @@ def _normalized_config(config: VaultConfig) -> VaultConfig:
         online_update_repo_url=online_update_repo_url,
         online_update_manifest_path=online_update_manifest_path,
         online_update_ref=online_update_ref,
+        theme_mode=theme_mode,
         developer=developer,
         printer_profile_prompt_required=(not printer_vendor or not printer_model),
     )
@@ -141,6 +147,7 @@ def _persist_config(conn, config: VaultConfig) -> None:
         "online_update_repo_url": normalized.online_update_repo_url,
         "online_update_manifest_path": normalized.online_update_manifest_path,
         "online_update_ref": normalized.online_update_ref,
+        "theme_mode": normalized.theme_mode,
         "developer": "true" if normalized.developer else "false",
     }
     for key, value in payload.items():
@@ -201,6 +208,13 @@ def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
         default=_DEFAULT_ONLINE_UPDATE_REF,
         require_non_empty=True,
     )
+    theme_mode = _read_str(
+        rows,
+        "theme_mode",
+        default="auto",
+        lower=True,
+        require_non_empty=True,
+    )
     developer = _read_bool(rows, "developer", default=False)
 
     return _normalized_config(
@@ -214,6 +228,7 @@ def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
             online_update_repo_url=online_update_repo_url,
             online_update_manifest_path=online_update_manifest_path,
             online_update_ref=online_update_ref,
+            theme_mode=theme_mode,
             developer=developer,
         )
     )
