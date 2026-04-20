@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from klipper_macro_gui_service import MacroGuiService
 
@@ -279,6 +279,50 @@ def test_off_printer_index_can_skip_remote_sync(tmp_path: Path) -> None:
     sync_mock.assert_not_called()
     assert "remote_sync" not in result
     assert result["cfg_files_scanned"] == 1
+
+
+def test_query_printer_status_for_profile_uses_profile_moonraker_url(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    save_result = service.save_ssh_profile(
+        profile_name="Deck",
+        host="deck.local",
+        username="pi",
+        remote_config_dir="/deck/config",
+        moonraker_url="http://deck.local:7125",
+        auth_mode="key",
+        is_active=True,
+    )
+    profile_id = _as_int(save_result["printer_profile_id"])
+
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.text = "ok"
+    mock_response.json.return_value = {
+        "result": {"status": {"print_stats": {"state": "ready", "message": "idle"}}}
+    }
+
+    with patch("klipper_macro_gui_service.MacroGuiService._moonraker_get", return_value=mock_response) as get_mock:
+        status = service.query_printer_status_for_profile(profile_id, timeout=1.0)
+
+    assert status["profile_id"] == profile_id
+    assert status["connected"] is True
+    assert status["state"] == "ready"
+    assert status["message"] == "idle"
+    assert status["is_printing"] is False
+    assert status["is_busy"] is False
+    called_url = str(get_mock.call_args.args[0])
+    assert called_url.startswith("http://deck.local:7125/printer/objects/query")
+
+
+def test_query_printer_status_for_profile_returns_disconnected_for_unknown_profile(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    status = service.query_printer_status_for_profile(99999, timeout=1.0)
+
+    assert status["profile_id"] == 99999
+    assert status["connected"] is False
+    assert status["state"] == "unknown"
+    assert "not found" in str(status["message"]).lower()
 
 
 def test_off_printer_cfg_loading_overview_reads_active_remote_source(tmp_path: Path) -> None:

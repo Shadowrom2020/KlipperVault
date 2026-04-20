@@ -1086,6 +1086,44 @@ class MacroGuiService:
         return f"{self._moonraker_base_url}{clean_path}"
 
     @staticmethod
+    def _moonraker_url_from_base(base_url: str, path: str) -> str:
+        """Build and validate a Moonraker URL for one API path from a given base URL."""
+        parsed = urlparse(_as_text(base_url).strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Moonraker URL must use http/https.")
+        clean_path = path if path.startswith("/") else f"/{path}"
+        return f"{parsed.geturl().rstrip('/')}{clean_path}"
+
+    def _moonraker_base_url_for_profile(self, profile_id: int) -> str:
+        """Resolve Moonraker base URL for a specific printer profile id."""
+        target_profile_id = int(profile_id)
+        target_profile: dict[str, object] | None = None
+        for profile in self.list_printer_profiles():
+            if _as_int(profile.get("id"), default=0) == target_profile_id:
+                target_profile = profile
+                break
+
+        if not isinstance(target_profile, dict):
+            raise ValueError("Printer profile not found")
+
+        moonraker_url = _as_text(target_profile.get("ssh_moonraker_url", "")).strip()
+        ssh_host = _as_text(target_profile.get("ssh_host", "")).strip()
+
+        if not moonraker_url:
+            ssh_profile_id = _as_int(target_profile.get("ssh_profile_id"), default=0)
+            if ssh_profile_id > 0:
+                ssh_profile = self._find_ssh_profile(ssh_profile_id)
+                if ssh_profile is not None:
+                    moonraker_url = _as_text(ssh_profile.moonraker_url).strip()
+                    if not ssh_host:
+                        ssh_host = _as_text(ssh_profile.host).strip()
+
+        if not moonraker_url:
+            raise ValueError("Printer profile is missing Moonraker URL")
+
+        return self._normalize_off_printer_moonraker_url(moonraker_url, ssh_host).rstrip("/")
+
+    @staticmethod
     @retry(
         reraise=True,
         stop=stop_after_attempt(3),
@@ -1215,6 +1253,40 @@ class MacroGuiService:
             ).as_dict()
 
         return self._status_result_from_payload(payload).as_dict()
+
+    def query_printer_status_for_profile(self, profile_id: int, timeout: float = 2.0) -> dict[str, object]:
+        """Query Moonraker status for one printer profile without changing active state."""
+        try:
+            base_url = self._moonraker_base_url_for_profile(profile_id)
+            url = self._moonraker_url_from_base(base_url, "/printer/objects/query")
+            response = self._moonraker_get(url, params={"print_stats": "state,message"}, timeout=timeout)
+            payload = self._decode_json_payload(response)
+        except (ValueError, httpx.HTTPError) as exc:
+            result = MoonrakerStatusResult(
+                connected=False,
+                state="unknown",
+                message=str(exc),
+                is_printing=False,
+                is_busy=False,
+            ).as_dict()
+            result["profile_id"] = int(profile_id)
+            return result
+
+        if response.status_code >= 400:
+            error_message = self._error_message_from_response(response, payload)
+            result = MoonrakerStatusResult(
+                connected=False,
+                state="unknown",
+                message=error_message or f"Moonraker status request failed with status {response.status_code}",
+                is_printing=False,
+                is_busy=False,
+            ).as_dict()
+            result["profile_id"] = int(profile_id)
+            return result
+
+        result = self._status_result_from_payload(payload).as_dict()
+        result["profile_id"] = int(profile_id)
+        return result
 
     def is_printer_printing(self, timeout: float = 2.0) -> bool:
         """Return True when Moonraker reports active printing."""

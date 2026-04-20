@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from nicegui import ui
 
@@ -68,6 +69,12 @@ class UIState:
 
     printer_connecting_modal_open: bool = False
 
+    # ─── View Navigation State ───────────────────────────────────────────────
+    current_view: str = "start"  # start | macro
+    selected_printer_profile_id: int = 0
+    printer_card_status: dict[int, dict[str, object]] = field(default_factory=dict)
+    printer_card_last_seen: dict[int, datetime] = field(default_factory=dict)
+
     # ─── Activity Tracking ──────────────────────────────────────────────────
     last_activity_monotonic: float = 0.0
 
@@ -108,6 +115,9 @@ class UIState:
     macro_status_badges: ui.row | None = None
     detail_panel: ui.card | None = None
     viewer: object | None = None  # MacroViewer instance
+    start_page_container: ui.column | None = None
+    macro_page_container: ui.column | None = None
+    printer_cards_container: ui.row | None = None
 
     # Dialog references
     print_lock_dialog: ui.dialog | None = None

@@ -216,6 +216,15 @@ def _save_config_button_enabled(*, is_ready: bool, printer_is_printing: bool, ha
     return can_upload_now and has_unsynced_local_changes
 
 
+def _safe_notify(message: str, notify_type: str = "info") -> None:
+    """Best-effort notify helper for callbacks that may outlive their UI slot."""
+    try:
+        ui.notify(message, type=notify_type)
+    except RuntimeError:
+        # NiceGUI can lose slot context when callbacks rerender/delete parent elements.
+        return
+
+
 def build_ui(app_version: str = "unknown") -> None:
     """Build the full NiceGUI interface and wire all callbacks."""
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
@@ -246,21 +255,20 @@ def build_ui(app_version: str = "unknown") -> None:
         duplicate_compare_view=MacroCompareView(),
     )
     _print_state_refresh_inflight = False
+    _printer_card_status_refresh_inflight = False
+
+    start_page_container: ui.column | None = None
+    macro_page_container: ui.column | None = None
+    printer_editor_card: ui.card | None = None
+    printer_editor_title: ui.label | None = None
 
     # ── Top toolbar ──────────────────────────────────────────────────────────
-    with ui.header().classes("items-center gap-2 px-4 py-2 bg-grey-9 flex-wrap"):
+    with ui.header().classes("items-center gap-2 px-4 py-2 bg-grey-9 flex-wrap") as toolbar_header:
+        state.toolbar_header = toolbar_header
         ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
+        back_to_printers_button = ui.button(t("Back to printers"), icon="arrow_back").props("flat color=white")
+        back_to_printers_button.set_visibility(False)
         ui.space()
-        active_printer_select = (
-            ui.select(options=[], label=t("Active printer"))
-            .props("outlined dense options-dense")
-            .classes("w-64 min-w-[14rem]")
-        )
-        with ui.button(t("Printers"), icon="print").props("flat color=white") as printers_menu_button:
-            printers_menu_button.set_visibility(off_printer_mode_enabled)
-            with ui.menu():
-                off_printer_manage_profiles_button = ui.menu_item(t("Manage printer connections"))
-                off_printer_test_button = ui.menu_item(t("Test printer connection"))
         with ui.button(t("Macro actions"), icon="menu").props("flat color=white") as macro_actions_button:
             state.macro_actions_button = macro_actions_button
             with ui.menu() as macro_actions_menu:
@@ -303,6 +311,32 @@ def build_ui(app_version: str = "unknown") -> None:
         """Record runtime activity for UI/background flow control."""
         state.last_activity_monotonic = time.monotonic()
 
+    def _set_view(view: str) -> None:
+        """Switch between printer start page and macro workspace."""
+        normalized = "macro" if str(view).strip().lower() == "macro" else "start"
+        state.current_view = normalized
+        is_macro = normalized == "macro"
+        if start_page_container is not None:
+            start_page_container.set_visibility(not is_macro)
+        if macro_page_container is not None:
+            macro_page_container.set_visibility(is_macro)
+        back_to_printers_button.set_visibility(is_macro)
+        if state.macro_actions_button is not None:
+            state.macro_actions_button.set_visibility(is_macro)
+        if state.reload_dynamic_macros_button is not None:
+            if not is_macro:
+                state.reload_dynamic_macros_button.set_visibility(False)
+        if state.restart_klipper_button is not None:
+            if not is_macro:
+                state.restart_klipper_button.set_visibility(False)
+        if state.duplicate_warning_button is not None:
+            if not is_macro:
+                state.duplicate_warning_button.set_visibility(False)
+        if state.save_config_button is not None:
+            state.save_config_button.set_visibility(is_macro)
+        if state.index_button is not None:
+            state.index_button.set_visibility(is_macro)
+
     def flat_dialog_button(label_key: str, on_click) -> None:
         """Render a standard flat no-caps dialog action button."""
         ui.button(t(label_key), on_click=on_click).props("flat no-caps")
@@ -328,14 +362,15 @@ def build_ui(app_version: str = "unknown") -> None:
             restart_required=state.restart_required,
             dynamic_reload_required=state.dynamic_reload_required,
         )
+        in_macro_view = state.current_view == "macro"
 
         if state.restart_klipper_button:
-            state.restart_klipper_button.set_enabled(show_restart)
-            state.restart_klipper_button.set_visibility(show_restart)
+            state.restart_klipper_button.set_enabled(show_restart and in_macro_view)
+            state.restart_klipper_button.set_visibility(show_restart and in_macro_view)
 
         if state.reload_dynamic_macros_button:
-            state.reload_dynamic_macros_button.set_enabled(show_dynamic_reload)
-            state.reload_dynamic_macros_button.set_visibility(show_dynamic_reload)
+            state.reload_dynamic_macros_button.set_enabled(show_dynamic_reload and in_macro_view)
+            state.reload_dynamic_macros_button.set_visibility(show_dynamic_reload and in_macro_view)
 
     def _refresh_save_config_button() -> None:
         """Enable Save Config only when local changes are pending and printer is idle."""
@@ -582,7 +617,7 @@ def build_ui(app_version: str = "unknown") -> None:
         return "", ""
 
     def refresh_printer_profile_selector() -> None:
-        """Refresh active-printer selector options from service state."""
+        """Refresh printer profile metadata used by start-page cards."""
         state.printer_profile_option_ids.clear()
         try:
             profiles = service.list_printer_profiles()
@@ -595,8 +630,7 @@ def build_ui(app_version: str = "unknown") -> None:
             for raw in profiles
         )
 
-        options: list[str] = []
-        selected = ""
+        selected_profile_id = 0
         for raw in profiles:
             if not isinstance(raw, dict):
                 continue
@@ -612,19 +646,15 @@ def build_ui(app_version: str = "unknown") -> None:
             active_suffix = " *" if bool(raw.get("is_active", False)) else ""
             label = f"{profile_name} [{meta}]" if meta else profile_name
             option = f"{label}{active_suffix}"
-            options.append(option)
             state.printer_profile_option_ids[option] = profile_id
             if bool(raw.get("is_active", False)):
-                selected = option
+                selected_profile_id = profile_id
 
-        if not selected and options:
-            selected = options[0]
-        active_printer_select.set_options(options, value=selected)
+        state.selected_printer_profile_id = selected_profile_id
+        render_printer_cards()
 
-    def on_active_printer_profile_change(_event) -> None:
-        """Switch active printer profile and refresh scoped data."""
-        selected_option = str(active_printer_select.value or "").strip()
-        profile_id = state.printer_profile_option_ids.get(selected_option, 0)
+    def _open_macro_workspace_for_profile(profile_id: int) -> None:
+        """Activate selected profile and open the macro workspace view."""
         if profile_id <= 0:
             return
         try:
@@ -632,12 +662,12 @@ def build_ui(app_version: str = "unknown") -> None:
         except Exception as exc:
             message = t("Failed to activate printer profile: {error}", error=exc)
             status_label.set_text(message)
-            ui.notify(message, type="negative")
+            _safe_notify(message, "negative")
             return
         if not bool(result.get("ok", False)):
             message = t("Failed to activate printer profile.")
             status_label.set_text(message)
-            ui.notify(message, type="warning")
+            _safe_notify(message, "warning")
             return
 
         refresh_printer_profile_selector()
@@ -645,9 +675,150 @@ def build_ui(app_version: str = "unknown") -> None:
             refresh_off_printer_profile_state()
         refresh_print_state()
         refresh_data()
+        _set_view("macro")
+        _refresh_reload_buttons()
+        _refresh_save_config_button()
+        _maybe_run_deferred_startup_scan("printer profile selected")
         message = t("Active printer profile updated.")
         status_label.set_text(message)
-        ui.notify(message, type="positive")
+        _safe_notify(message, "positive")
+
+    def _printer_card_connection_text(profile: dict[str, object]) -> str:
+        """Build a concise connection label for one printer profile card."""
+        profile_name = str(profile.get("profile_name", "")).strip() or t("unnamed")
+        host = str(profile.get("ssh_host", "")).strip()
+        port = _to_int(profile.get("ssh_port"), default=22)
+        if host:
+            return t("{profile} - {host}:{port}", profile=profile_name, host=host, port=port)
+        return t("{profile} - local", profile=profile_name)
+
+    def _show_printer_editor(title_text: str) -> None:
+        """Reveal the printer editor card with a contextual title."""
+        if printer_editor_title is not None:
+            printer_editor_title.set_text(title_text)
+        if printer_editor_card is not None:
+            printer_editor_card.set_visibility(True)
+
+    def _hide_printer_editor() -> None:
+        """Hide the printer editor card until explicitly requested."""
+        if printer_editor_card is not None:
+            printer_editor_card.set_visibility(False)
+
+    def _open_add_printer_editor() -> None:
+        """Open editor in add-printer mode."""
+        refresh_ssh_profiles_dialog()
+        reset_ssh_profile_form_for_new()
+        _show_printer_editor(t("Add printer"))
+
+    def _open_edit_printer_editor(profile_id: int) -> None:
+        """Open editor in edit mode for one printer profile."""
+        if profile_id <= 0:
+            return
+
+        refresh_ssh_profiles_dialog()
+        selected_option = ""
+        for option_label, option_profile_id in state.ssh_profile_option_ids.items():
+            if int(option_profile_id) == int(profile_id):
+                selected_option = option_label
+                break
+
+        if selected_option:
+            ssh_profile_select.set_value(selected_option)
+            _load_selected_ssh_profile()
+        else:
+            reset_ssh_profile_form_for_new()
+            for profile in service.list_printer_profiles():
+                if _to_int(profile.get("id"), default=0) != int(profile_id):
+                    continue
+                ssh_profile_name_input.set_value(str(profile.get("profile_name", "") or ""))
+                ssh_profile_host_input.set_value(str(profile.get("ssh_host", "") or ""))
+                ssh_profile_port_input.set_value(_to_int(profile.get("ssh_port"), default=22))
+                ssh_profile_username_input.set_value(str(profile.get("ssh_username", "") or ""))
+                ssh_profile_remote_dir_input.set_value(str(profile.get("ssh_remote_config_dir", "") or ""))
+                ssh_profile_moonraker_url_input.set_value(str(profile.get("ssh_moonraker_url", "") or ""))
+                auth_mode = str(profile.get("ssh_auth_mode", "key") or "key").strip().lower()
+                ssh_profile_auth_mode_select.set_value(auth_mode if auth_mode in {"key", "password"} else "key")
+                ssh_profile_active_toggle.set_value(bool(profile.get("is_active", False)))
+                _set_auth_mode_fields()
+                break
+
+        _show_printer_editor(t("Edit printer"))
+
+    def _render_printer_cards_impl() -> None:
+        """Render selectable printer cards with live status on start page."""
+        if state.printer_cards_container is None or state.printer_cards_container.is_deleted:
+            return
+        state.printer_cards_container.clear()
+        try:
+            profiles = service.list_printer_profiles()
+        except Exception as exc:
+            if not start_page_status_label.is_deleted:
+                start_page_status_label.set_text(t("Failed to load printer profiles: {error}", error=exc))
+            return
+
+        has_non_default_profile = any(
+            isinstance(raw, dict)
+            and str(raw.get("profile_name", "")).strip()
+            and str(raw.get("profile_name", "")).strip() != "Default Printer"
+            for raw in profiles
+        )
+
+        card_count = 0
+        with state.printer_cards_container:
+            for raw in profiles:
+                if not isinstance(raw, dict):
+                    continue
+                profile_id = _to_int(raw.get("id"), default=0)
+                if profile_id <= 0:
+                    continue
+                profile_name = str(raw.get("profile_name", "")).strip() or t("unnamed")
+                if has_non_default_profile and profile_name == "Default Printer":
+                    continue
+
+                vendor = str(raw.get("vendor", "")).strip() or t("unknown")
+                model = str(raw.get("model", "")).strip() or t("unknown")
+                active = bool(raw.get("is_active", False))
+                status = state.printer_card_status.get(profile_id, {})
+                connected = bool(status.get("connected", False))
+                printer_state = str(status.get("state", "unknown")).strip() or "unknown"
+                detail = str(status.get("message", "")).strip()
+                last_seen = state.printer_card_last_seen.get(profile_id)
+                last_seen_text = _format_ts(int(last_seen.timestamp())) if last_seen is not None else t("never")
+
+                with ui.card().classes("w-[22rem] max-w-full"):
+                    with ui.row().classes("w-full items-center justify-between"):
+                        ui.label(profile_name).classes("text-base font-semibold")
+                        badge_text = t("Online") if connected else t("Offline")
+                        badge_class = "text-xs text-positive" if connected else "text-xs text-negative"
+                        ui.label(badge_text).classes(badge_class)
+                    ui.label(t("{vendor} {model}", vendor=vendor, model=model)).classes("text-sm text-grey-4")
+                    ui.label(_printer_card_connection_text(raw)).classes("text-xs text-grey-5")
+                    ui.label(t("State: {state}", state=printer_state)).classes("text-sm")
+                    if detail:
+                        ui.label(detail).classes("text-xs text-grey-4")
+                    ui.label(t("Last seen: {value}", value=last_seen_text)).classes("text-xs text-grey-5")
+                    if active:
+                        ui.label(t("Active profile")).classes("text-xs text-primary")
+                    with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                        ui.button(
+                            t("Edit"),
+                            icon="edit",
+                            on_click=lambda _event, pid=profile_id: _open_edit_printer_editor(pid),
+                        ).props("flat dense no-caps")
+                        ui.button(
+                            t("Open macros"),
+                            icon="arrow_forward",
+                            on_click=lambda _event, pid=profile_id: _open_macro_workspace_for_profile(pid),
+                        ).props("flat dense no-caps")
+                card_count += 1
+
+        if not start_page_status_label.is_deleted:
+            if card_count <= 0:
+                start_page_status_label.set_text(t("No printer profiles found. Configure one below."))
+            else:
+                start_page_status_label.set_text(t("Configured printers: {count}", count=card_count))
+
+    render_printer_cards = _render_printer_cards_impl
 
     def _save_printer_profile() -> None:
         """Validate and persist active printer profile identity."""
@@ -746,63 +917,79 @@ def build_ui(app_version: str = "unknown") -> None:
 
     save_settings_button.on_click(save_app_settings_dialog)
 
-    with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4 p-4 xl:h-[calc(100vh-110px)]"):
-        with ui.card().classes("col-span-1 xl:h-full flex flex-col overflow-hidden min-h-[55vh] xl:min-h-0"):
-            ui.label(t("Indexed macros")).classes("text-lg font-semibold mb-2 shrink-0")
-            search_input = ui.input(placeholder=t("Search macros…")).props("clearable dense outlined").classes("w-full mb-1 shrink-0")
-            with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
-                duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
-                new_button = ui.button(t("Show new")).props("flat dense no-caps")
-                active_filter_button = ui.button(t("Filter: {state}", state=t("all"))).props("flat dense no-caps")
-            with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
-                ui.label(t("Sort:")).classes("text-xs text-grey-4")
-                sort_radio = (
-                    ui.radio(
-                        options={"load_order": t("Load order"), "alpha_asc": "A → Z", "alpha_desc": "Z → A"},
-                        value="load_order",
+    with ui.column().classes("w-full p-4 gap-4") as start_page_container_ref:
+        start_page_container = start_page_container_ref
+        state.start_page_container = start_page_container_ref
+        ui.label(t("Select printer")).classes("text-2xl font-semibold")
+        ui.label(t("Choose a configured printer to open the macro workspace.")).classes("text-sm text-grey-5")
+        start_page_status_label = ui.label("").classes("text-sm text-grey-4")
+        with ui.row().classes("w-full gap-3 items-center"):
+            refresh_printers_button = ui.button(t("Refresh printers"), icon="refresh").props("flat no-caps")
+            add_printer_button = ui.button(t("Add printer"), icon="add").props("flat no-caps")
+            test_active_printer_button = ui.button(t("Test active connection"), icon="network_check").props("flat no-caps")
+        printer_cards_container = ui.row().classes("w-full gap-4 flex-wrap")
+        state.printer_cards_container = printer_cards_container
+
+    with ui.column().classes("w-full") as macro_page_container_ref:
+        macro_page_container = macro_page_container_ref
+        state.macro_page_container = macro_page_container_ref
+        with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4 p-4 xl:h-[calc(100vh-110px)]"):
+            with ui.card().classes("col-span-1 xl:h-full flex flex-col overflow-hidden min-h-[55vh] xl:min-h-0"):
+                ui.label(t("Indexed macros")).classes("text-lg font-semibold mb-2 shrink-0")
+                search_input = ui.input(placeholder=t("Search macros…")).props("clearable dense outlined").classes("w-full mb-1 shrink-0")
+                with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
+                    duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
+                    new_button = ui.button(t("Show new")).props("flat dense no-caps")
+                    active_filter_button = ui.button(t("Filter: {state}", state=t("all"))).props("flat dense no-caps")
+                with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
+                    ui.label(t("Sort:")).classes("text-xs text-grey-4")
+                    sort_radio = (
+                        ui.radio(
+                            options={"load_order": t("Load order"), "alpha_asc": "A → Z", "alpha_desc": "Z → A"},
+                            value="load_order",
+                        )
+                        .props("inline dense")
+                        .classes("text-xs")
                     )
-                    .props("inline dense")
-                    .classes("text-xs")
-                )
-            macro_count_label = ui.label(t("Items: {visible}", visible=0)).classes("text-sm text-grey-4 shrink-0")
-            with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
-                prev_page_button = ui.button(t("Prev"))
-                prev_page_button.props("flat dense no-caps")
-                next_page_button = ui.button(t("Next"))
-                next_page_button.props("flat dense no-caps")
-            macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
-            state.macro_search = search_input
-            state.macro_list = macro_list
+                macro_count_label = ui.label(t("Items: {visible}", visible=0)).classes("text-sm text-grey-4 shrink-0")
+                with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
+                    prev_page_button = ui.button(t("Prev"))
+                    prev_page_button.props("flat dense no-caps")
+                    next_page_button = ui.button(t("Next"))
+                    next_page_button.props("flat dense no-caps")
+                macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
+                state.macro_search = search_input
+                state.macro_list = macro_list
 
-        viewer = MacroViewer()
-        state.viewer = viewer
+            viewer = MacroViewer()
+            state.viewer = viewer
 
-        with ui.card().classes("col-span-1 md:col-span-3 xl:col-span-1 xl:h-full overflow-auto"):
-            ui.label(t("Stored macro statistics")).classes("text-lg font-semibold")
-            with ui.column().classes("gap-2 mt-2"):
-                total_macros_label = ui.label(t("Total macros: {count}", count=0))
-                duplicate_macros_label = ui.label(t("Duplicate macros: {count}", count=0))
-                deleted_macros_label = ui.label(t("Deleted macros: {count}", count=0))
-                distinct_files_label = ui.label(t("Config files: {count}", count=0))
-                last_update_label = ui.label(t("Last update: never"))
-                purge_deleted_button = ui.button(t("Remove all deleted macros")).props(
-                    "flat color=negative no-caps"
-                )
-                purge_deleted_button.set_visibility(False)
+            with ui.card().classes("col-span-1 md:col-span-3 xl:col-span-1 xl:h-full overflow-auto"):
+                ui.label(t("Stored macro statistics")).classes("text-lg font-semibold")
+                with ui.column().classes("gap-2 mt-2"):
+                    total_macros_label = ui.label(t("Total macros: {count}", count=0))
+                    duplicate_macros_label = ui.label(t("Duplicate macros: {count}", count=0))
+                    deleted_macros_label = ui.label(t("Deleted macros: {count}", count=0))
+                    distinct_files_label = ui.label(t("Config files: {count}", count=0))
+                    last_update_label = ui.label(t("Last update: never"))
+                    purge_deleted_button = ui.button(t("Remove all deleted macros")).props(
+                        "flat color=negative no-caps"
+                    )
+                    purge_deleted_button.set_visibility(False)
 
-            ui.separator().classes("my-2")
-            ui.label(t("Status")).classes("text-md font-semibold mb-1")
-            status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
-            state.status_label = status_label
-            off_printer_profile_label = ui.label("").classes("text-xs text-grey-5")
-            off_printer_profile_label.set_visibility(off_printer_mode_enabled)
-            state.off_printer_profile_label = off_printer_profile_label
-            with ui.row().classes("items-center gap-2"):
-                off_printer_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
-                off_printer_cfg_list_button.set_visibility(off_printer_mode_enabled)
-            ui.separator().classes("my-2")
-            ui.label(t("Backups")).classes("text-md font-semibold mb-1")
-            backup_list = ui.list().props("separator").classes("w-full max-h-[46vh] overflow-y-auto")
+                ui.separator().classes("my-2")
+                ui.label(t("Status")).classes("text-md font-semibold mb-1")
+                status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
+                state.status_label = status_label
+                off_printer_profile_label = ui.label("").classes("text-xs text-grey-5")
+                off_printer_profile_label.set_visibility(off_printer_mode_enabled)
+                state.off_printer_profile_label = off_printer_profile_label
+                with ui.row().classes("items-center gap-2"):
+                    off_printer_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
+                    off_printer_cfg_list_button.set_visibility(off_printer_mode_enabled)
+                ui.separator().classes("my-2")
+                ui.label(t("Backups")).classes("text-md font-semibold mb-1")
+                backup_list = ui.list().props("separator").classes("w-full max-h-[46vh] overflow-y-auto")
 
     with ui.dialog() as backup_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
         ui.label(t("Create macro backup")).classes("text-lg font-semibold")
@@ -1007,44 +1194,47 @@ def build_ui(app_version: str = "unknown") -> None:
             flat_dialog_button("Close", remote_conflict_dialog.close)
             sync_after_conflict_button = ui.button(t("Sync and reload")).props("color=primary no-caps")
 
-    with ui.dialog() as off_printer_profile_dialog, ui.card().classes("w-[44rem] max-w-[96vw]"):
-        ui.label(t("Printer connection management")).classes("text-lg font-semibold")
-        ui.label(t("Configure SSH settings as part of each printer profile for off-printer mode.")).classes("text-sm text-grey-5")
-        ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
-        with ui.row().classes("w-full gap-2"):
-            ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
-            ssh_profile_host_input = ui.input(label=t("Host"), on_change=lambda e: _sync_moonraker_url_host(str(e.value or ""))).props("outlined dense").classes("flex-1")
-        with ui.row().classes("w-full gap-2"):
-            ssh_profile_port_input = ui.number(label=t("Port"), value=22).props("outlined dense").classes("w-32")
-            ssh_profile_username_input = ui.input(label=t("Username")).props("outlined dense").classes("flex-1")
-        ssh_profile_remote_dir_input = ui.input(label=t("Remote config directory"), value="~/printer_data/config").props(
-            "outlined dense"
-        ).classes("w-full")
-        ssh_profile_moonraker_url_input = ui.input(
-            label=t("Moonraker URL"), value="http://127.0.0.1:7125"
-        ).props("outlined dense").classes("w-full")
-        ssh_profile_auth_mode_select = ui.select(
-            options={"key": t("SSH key"), "password": t("Password")},
-            value="key",
-            label=t("Authentication mode"),
-        ).props("outlined dense").classes("w-full")
-        ssh_profile_secret_input = ui.input(label=t("SSH secret")).props("outlined dense type=text").classes(
-            "w-full"
-        )
-        ssh_profile_secret_mode_label = ui.label("").classes("text-xs text-grey-5")
-        ssh_profile_secret_state_label = ui.label("").classes("text-xs text-grey-5")
-        ssh_profile_active_toggle = ui.switch(t("Set as active profile"), value=True)
-        ssh_profile_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        ssh_profile_status_label = ui.label("").classes("text-sm text-positive mt-1")
-        with ui.row().classes("w-full justify-between mt-3"):
-            with ui.row().classes("gap-2"):
-                flat_dialog_button("Close", off_printer_profile_dialog.close)
-                refresh_ssh_profiles_button = ui.button(t("Refresh")).props("flat no-caps")
-                new_ssh_profile_button = ui.button(t("Add printer")).props("flat no-caps")
-            with ui.row().classes("gap-2"):
-                delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
-                activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")
-                save_ssh_profile_button = ui.button(t("Save profile")).props("color=primary no-caps")
+    with start_page_container:
+        with ui.card().classes("w-full") as printer_editor_card_ref:
+            printer_editor_card = printer_editor_card_ref
+            printer_editor_title = ui.label(t("Printer connection management")).classes("text-lg font-semibold")
+            ui.label(t("Configure SSH settings as part of each printer profile for off-printer mode.")).classes("text-sm text-grey-5")
+            ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
+            with ui.row().classes("w-full gap-2"):
+                ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
+                ssh_profile_host_input = ui.input(label=t("Host"), on_change=lambda e: _sync_moonraker_url_host(str(e.value or ""))).props("outlined dense").classes("flex-1")
+            with ui.row().classes("w-full gap-2"):
+                ssh_profile_port_input = ui.number(label=t("Port"), value=22).props("outlined dense").classes("w-32")
+                ssh_profile_username_input = ui.input(label=t("Username")).props("outlined dense").classes("flex-1")
+            ssh_profile_remote_dir_input = ui.input(label=t("Remote config directory"), value="~/printer_data/config").props(
+                "outlined dense"
+            ).classes("w-full")
+            ssh_profile_moonraker_url_input = ui.input(
+                label=t("Moonraker URL"), value="http://127.0.0.1:7125"
+            ).props("outlined dense").classes("w-full")
+            ssh_profile_auth_mode_select = ui.select(
+                options={"key": t("SSH key"), "password": t("Password")},
+                value="key",
+                label=t("Authentication mode"),
+            ).props("outlined dense").classes("w-full")
+            ssh_profile_secret_input = ui.input(label=t("SSH secret")).props("outlined dense type=text").classes(
+                "w-full"
+            )
+            ssh_profile_secret_mode_label = ui.label("").classes("text-xs text-grey-5")
+            ssh_profile_secret_state_label = ui.label("").classes("text-xs text-grey-5")
+            ssh_profile_active_toggle = ui.switch(t("Set as active profile"), value=True)
+            ssh_profile_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            ssh_profile_status_label = ui.label("").classes("text-sm text-positive mt-1")
+            with ui.row().classes("w-full justify-between mt-3"):
+                with ui.row().classes("gap-2"):
+                    hide_printer_editor_button = ui.button(t("Close editor")).props("flat no-caps")
+                    refresh_ssh_profiles_button = ui.button(t("Refresh")).props("flat no-caps")
+                    new_ssh_profile_button = ui.button(t("Add printer")).props("flat no-caps")
+                with ui.row().classes("gap-2"):
+                    delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
+                    activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")
+                    save_ssh_profile_button = ui.button(t("Save profile")).props("color=primary no-caps")
+        printer_editor_card_ref.set_visibility(False)
 
     def _sync_after_remote_conflict() -> None:
         """Close conflict dialog and run a one-click recovery sync/index."""
@@ -1830,7 +2020,7 @@ def build_ui(app_version: str = "unknown") -> None:
         duplicate_macros = len(duplicate_groups)
         state._cached_versions_key = None
         state._cached_versions = []
-        state.duplicate_warning_button.set_visibility(duplicate_macros > 0)
+        state.duplicate_warning_button.set_visibility((duplicate_macros > 0) and state.current_view == "macro")
         total_macros_label.set_text(t("Total macros: {count}", count=stats["total_macros"]))
         duplicate_macros_label.set_text(t("Duplicate macros: {count}", count=duplicate_macros))
         deleted_macros_label.set_text(t("Deleted macros: {count}", count=deleted_macros))
@@ -2623,8 +2813,7 @@ def build_ui(app_version: str = "unknown") -> None:
         )
         duplicate_apply_button.set_enabled(local_actions_enabled)
         if off_printer_mode_enabled:
-            off_printer_manage_profiles_button.set_enabled(True)
-            off_printer_test_button.set_enabled(True)
+            test_active_printer_button.set_enabled(True)
             off_printer_cfg_list_button.set_enabled(state.off_printer_profile_ready)
         state.viewer.set_editing_enabled(local_actions_enabled)
         _refresh_reload_buttons()
@@ -2707,25 +2896,44 @@ def build_ui(app_version: str = "unknown") -> None:
                 moonraker_message=str(status.get("message", "")),
             )
 
-        try:
-            asyncio.create_task(_refresh_print_state_async())
-        except RuntimeError:
-            # Fallback for contexts without a running loop (e.g., early startup paths).
+    def refresh_printer_card_statuses() -> None:
+        """Refresh status snapshots for all configured printer cards."""
+        nonlocal _printer_card_status_refresh_inflight
+        if state.printer_cards_container is None or state.printer_cards_container.is_deleted:
+            return
+        if _printer_card_status_refresh_inflight:
+            return
+
+        async def _refresh_printer_card_statuses_async() -> None:
+            nonlocal _printer_card_status_refresh_inflight
+            _printer_card_status_refresh_inflight = True
             try:
-                status = service.query_printer_status(timeout=1.5)
-                _set_printer_connecting_modal(False)
+                profiles = service.list_printer_profiles()
+                for raw in profiles:
+                    if state.printer_cards_container is None or state.printer_cards_container.is_deleted:
+                        return
+                    if not isinstance(raw, dict):
+                        continue
+                    profile_id = _to_int(raw.get("id"), default=0)
+                    if profile_id <= 0:
+                        continue
+                    status = await asyncio.to_thread(service.query_printer_status_for_profile, profile_id, 1.25)
+                    state.printer_card_status[profile_id] = status
+                    if bool(status.get("connected", False)):
+                        state.printer_card_last_seen[profile_id] = datetime.now()
             except Exception as exc:
-                _set_printer_connecting_modal(True, str(exc))
-                status = {
-                    "is_printing": False,
-                    "state": "unknown",
-                    "message": str(exc),
-                }
-            set_print_lock(
-                locked=bool(status.get("is_printing", False)),
-                moonraker_state=str(status.get("state", "unknown")),
-                moonraker_message=str(status.get("message", "")),
-            )
+                # Keep best-effort polling isolated from the main UI flow.
+                if not start_page_status_label.is_deleted:
+                    start_page_status_label.set_text(t("Printer status refresh failed: {error}", error=exc))
+            finally:
+                _printer_card_status_refresh_inflight = False
+                if state.printer_cards_container is not None and not state.printer_cards_container.is_deleted:
+                    render_printer_cards()
+
+        try:
+            asyncio.create_task(_refresh_printer_card_statuses_async())
+        except RuntimeError:
+            return
 
     def test_off_printer_profile_connection() -> None:
         """Run active SSH profile connectivity test and report status."""
@@ -2984,7 +3192,7 @@ def build_ui(app_version: str = "unknown") -> None:
         refresh_printer_profile_selector()
         refresh_off_printer_profile_state()
         refresh_print_state()
-        off_printer_profile_dialog.close()
+        _hide_printer_editor()
 
     def activate_selected_ssh_profile() -> None:
         """Activate the profile selected in the management dialog."""
@@ -3044,12 +3252,13 @@ def build_ui(app_version: str = "unknown") -> None:
         refresh_print_state()
 
     def open_off_printer_profile_dialog() -> None:
-        """Open and initialize SSH profile management dialog."""
-        if not off_printer_mode_enabled:
-            return
-        refresh_ssh_profiles_dialog()
-        _set_auth_mode_fields()
-        off_printer_profile_dialog.open()
+        """Focus printer management controls on the start page."""
+        refresh_printer_profile_selector()
+        if off_printer_mode_enabled:
+            refresh_ssh_profiles_dialog()
+            _set_auth_mode_fields()
+        refresh_printer_card_statuses()
+        _set_view("start")
 
     def open_remote_cfg_list_dialog() -> None:
         """Load and display remote cfg file list for active SSH profile."""
@@ -3147,17 +3356,19 @@ def build_ui(app_version: str = "unknown") -> None:
     active_filter_button.on_click(cycle_active_filter)
     state.macro_search.on_value_change(on_search_change)
     duplicate_warning_button.on_click(open_duplicate_wizard)
-    off_printer_manage_profiles_button.on_click(open_off_printer_profile_dialog)
-    off_printer_test_button.on_click(test_off_printer_profile_connection)
+    refresh_printers_button.on_click(refresh_printer_profile_selector)
+    add_printer_button.on_click(_open_add_printer_editor)
+    test_active_printer_button.on_click(test_off_printer_profile_connection)
     off_printer_cfg_list_button.on_click(open_remote_cfg_list_dialog)
     ssh_profile_select.on_value_change(_load_selected_ssh_profile)
     ssh_profile_auth_mode_select.on_value_change(_set_auth_mode_fields)
+    hide_printer_editor_button.on_click(_hide_printer_editor)
     refresh_ssh_profiles_button.on_click(refresh_ssh_profiles_dialog)
-    new_ssh_profile_button.on_click(reset_ssh_profile_form_for_new)
+    new_ssh_profile_button.on_click(_open_add_printer_editor)
     delete_ssh_profile_button.on_click(delete_selected_ssh_profile)
     activate_ssh_profile_button.on_click(activate_selected_ssh_profile)
     save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
-    active_printer_select.on_value_change(on_active_printer_profile_change)
+    back_to_printers_button.on_click(open_off_printer_profile_dialog)
     with macro_actions_menu:
         ui.menu_item(t("Backup"), on_click=open_backup_dialog)
         ui.menu_item(t("Export macros"), on_click=open_export_dialog)
@@ -3188,29 +3399,24 @@ def build_ui(app_version: str = "unknown") -> None:
     next_page_button.on_click(_go_next_page)
 
     refresh_printer_profile_selector()
+    refresh_ssh_profiles_dialog()
     if off_printer_mode_enabled and _printer_profile_missing():
-        status_label.set_text(t("No printer configured. Complete the connection wizard."))
-        open_off_printer_profile_dialog()
+        status_label.set_text(t("No printer configured. Complete the connection setup below."))
 
     if off_printer_mode_enabled:
         refresh_off_printer_profile_state()
     refresh_print_state()
+    refresh_printer_card_statuses()
     _refresh_save_config_button()
-    if not state.printer_is_printing:
-        if off_printer_mode_enabled and not state.off_printer_profile_ready:
-            state.deferred_startup_scan = True
-            refresh_data()
-        else:
-            asyncio.create_task(perform_index("startup"))
-    else:
-        if off_printer_mode_enabled and not state.off_printer_profile_ready:
-            state.deferred_startup_scan = True
-        refresh_data()
+    state.deferred_startup_scan = True
+    refresh_data()
+    _set_view("start")
     ui.timer(0.5, lambda: asyncio.create_task(_check_online_updates_on_startup()), once=True)
     ui.timer(0.5, _refresh_create_pr_progress_ui)
     ui.timer(0.5, _refresh_online_update_progress_ui)
     ui.timer(2.0, check_config_changes)
     ui.timer(5.0, refresh_off_printer_profile_state)
+    ui.timer(7.0, refresh_printer_card_statuses)
 
     def _flush_search() -> None:
         if state._search_dirty:

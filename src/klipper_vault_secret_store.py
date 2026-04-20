@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import platform
+from typing import Protocol, cast
 
 from klipper_vault_remote_profiles import (
     clear_fallback_secret,
@@ -21,6 +22,19 @@ from klipper_vault_remote_profiles import (
 _BACKEND_OS_KEYRING = "os_keyring"
 _BACKEND_DB_FALLBACK = "db_fallback"
 _LOG = logging.getLogger(__name__)
+
+
+class _KeyringModuleProtocol(Protocol):
+    """Minimal keyring module protocol used by this file."""
+
+    def set_password(self, service_name: str, username: str, password: str) -> None:
+        ...
+
+    def get_password(self, service_name: str, username: str) -> str | None:
+        ...
+
+    def delete_password(self, service_name: str, username: str) -> None:
+        ...
 
 
 def _detect_os_keyring() -> tuple[bool, str]:
@@ -70,14 +84,14 @@ class CredentialStore:
         """Return backend detection information."""
         return self._status
 
-    def _load_keyring_or_none(self, *, import_failure_message: str) -> object | None:
+    def _load_keyring_or_none(self, *, import_failure_message: str) -> _KeyringModuleProtocol | None:
         """Import keyring lazily and return None when unavailable."""
         try:
             import keyring  # type: ignore[import-not-found]
         except ImportError:
             _LOG.debug(import_failure_message, exc_info=True)
             return None
-        return keyring
+        return cast(_KeyringModuleProtocol, keyring)
 
     def set_secret(self, *, credential_ref: str, secret_type: str, secret_value: str) -> str:
         """Save secret and return storage backend name."""
