@@ -457,25 +457,24 @@ def _get_klipper_parse_order_from_source(config_source: ConfigSource, cfg_paths:
             raise ValueError(f"Recursive include of config file '{rel_path}'")
         visiting.add(rel_path)
         order.append(rel_path)
-
         try:
-            data = config_source.read_text(rel_path)
-        except Exception as exc:
+            try:
+                data = config_source.read_text(rel_path)
+            except Exception as exc:
+                raise FileNotFoundError(f"Unable to open config file {rel_path}") from exc
+
+            for line in data.split("\n"):
+                hash_pos = line.find("#")
+                if hash_pos >= 0:
+                    line = line[:hash_pos]
+                section_match = configparser.RawConfigParser.SECTCRE.match(line)
+                header = section_match and section_match.group("header")
+                if header and header.startswith("include "):
+                    include_spec = header[8:].strip()
+                    for include_rel in _resolve_source_include_paths(rel_path, include_spec, cfg_paths):
+                        _parse_file(include_rel, visiting)
+        finally:
             visiting.remove(rel_path)
-            raise FileNotFoundError(f"Unable to open config file {rel_path}") from exc
-
-        for line in data.split("\n"):
-            hash_pos = line.find("#")
-            if hash_pos >= 0:
-                line = line[:hash_pos]
-            section_match = configparser.RawConfigParser.SECTCRE.match(line)
-            header = section_match and section_match.group("header")
-            if header and header.startswith("include "):
-                include_spec = header[8:].strip()
-                for include_rel in _resolve_source_include_paths(rel_path, include_spec, cfg_paths):
-                    _parse_file(include_rel, visiting)
-
-        visiting.remove(rel_path)
 
     _parse_file(root_cfg, set())
     return order

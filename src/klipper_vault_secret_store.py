@@ -70,6 +70,15 @@ class CredentialStore:
         """Return backend detection information."""
         return self._status
 
+    def _load_keyring_or_none(self, *, import_failure_message: str) -> object | None:
+        """Import keyring lazily and return None when unavailable."""
+        try:
+            import keyring  # type: ignore[import-not-found]
+        except ImportError:
+            _LOG.debug(import_failure_message, exc_info=True)
+            return None
+        return keyring
+
     def set_secret(self, *, credential_ref: str, secret_type: str, secret_value: str) -> str:
         """Save secret and return storage backend name."""
         ref = credential_ref.strip()
@@ -80,11 +89,10 @@ class CredentialStore:
             raise ValueError("secret_type must not be empty")
 
         if self._status.keyring_available:
-            try:
-                import keyring  # type: ignore[import-not-found]
-            except ImportError:
-                _LOG.debug("OS keyring package import failed; falling back to DB secret storage", exc_info=True)
-            else:
+            keyring = self._load_keyring_or_none(
+                import_failure_message="OS keyring package import failed; falling back to DB secret storage"
+            )
+            if keyring is not None:
                 try:
                     keyring.set_password(self._service_name, ref, secret_value)
                     set_credential_backend(
@@ -121,11 +129,10 @@ class CredentialStore:
 
         backend = get_credential_backend(self._db_path, ref)
         if backend == _BACKEND_OS_KEYRING and self._status.keyring_available:
-            try:
-                import keyring  # type: ignore[import-not-found]
-            except ImportError:
-                _LOG.debug("OS keyring package import failed; using DB fallback secret", exc_info=True)
-            else:
+            keyring = self._load_keyring_or_none(
+                import_failure_message="OS keyring package import failed; using DB fallback secret"
+            )
+            if keyring is not None:
                 try:
                     value = keyring.get_password(self._service_name, ref)
                     if value:
@@ -143,11 +150,10 @@ class CredentialStore:
             return
 
         if self._status.keyring_available:
-            try:
-                import keyring  # type: ignore[import-not-found]
-            except ImportError:
-                _LOG.debug("OS keyring package import failed; continuing DB fallback cleanup", exc_info=True)
-            else:
+            keyring = self._load_keyring_or_none(
+                import_failure_message="OS keyring package import failed; continuing DB fallback cleanup"
+            )
+            if keyring is not None:
                 try:
                     keyring.delete_password(self._service_name, ref)
                 except Exception:

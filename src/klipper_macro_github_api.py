@@ -32,6 +32,14 @@ def _git_blob_sha(content_text: str) -> str:
     return hashlib.sha1(prefix + content_bytes, usedforsecurity=False).hexdigest()
 
 
+def _non_negative_int(value: object, *, field_name: str) -> int:
+    """Coerce one value to int and validate it is non-negative."""
+    normalized = _as_int(value)
+    if normalized < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return normalized
+
+
 # Pydantic models for GitHub API responses
 
 
@@ -46,22 +54,7 @@ class CommitResult(BaseModel):
     @classmethod
     def validate_changed_files(cls, v: object) -> int:
         """Ensure changed_files is a non-negative integer."""
-        if isinstance(v, bool):
-            value = int(v)
-        elif isinstance(v, int):
-            value = v
-        elif isinstance(v, float):
-            value = int(v)
-        elif isinstance(v, str):
-            try:
-                value = int(v)
-            except ValueError:
-                value = 0
-        else:
-            value = 0
-        if value < 0:
-            raise ValueError("changed_files must be non-negative")
-        return value
+        return _non_negative_int(v, field_name="changed_files")
 
     @field_validator("commit_sha", mode="before")
     @classmethod
@@ -119,22 +112,7 @@ class CreatePullRequestResult(BaseModel):
     @classmethod
     def validate_pr_number(cls, v: object) -> int:
         """Ensure number is a non-negative integer."""
-        if isinstance(v, bool):
-            value = int(v)
-        elif isinstance(v, int):
-            value = v
-        elif isinstance(v, float):
-            value = int(v)
-        elif isinstance(v, str):
-            try:
-                value = int(v)
-            except ValueError:
-                value = 0
-        else:
-            value = 0
-        if value < 0:
-            raise ValueError("PR number must be non-negative")
-        return value
+        return _non_negative_int(v, field_name="PR number")
 
     @field_validator("url", "head_branch", mode="before")
     @classmethod
