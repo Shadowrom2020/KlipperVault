@@ -39,7 +39,6 @@ docker run -d \
 	--name klippervault \
 	--restart unless-stopped \
 	-p 10090:10090 \
-	-e KLIPPERVAULT_AUTO_UPDATE_VENV=0 \
 	-e KLIPPERVAULT_SERVER_MODE=1 \
 	-v klippervault_config:/home/klippervault/.config/klippervault \
 	-v klippervault_db:/home/klippervault/.local/share/klippervault \
@@ -55,7 +54,6 @@ services:
 		container_name: klippervault
 		restart: unless-stopped
 		environment:
-			KLIPPERVAULT_AUTO_UPDATE_VENV: "0"
 			KLIPPERVAULT_SERVER_MODE: "1"
 		ports:
 			- "10090:10090"

@@ -201,7 +201,7 @@ Important constraints:
 
 - Build on the target OS. PyInstaller does not cross-compile Windows, Linux, and macOS binaries from one host.
 - The packaged build keeps the existing config and database locations for each platform.
-- Packaged builds skip the startup virtualenv dependency sync and open the browser automatically on launch.
+- Packaged builds open the browser automatically on launch.
 
 Build prerequisites:
 

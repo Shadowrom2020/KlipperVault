@@ -162,7 +162,7 @@ setup_vscode_workspace_files() {
         cat > "$env_file" <<ENV
 PYTHONUNBUFFERED=1
 PYTHONPATH=$REPO_ROOT:$REPO_ROOT/src
-KLIPPERVAULT_AUTO_UPDATE_VENV=0
+
 ENV
         echo "    Wrote .vscode/.env"
 
@@ -198,8 +198,7 @@ JSON
             "envFile": "${workspaceFolder}/.vscode/.env",
             "justMyCode": false,
             "env": {
-                "PYTHONUNBUFFERED": "1",
-                "KLIPPERVAULT_AUTO_UPDATE_VENV": "0"
+                "PYTHONUNBUFFERED": "1"
             }
         }
     ]

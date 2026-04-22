@@ -5,11 +5,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 import os
 import platform
-import subprocess  # nosec B404
 import sys
 from pathlib import Path
 from typing import Any
@@ -75,83 +73,6 @@ if not _is_frozen_runtime() and str(SRC_DIR) not in sys.path:
     # Keep imports stable after moving all source modules under src/.
     sys.path.insert(0, str(SRC_DIR))
 
-
-def _requirements_hash(requirements_path: Path) -> str:
-    """Return SHA256 hash of requirements file contents."""
-    return hashlib.sha256(requirements_path.read_bytes()).hexdigest()
-
-
-def _requirements_file_name() -> str:
-    """Return requirements file name used for runtime dependency sync."""
-    return os.environ.get("KLIPPERVAULT_REQUIREMENTS_FILE", "requirements.txt").strip() or "requirements.txt"
-
-
-def _requirements_path() -> Path:
-    """Return resolved requirements path from environment or default."""
-    configured = Path(_requirements_file_name())
-    if configured.is_absolute():
-        return configured
-    return REPO_ROOT / configured
-
-
-def _venv_requirements_stamp_path() -> Path:
-    """Return per-venv stamp file used to skip redundant pip installs."""
-    # Keep symlink path intact so venv python wrappers like
-    # ~/.venv/bin/python -> /usr/bin/python still map back to ~/.venv.
-    stamp_name = f".klippervault_{Path(_requirements_file_name()).name}.sha256"
-    python_path = Path(sys.executable)
-    if python_path.parent.name == "bin" and (python_path.parent.parent / "pyvenv.cfg").exists():
-        return python_path.parent.parent / stamp_name
-    return REPO_ROOT / stamp_name
-
-
-def _auto_update_venv_enabled() -> bool:
-    """Return True when startup venv sync is enabled."""
-    raw = os.environ.get("KLIPPERVAULT_AUTO_UPDATE_VENV", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
-
-
-def _log_venv_sync(message: str) -> None:
-    """Emit a startup log line for venv sync decisions."""
-    print(f"[KlipperVault] venv-sync: {message}", flush=True)
-
-
-def _sync_venv_requirements_if_needed() -> None:
-    """Install requirements into active venv when requirements.txt changed."""
-    if _is_frozen_runtime():
-        _log_venv_sync("skipping in packaged runtime")
-        return
-
-    if not _auto_update_venv_enabled():
-        _log_venv_sync("disabled via KLIPPERVAULT_AUTO_UPDATE_VENV")
-        return
-
-    requirements_path = _requirements_path()
-    if not requirements_path.exists() or not requirements_path.is_file():
-        _log_venv_sync(f"{requirements_path} not found; skipping")
-        return
-
-    required_hash = _requirements_hash(requirements_path)
-    stamp_path = _venv_requirements_stamp_path()
-
-    try:
-        installed_hash = stamp_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        installed_hash = ""
-
-    if installed_hash == required_hash:
-        _log_venv_sync("requirements unchanged; skipping")
-        return
-
-    _log_venv_sync(f"requirements changed; running pip install for {requirements_path.name}")
-    subprocess.run(  # nosec B603
-        [sys.executable, "-m", "pip", "install", "-r", str(requirements_path)],
-        cwd=str(REPO_ROOT),
-        check=True,
-    )
-
-    stamp_path.write_text(required_hash + "\n", encoding="utf-8")
-    _log_venv_sync("requirements sync completed")
 
 
 def _load_app_version() -> str:
@@ -287,8 +208,6 @@ def _is_benign_shutdown_exception(error: BaseException) -> bool:
 
 def main() -> None:
     """Start the KlipperVault GUI runtime."""
-    _sync_venv_requirements_if_needed()
-
     from klipper_macro_gui import build_ui
     from klipper_vault_config import _FIXED_WEB_UI_PORT
     from klipper_vault_i18n import t
