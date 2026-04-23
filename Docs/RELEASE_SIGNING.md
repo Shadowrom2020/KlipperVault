@@ -31,27 +31,28 @@ Verify the signature:
 codesign --verify --verbose dist/KlipperVault.app
 ```
 
-### Sign and Package the DMG
+### Sign and Package the macOS Artifact
 
 ```bash
-# After building DMG with scripts/build_dmg_installer.py
-codesign --force --sign "Developer ID Application" \
-  release/KlipperVault-*.dmg
+# After building the local macOS release artifact (see Docs/MacOS.md)
+MACOS_ARTIFACT="$(ls release/KlipperVault-* | head -n 1)"
+codesign --force --sign "Developer ID Application" "$MACOS_ARTIFACT"
 ```
 
-### Notarize the DMG (Required for distribution)
+### Notarize the macOS Artifact (Required for distribution)
 
 ```bash
-# Submit the DMG for notarization
-notarytool submit release/KlipperVault-*.dmg --apple-id "your-apple-id@example.com" \
+# Submit the artifact for notarization
+MACOS_ARTIFACT="$(ls release/KlipperVault-* | head -n 1)"
+notarytool submit "$MACOS_ARTIFACT" --apple-id "your-apple-id@example.com" \
   --password "@keychain:app-specific-password" --team-id "XXXXX"
 
 # Check notarization status (use the request ID from submit output)
 notarytool info <request-id> --apple-id "your-apple-id@example.com" \
   --password "@keychain:app-specific-password" --team-id "XXXXX"
 
-# When complete, staple the notarization to the DMG
-xcrun stapler staple release/KlipperVault-*.dmg
+# When complete, staple the notarization to the artifact
+xcrun stapler staple "$MACOS_ARTIFACT"
 ```
 
 ### CI Integration (Optional)
@@ -59,7 +60,7 @@ xcrun stapler staple release/KlipperVault-*.dmg
 To automate signing in GitHub Actions, store your Apple ID and app-specific password as repository secrets:
 
 ```yaml
-- name: Sign and Notarize macOS DMG (macOS only)
+- name: Sign and Notarize macOS Artifact (macOS only)
   if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
   env:
     APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -68,8 +69,9 @@ To automate signing in GitHub Actions, store your Apple ID and app-specific pass
   run: |
     codesign --deep --force --sign "$APPLE_TEAM_ID" dist/KlipperVault.app
     python3 scripts/build_dmg_installer.py
-    codesign --force --sign "$APPLE_TEAM_ID" release/KlipperVault-*.dmg
-    notarytool submit release/KlipperVault-*.dmg --apple-id "$APPLE_ID" \
+    MACOS_ARTIFACT="$(ls release/KlipperVault-* | head -n 1)"
+    codesign --force --sign "$APPLE_TEAM_ID" "$MACOS_ARTIFACT"
+    notarytool submit "$MACOS_ARTIFACT" --apple-id "$APPLE_ID" \
       --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
 ```
 
@@ -164,7 +166,7 @@ Before publishing a release:
 - [ ] Update `CHANGELOG.md` with release notes
 - [ ] Test packaged builds locally on all platforms
 - [ ] Sign Windows executable and installer
-- [ ] Sign and notarize macOS DMG
+- [ ] Sign and notarize macOS release artifact
 - [ ] GPG-sign Linux AppImage
 - [ ] Push tag (e.g., `git tag -a v0.3.1 -m "Release 0.3.1"`)
 - [ ] Verify GitHub Actions build-executables workflow completes

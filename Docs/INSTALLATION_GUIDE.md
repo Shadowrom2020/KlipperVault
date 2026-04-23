@@ -14,9 +14,9 @@ The easiest way to get started is using the standalone executable or native inst
 
 ### macOS
 
-1. Download `KlipperVault-X.X.X-macos.dmg` from the [latest release](https://github.com/Shadowrom2020/KlipperVault/releases)
-2. Open the `.dmg` file and drag **KlipperVault.app** to the **Applications** folder
-3. Launch from Applications folder or Spotlight (`Cmd+Space`)
+1. Follow the macOS build instructions in [MacOS.md](MacOS.md)
+2. Build the app locally on macOS (`make bundle`)
+3. Launch **KlipperVault.app** from `dist/` or move it to **Applications**
 
 ### Linux
 

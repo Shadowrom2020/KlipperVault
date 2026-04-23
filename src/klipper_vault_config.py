@@ -32,6 +32,7 @@ class VaultConfig:
     theme_mode: str = "auto"
     developer: bool = False
     printer_profile_prompt_required: bool = True
+    macro_migration_prompt_enabled: bool = True
 
 
 def _read_str(rows: dict[str, str], key: str, *, default: str, lower: bool = False, require_non_empty: bool = False) -> str:
@@ -97,6 +98,7 @@ def _normalized_config(config: VaultConfig) -> VaultConfig:
     if theme_mode not in _ALLOWED_THEME_MODES:
         theme_mode = "auto"
     developer = bool(config.developer)
+    macro_migration_prompt_enabled = bool(config.macro_migration_prompt_enabled)
 
     return VaultConfig(
         version_history_size=version_history_size,
@@ -111,6 +113,7 @@ def _normalized_config(config: VaultConfig) -> VaultConfig:
         theme_mode=theme_mode,
         developer=developer,
         printer_profile_prompt_required=(not printer_vendor or not printer_model),
+        macro_migration_prompt_enabled=macro_migration_prompt_enabled,
     )
 
 
@@ -149,6 +152,7 @@ def _persist_config(conn, config: VaultConfig) -> None:
         "online_update_ref": normalized.online_update_ref,
         "theme_mode": normalized.theme_mode,
         "developer": "true" if normalized.developer else "false",
+        "macro_migration_prompt_enabled": "true" if normalized.macro_migration_prompt_enabled else "false",
     }
     for key, value in payload.items():
         conn.execute(
@@ -216,6 +220,7 @@ def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
         require_non_empty=True,
     )
     developer = _read_bool(rows, "developer", default=False)
+    macro_migration_prompt_enabled = _read_bool(rows, "macro_migration_prompt_enabled", default=True)
 
     return _normalized_config(
         VaultConfig(
@@ -230,6 +235,7 @@ def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
             online_update_ref=online_update_ref,
             theme_mode=theme_mode,
             developer=developer,
+            macro_migration_prompt_enabled=macro_migration_prompt_enabled,
         )
     )
 

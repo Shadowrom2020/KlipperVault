@@ -11,52 +11,12 @@ KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definiti
 **[→ Download the standalone executable for your platform →](https://github.com/Shadowrom2020/KlipperVault/releases)**
 
 - **Windows**: Download `.exe` installer, run it, done
-- **macOS**: Download `.dmg`, drag app to Applications
+- **macOS**: Build locally on macOS by following [Docs/MacOS.md](Docs/MacOS.md)
 - **Linux**: Download `.AppImage`, make executable, run
 
 No Python installation or virtualenv needed. Works across Windows 10+, macOS, and Linux.
 
 **[Full installation guide](Docs/INSTALLATION_GUIDE.md)** — for troubleshooting, upgrading, and source installs
-
-## Deprecation Notice: On-Printer Runtime Removed
-
-Support for running KlipperVault directly on the printer host has been removed.
-
-- Removed behavior: local/on-printer runtime mode and local printer-host execution workflow.
-- Supported behavior: remote-only `off_printer` mode using SSH/SFTP + Moonraker API.
-
-If you still have an older on-printer installation, remove it to avoid port conflicts,
-stale services, and accidental execution of unsupported code paths.
-
-### Uninstall Old On-Printer Versions (Detailed)
-
-Run the helper script from the repository root on the printer host (for example via SSH):
-
-```bash
-chmod +x ./remove.sh
-./remove.sh
-```
-
-What `remove.sh` handles automatically:
-
-1. Stops and disables legacy services (`klippervault.service`, `klipper-vault.service`).
-2. Removes legacy service unit files from `/etc/systemd/system`.
-3. Removes old app directories and virtual environments.
-4. Removes legacy on-printer config/database artifacts.
-5. Removes old launcher shortcuts in the installer user's home directory.
-6. Prints a verification summary of any remaining paths.
-
-Optional script modes:
-
-```bash
-# Preview actions without applying changes
-./remove.sh --dry-run
-
-# Keep old launcher shortcuts, remove everything else
-./remove.sh --keep-shortcuts
-```
-
-After cleanup, use this repository from a remote PC/server only, then follow the normal installation and remote profile setup flow.
 
 ## Overview
 
@@ -65,10 +25,6 @@ KlipperVault runs remotely on a PC/server, syncs Klipper cfg files over SSH/SFTP
 All printer interaction is remote-only via SSH/SFTP for config files and Moonraker HTTP API for printer state/actions.
 
 ## What's New
-
-- **Remote-only runtime (on-printer removed)**
-  - KlipperVault now runs in remote `off_printer` mode only.
-  - Printer interaction is handled via SSH/SFTP (cfg files) and Moonraker API (state/actions).
 
 - **Safer edit and sync workflow**
   - Local edits are staged first; upload happens explicitly with `Save Config`.
@@ -221,20 +177,21 @@ py -3 scripts\\build_executable.py
 
 This generates a packaged app from [klippervault.spec](klippervault.spec). CI/release automation can reuse the same spec on each platform.
 
-Platform-native installer packages:
+Platform-native distribution artifacts:
 
 - **Windows**: Inno Setup installer (.exe) — requires [Inno Setup 6](https://jrsoftware.org/isdl.php) to build locally
-- **macOS**: DMG disk image (.dmg) — built automatically with `hdiutil` on macOS
+- **macOS**: app bundle and local release artifact — build locally on macOS (see [Docs/MacOS.md](Docs/MacOS.md))
 - **Linux**: AppImage (.AppImage) — requires [appimagetool](https://github.com/AppImage/AppImageKit) to build locally
 
 When tools are not available, the build produces a ZIP archive fallback containing the executable.
 
 GitHub Actions automation:
 
-- [build-executables.yml](.github/workflows/build-executables.yml) builds versioned Windows, Linux, macOS Intel, and macOS Apple Silicon artifacts.
-  - Installers (DMG, AppImage, Inno Setup) are built on each respective OS if tools are available.
-  - All platforms produce ZIP archives as a fallback.
-- Tagged pushes matching `v*` publish all artifacts to the GitHub release for that tag.
+- [build-executables.yml](.github/workflows/build-executables.yml) builds versioned Windows and Linux artifacts.
+  - Installers (AppImage, Inno Setup) are built on each respective OS if tools are available.
+  - Both platforms produce ZIP archives as a fallback.
+- macOS binaries/installers are built manually on macOS hosts (not in GitHub Actions).
+- Tagged pushes matching `v*` publish workflow-built artifacts to the GitHub release for that tag.
 
 ## Docker Deployment
 

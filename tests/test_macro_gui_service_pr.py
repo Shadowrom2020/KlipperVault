@@ -38,29 +38,29 @@ def _run_create_pr_with_common_patches(
     changed_files: int,
 ) -> tuple[dict[str, object], Mock, Mock]:
     with ExitStack() as stack:
-        stack.enter_context(patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None))
+        stack.enter_context(patch("klipper_macro_service_online.get_open_pull_request_for_head", return_value=None))
         stack.enter_context(
             patch(
-                "klipper_macro_gui_service.load_json_file_from_branch",
+                "klipper_macro_service_online.load_json_file_from_branch",
                 return_value={"manifest_version": "1", "macros": []},
             )
         )
         stack.enter_context(
             patch(
-                "klipper_macro_gui_service.build_online_update_repository_artifacts",
+                "klipper_macro_service_online.build_online_update_repository_artifacts",
                 return_value=artifacts,
             )
         )
-        stack.enter_context(patch("klipper_macro_gui_service.create_branch", return_value={"already_exists": False}))
+        stack.enter_context(patch("klipper_macro_service_online.create_branch", return_value={"already_exists": False}))
         commit_mock = stack.enter_context(
             patch(
-                "klipper_macro_gui_service.commit_changed_text_files",
+                "klipper_macro_service_online.commit_changed_text_files",
                 return_value={"changed_files": changed_files, "commit_sha": "abc123", "created": changed_files > 0},
             )
         )
         pr_mock = stack.enter_context(
             patch(
-                "klipper_macro_gui_service.create_pull_request",
+                "klipper_macro_service_online.create_pull_request",
                 return_value={"existing": False, "number": 99, "url": "https://github.com/example/repo/pull/99"},
             )
         )
@@ -73,7 +73,7 @@ def test_create_online_update_pull_request_returns_existing_open_pr() -> None:
     service = _service()
 
     with patch(
-        "klipper_macro_gui_service.get_open_pull_request_for_head",
+        "klipper_macro_service_online.get_open_pull_request_for_head",
         return_value={"number": 17, "html_url": "https://github.com/example/repo/pull/17"},
     ):
         result = service.create_online_update_pull_request(
@@ -166,7 +166,7 @@ def test_send_mainsail_notification_posts_action_notification() -> None:
         captured["timeout"] = timeout
         return _Response()
 
-    with patch("klipper_macro_gui_service.httpx.post", side_effect=_mock_post):
+    with patch("klipper_macro_service_profiles.httpx.post", side_effect=_mock_post):
         result = service.send_mainsail_notification(message="2 updates available", title="KlipperVault")
 
     assert str(captured["url"]).endswith("/printer/gcode/script")
@@ -210,7 +210,7 @@ def test_restart_klipper_posts_restart_endpoint() -> None:
         captured["timeout"] = timeout
         return _Response()
 
-    with patch("klipper_macro_gui_service.httpx.post", side_effect=_mock_post):
+    with patch("klipper_macro_service_profiles.httpx.post", side_effect=_mock_post):
         result = service.restart_klipper()
 
     assert str(captured["url"]).endswith("/printer/restart")
@@ -244,7 +244,7 @@ def test_restart_klipper_falls_back_to_gcode_restart_when_endpoint_fails() -> No
             return _Response(200, '{"result":"ok"}')
         return _Response(500, "")
 
-    with patch("klipper_macro_gui_service.httpx.post", side_effect=_mock_post):
+    with patch("klipper_macro_service_profiles.httpx.post", side_effect=_mock_post):
         result = service.restart_klipper()
 
     assert len(calls) == 2
@@ -276,7 +276,7 @@ def test_reload_dynamic_macros_posts_dynamic_macro_script() -> None:
         captured["timeout"] = timeout
         return _Response()
 
-    with patch("klipper_macro_gui_service.httpx.post", side_effect=_mock_post):
+    with patch("klipper_macro_service_profiles.httpx.post", side_effect=_mock_post):
         result = service.reload_dynamic_macros()
 
     assert str(captured["url"]).endswith("/printer/gcode/script")
@@ -296,9 +296,9 @@ def test_create_online_update_pull_request_rejects_invalid_files_to_write_payloa
         "macro_count": 1,
     }
 
-    with patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None):
-        with patch("klipper_macro_gui_service.load_json_file_from_branch", return_value={"manifest_version": "1", "macros": []}):
-            with patch("klipper_macro_gui_service.build_online_update_repository_artifacts", return_value=artifacts):
+    with patch("klipper_macro_service_online.get_open_pull_request_for_head", return_value=None):
+        with patch("klipper_macro_service_online.load_json_file_from_branch", return_value={"manifest_version": "1", "macros": []}):
+            with patch("klipper_macro_service_online.build_online_update_repository_artifacts", return_value=artifacts):
                 try:
                     _create_pr(service)
                 except RuntimeError as exc:
@@ -318,9 +318,9 @@ def test_create_online_update_pull_request_rejects_invalid_manifest_payload() ->
         "macro_count": 1,
     }
 
-    with patch("klipper_macro_gui_service.get_open_pull_request_for_head", return_value=None):
-        with patch("klipper_macro_gui_service.load_json_file_from_branch", return_value={"manifest_version": "1", "macros": []}):
-            with patch("klipper_macro_gui_service.build_online_update_repository_artifacts", return_value=artifacts):
+    with patch("klipper_macro_service_online.get_open_pull_request_for_head", return_value=None):
+        with patch("klipper_macro_service_online.load_json_file_from_branch", return_value={"manifest_version": "1", "macros": []}):
+            with patch("klipper_macro_service_online.build_online_update_repository_artifacts", return_value=artifacts):
                 try:
                     _create_pr(service)
                 except RuntimeError as exc:
@@ -350,8 +350,8 @@ def test_import_online_updates_activates_selected_identities() -> None:
         ],
     }
 
-    with patch("klipper_macro_gui_service.import_online_macro_updates", return_value=import_result):
-        with patch("klipper_macro_gui_service.restore_macro_version") as restore_mock:
+    with patch("klipper_macro_service_online.import_online_macro_updates", return_value=import_result):
+        with patch("klipper_macro_service_online.restore_macro_version") as restore_mock:
             result = service.import_online_updates(
                 updates=[],
                 activate_identities=["printer.cfg::PRINT_START"],
@@ -394,8 +394,8 @@ def test_import_online_updates_skips_malformed_items() -> None:
         ],
     }
 
-    with patch("klipper_macro_gui_service.import_online_macro_updates", return_value=import_result):
-        with patch("klipper_macro_gui_service.restore_macro_version") as restore_mock:
+    with patch("klipper_macro_service_online.import_online_macro_updates", return_value=import_result):
+        with patch("klipper_macro_service_online.restore_macro_version") as restore_mock:
             result = service.import_online_updates(
                 updates=[],
                 activate_identities=[

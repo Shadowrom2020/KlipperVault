@@ -14,6 +14,7 @@ from klipper_macro_indexer import (
     load_duplicate_macro_groups,
     load_macro_list,
     macro_row_to_section_text,
+    migrate_printer_cfg_macros_to_macros_cfg,
     parse_macros_from_cfg,
     remove_deleted_macro,
     remove_inactive_macro_version,
@@ -101,6 +102,72 @@ def test_parse_and_render_macro_preserves_rename_existing_line(tmp_path: Path) -
     )
 
     assert "rename_existing: BASE_PAUSE" in rendered
+
+
+def test_migrate_printer_cfg_macros_moves_sections_and_creates_macros_cfg(tmp_path: Path) -> None:
+        _write(
+                tmp_path / "printer.cfg",
+                """
+                [gcode_macro START_PRINT]
+                gcode:
+                    G28
+
+                [include extras.cfg]
+
+                [gcode_macro END_PRINT]
+                gcode:
+                    M84
+                """,
+        )
+        _write(tmp_path / "extras.cfg", "[printer]\n")
+
+        result = migrate_printer_cfg_macros_to_macros_cfg(tmp_path)
+
+        assert result["moved_sections"] == 2
+        assert result["created_macros_cfg"] is True
+        assert result["include_added"] is True
+        assert result["touched_files"] == ["printer.cfg", "macros.cfg"]
+
+        printer_cfg_text = (tmp_path / "printer.cfg").read_text(encoding="utf-8")
+        assert "[gcode_macro START_PRINT]" not in printer_cfg_text
+        assert "[gcode_macro END_PRINT]" not in printer_cfg_text
+        assert "[include extras.cfg]" in printer_cfg_text
+        assert "[include macros.cfg]" in printer_cfg_text
+
+        macros_cfg_text = (tmp_path / "macros.cfg").read_text(encoding="utf-8")
+        assert "[gcode_macro START_PRINT]" in macros_cfg_text
+        assert "[gcode_macro END_PRINT]" in macros_cfg_text
+
+
+def test_migrate_printer_cfg_macros_appends_to_existing_macros_cfg(tmp_path: Path) -> None:
+        _write(
+                tmp_path / "printer.cfg",
+                """
+                [include macros.cfg]
+
+                [gcode_macro PRIME_LINE]
+                gcode:
+                    G1 X5 Y5
+                """,
+        )
+        _write(
+                tmp_path / "macros.cfg",
+                """
+                [gcode_macro EXISTING]
+                gcode:
+                    RESPOND MSG="ok"
+                """,
+        )
+
+        result = migrate_printer_cfg_macros_to_macros_cfg(tmp_path)
+
+        assert result["moved_sections"] == 1
+        assert result["created_macros_cfg"] is False
+        assert result["include_added"] is False
+
+        macros_cfg_text = (tmp_path / "macros.cfg").read_text(encoding="utf-8")
+        assert "[gcode_macro EXISTING]" in macros_cfg_text
+        assert "[gcode_macro PRIME_LINE]" in macros_cfg_text
 
 
 def test_get_cfg_load_order_follows_include_order_and_appends_unreferenced_files(tmp_path: Path) -> None:

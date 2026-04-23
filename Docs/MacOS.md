@@ -45,14 +45,18 @@ Port 10090 is fixed.
 
 ## Build a Standalone Executable
 
+macOS binaries are built locally on macOS hosts.
+GitHub Actions does not build macOS artifacts.
+
 From repository root:
 
 ```bash
-python3 -m pip install -r requirements.txt -r requirements-build.txt
+./scripts/setup_dev.sh
+source .venv/bin/activate
 make bundle
 ```
 
-Build artifacts are written under dist/ by PyInstaller. macOS app bundles must be built on macOS.
+Build artifacts are written under `dist/` by PyInstaller. macOS app bundles must be built on macOS.
 
 Run the packaged app:
 
@@ -62,15 +66,25 @@ open dist/KlipperVault.app
 
 On macOS packaged runs use native window mode (pywebview). You do not need to open a browser manually.
 
-### Build DMG Installer (Automatic)
+### Build Local macOS Release Artifact
 
-After running `make bundle`, you can optionally create a DMG disk image:
+After running `make bundle`, optionally create a local macOS release artifact:
 
 ```bash
-python3 scripts/build_dmg_installer.py
+./.venv/bin/python scripts/build_dmg_installer.py
 ```
 
-This generates a .dmg file in the release/ directory that is ready for distribution.
+This generates a macOS release artifact in `release/` for distribution.
+
+### Optional: Package ZIP Artifact
+
+To generate the release ZIP variant used by cross-platform packaging scripts:
+
+```bash
+./.venv/bin/python scripts/package_executable_artifact.py --platform macos-arm64
+```
+
+Use `macos-x64` for Intel builds.
 
 ## Uninstall Source Install
 

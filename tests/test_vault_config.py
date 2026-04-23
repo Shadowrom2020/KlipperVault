@@ -20,6 +20,7 @@ def test_load_or_create_bootstraps_defaults_in_db(tmp_path: Path) -> None:
     assert config.theme_mode == "auto"
     assert config.developer is False
     assert config.printer_profile_prompt_required is True
+    assert config.macro_migration_prompt_enabled is True
     assert not (tmp_path / "klippervault.cfg").exists()
 
 
@@ -52,6 +53,7 @@ developer: true
     assert loaded.printer_model == ""
     assert loaded.theme_mode == "auto"
     assert loaded.developer is False
+    assert loaded.macro_migration_prompt_enabled is True
 
 
 def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
@@ -72,6 +74,7 @@ def test_load_or_create_applies_clamps_and_fallbacks(tmp_path: Path) -> None:
     assert config.ui_language == "de"
     assert config.theme_mode == "auto"
     assert config.runtime_mode == "off_printer"
+    assert config.macro_migration_prompt_enabled is True
 
 
 def test_save_persists_settings_in_db(tmp_path: Path) -> None:
@@ -90,6 +93,7 @@ def test_save_persists_settings_in_db(tmp_path: Path) -> None:
             online_update_ref="dev",
             theme_mode="dark",
             developer=True,
+            macro_migration_prompt_enabled=False,
         ),
         db_path,
     )
@@ -106,6 +110,7 @@ def test_save_persists_settings_in_db(tmp_path: Path) -> None:
     assert config.theme_mode == "dark"
     assert config.developer is True
     assert config.runtime_mode == "off_printer"
+    assert config.macro_migration_prompt_enabled is False
 
 
 def test_default_db_path_is_stable_when_not_provided(tmp_path: Path) -> None:

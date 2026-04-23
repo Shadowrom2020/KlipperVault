@@ -34,7 +34,7 @@ Release date: YYYY-MM-DD
 Recommended: use the native installer for your platform.
 
 - Windows installer: `KlipperVault-X.Y.Z-windows-x64.exe`
-- macOS disk image: `KlipperVault-X.Y.Z-macos.dmg`
+- macOS local build instructions: [Docs/MacOS.md](https://github.com/Shadowrom2020/KlipperVault/blob/main/Docs/MacOS.md)
 - Linux AppImage: `KlipperVault-X.Y.Z-linux-x64.AppImage`
 - Portable archives: `KlipperVault-X.Y.Z-<platform>.zip`
 

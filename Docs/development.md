@@ -196,11 +196,9 @@ This triggers the automated release workflow.
 
 The GitHub Actions `build-executables.yml` workflow:
 
-1. **Builds on all platforms** (parallel):
+1. **Builds on CI-supported platforms** (parallel):
    - Linux (ubuntu-latest)
    - Windows (windows-latest)
-   - macOS Intel (macos-15-intel)
-   - macOS Apple Silicon (macos-14)
 
 2. **For each platform**:
    - Installs Python 3.13
@@ -208,20 +206,21 @@ The GitHub Actions `build-executables.yml` workflow:
    - Runs `python scripts/build_executable.py` (PyInstaller)
    - Builds native installers if tools available:
      - `.exe` (Windows via Inno Setup)
-     - `.dmg` (macOS)
      - `.AppImage` (Linux)
    - Creates fallback ZIP archives (always available)
    - Runs smoke test: `scripts/test_packaged_executable.py`
 
 3. **Publishes automatically**:
-   - Downloads all artifacts from 4 build jobs
+   - Downloads all artifacts from CI build jobs
    - Creates GitHub Release with the tag
    - Uploads all packages (installers + ZIPs + signatures)
+
+macOS artifacts are built manually on macOS hosts and uploaded separately during release preparation.
 
 #### 3. What Gets Published
 
 For each platform:
-- Native installer if available (`.exe`, `.dmg`, `.AppImage`)
+- Native installer/artifact if available (`.exe`, macOS local artifact, `.AppImage`)
 - ZIP archive with contents
 - `.asc` signature file (GPG signed if configured)
 

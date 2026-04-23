@@ -31,14 +31,6 @@ jobs:
             label: Windows
             platform: windows-x64
             python: "3.13"
-          - runner: macos-15-intel
-            label: macOS Intel
-            platform: macos-x64
-            python: "3.13"
-          - runner: macos-14
-            label: macOS Apple Silicon
-            platform: macos-arm64
-            python: "3.13"
 
     steps:
       - name: Checkout repository
@@ -72,11 +64,6 @@ jobs:
 
       - name: Archive packaged executable
         run: python scripts/package_executable_artifact.py --platform ${{ matrix.platform }}
-
-      - name: Build macOS DMG installer (macOS only)
-        if: runner.os == 'macOS'
-        run: python scripts/build_dmg_installer.py --platform ${{ matrix.platform }}
-        continue-on-error: true
 
       - name: Build Linux AppImage installer (Linux only)
         if: runner.os == 'Linux'

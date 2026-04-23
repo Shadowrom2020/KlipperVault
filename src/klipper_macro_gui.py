@@ -18,6 +18,13 @@ from urllib.parse import urlparse, urlunparse
 from nicegui import ui
 
 from klipper_macro_compare import MacroCompareView
+from klipper_macro_gui_create_pr_flow import (
+    begin_create_pr_request as _begin_create_pr_request,
+    collect_create_pr_inputs as _collect_create_pr_inputs,
+    finish_create_pr_request as _finish_create_pr_request,
+    set_create_pr_request_failure as _set_create_pr_request_failure,
+    validate_create_pr_inputs as _validate_create_pr_inputs,
+)
 from klipper_macro_gui_logic import (
     duplicate_names_for_macros,
     filter_macros,
@@ -28,6 +35,7 @@ from klipper_macro_gui_logic import (
 )
 from klipper_macro_gui_service import MacroGuiService
 from klipper_macro_gui_state import UIState
+from klipper_macro_gui_timers import register_periodic_updates
 from klipper_macro_viewer import MacroViewer, format_ts as _format_ts
 from klipper_type_utils import to_dict_list as _as_dict_list
 from klipper_type_utils import to_int as _to_int
@@ -278,53 +286,725 @@ def build_ui(app_version: str = "unknown") -> None:
     )
     _print_state_refresh_inflight = False
     _printer_card_status_refresh_inflight = False
+    _macro_migration_prompt_shown = False
 
+    # ── Pre-declared local UI references (set by section builders below) ──────
+    # These allow callbacks defined later to close over the same variables
+    # that the builder functions assign. Python closures capture variables by
+    # reference, so callbacks always see the post-builder values at call time.
     start_page_container: ui.column | None = None
     macro_page_container: ui.column | None = None
     printer_editor_card: ui.card | None = None
     printer_editor_title: ui.label | None = None
+    back_to_printers_button: ui.button | None = None
+    macro_actions_button: ui.button | None = None
+    macro_actions_menu: ui.menu | None = None
+    macro_migration_menu_item: ui.menu_item | None = None
+    macro_migration_menu_item_wrapper: ui.element | None = None
+    reload_dynamic_macros_button: ui.button | None = None
+    restart_klipper_button: ui.button | None = None
+    duplicate_warning_button: ui.button | None = None
+    save_config_button: ui.button | None = None
+    index_button: ui.button | None = None
+    settings_toolbar_button: ui.button | None = None
+    start_page_status_label: ui.label | None = None
+    refresh_printers_button: ui.button | None = None
+    add_printer_button: ui.button | None = None
+    test_active_printer_button: ui.button | None = None
+    backup_name_input: ui.input | None = None
+    backup_error_label: ui.label | None = None
+    create_backup_button: ui.button | None = None
+    backup_view_title: ui.label | None = None
+    backup_view_subtitle: ui.label | None = None
+    backup_view_table: ui.table | None = None
+    # Macro page section variables
+    search_input: ui.input | None = None
+    duplicates_button: ui.button | None = None
+    new_button: ui.button | None = None
+    active_filter_button: ui.button | None = None
+    sort_radio: ui.radio | None = None
+    macro_count_label: ui.label | None = None
+    prev_page_button: ui.button | None = None
+    next_page_button: ui.button | None = None
+    macro_list: ui.list | None = None
+    viewer: MacroViewer | None = None
+    total_macros_label: ui.label | None = None
+    duplicate_macros_label: ui.label | None = None
+    deleted_macros_label: ui.label | None = None
+    distinct_files_label: ui.label | None = None
+    last_update_label: ui.label | None = None
+    purge_deleted_button: ui.button | None = None
+    status_label: ui.label | None = None
+    off_printer_profile_label: ui.label | None = None
+    off_printer_cfg_list_button: ui.button | None = None
+    backup_list: ui.list | None = None
+    # Start page section variables
+    printer_editor_card: ui.card | None = None
+    printer_editor_title: ui.label | None = None
+    ssh_profile_select: ui.select | None = None
+    ssh_profile_name_input: ui.input | None = None
+    ssh_profile_host_input: ui.input | None = None
+    ssh_profile_port_input: ui.number | None = None
+    ssh_profile_username_input: ui.input | None = None
+    ssh_profile_remote_dir_input: ui.input | None = None
+    ssh_profile_moonraker_url_input: ui.input | None = None
+    ssh_profile_auth_mode_select: ui.select | None = None
+    ssh_profile_secret_input: ui.input | None = None
+    ssh_profile_secret_mode_label: ui.label | None = None
+    ssh_profile_secret_state_label: ui.label | None = None
+    ssh_profile_active_toggle: ui.switch | None = None
+    ssh_profile_error_label: ui.label | None = None
+    ssh_profile_status_label: ui.label | None = None
+    refresh_ssh_profiles_button: ui.button | None = None
+    new_ssh_profile_button: ui.button | None = None
+    delete_ssh_profile_button: ui.button | None = None
+    activate_ssh_profile_button: ui.button | None = None
+    save_ssh_profile_button: ui.button | None = None
+    hide_printer_editor_button: ui.button | None = None
+    printer_cards_container: ui.row | None = None
+    # Early dialog variables
+    printer_connecting_dialog: ui.dialog | None = None
+    printer_connecting_label: ui.label | None = None
+    file_operation_dialog: ui.dialog | None = None
+    file_operation_title: ui.label | None = None
+    file_operation_phase: ui.label | None = None
+    file_operation_percent: ui.label | None = None
+    file_operation_progress: ui.linear_progress | None = None
+    printer_profile_dialog: ui.dialog | None = None
+    printer_vendor_input: ui.input | None = None
+    printer_model_input: ui.input | None = None
+    printer_profile_error: ui.label | None = None
+    save_printer_profile_button: ui.button | None = None
+    app_settings_dialog: ui.dialog | None = None
+    settings_version_history_input: ui.number | None = None
+    settings_language_select: ui.select | None = None
+    settings_theme_mode_select: ui.select | None = None
+    settings_repo_url_input: ui.input | None = None
+    settings_manifest_input: ui.input | None = None
+    settings_ref_input: ui.input | None = None
+    settings_developer_toggle: ui.switch | None = None
+    settings_error_label: ui.label | None = None
+    settings_info_label: ui.label | None = None
+    save_settings_button: ui.button | None = None
+    macro_migration_prompt_dialog: ui.dialog | None = None
+    macro_migration_prompt_message: ui.label | None = None
+    macro_migration_prompt_error: ui.label | None = None
+    confirm_macro_migration_button: ui.button | None = None
+    decline_macro_migration_button: ui.button | None = None
+    # Phase 4: Macro operation dialogs variables
+    load_order_dialog: ui.dialog | None = None
+    restore_dialog: ui.dialog | None = None
+    restore_error_label: ui.label | None = None
+    delete_dialog: ui.dialog | None = None
+    delete_error_label: ui.label | None = None
+    export_dialog: ui.dialog | None = None
+    export_macro_list: ui.list | None = None
+    export_error_label: ui.label | None = None
+    import_dialog: ui.dialog | None = None
+    import_error_label: ui.label | None = None
+    create_pr_dialog: ui.dialog | None = None
+    create_pr_error_label: ui.label | None = None
+    load_order_summary_label: ui.label | None = None
+    load_order_text: ui.label | None = None
+    confirm_restore_button: ui.button | None = None
+    confirm_delete_button: ui.button | None = None
+    confirm_export_button: ui.button | None = None
+    confirm_import_button: ui.button | None = None
+    confirm_create_pr_button: ui.button | None = None
+    create_pr_progress_label: ui.label | None = None
+    create_pr_progress_bar: ui.linear_progress | None = None
+    export_macro_checkboxes: dict[str, object] = {}
+    # Phase 5: Remote dialogs variables
+    online_update_dialog: ui.dialog | None = None
+    online_update_progress_label: ui.label | None = None
+    online_update_progress_bar: ui.linear_progress | None = None
+    online_update_summary_label: ui.label | None = None
+    online_update_list: ui.column | None = None
+    online_update_error_label: ui.label | None = None
+    confirm_online_update_button: ui.button | None = None
+    duplicate_wizard_dialog: ui.dialog | None = None
+    duplicate_wizard_title: ui.label | None = None
+    duplicate_wizard_subtitle: ui.label | None = None
+    duplicate_entry_list: ui.list | None = None
+    duplicate_keep_select: ui.select | None = None
+    duplicate_compare_with_select: ui.select | None = None
+    duplicate_compare_button: ui.button | None = None
+    duplicate_wizard_error: ui.label | None = None
+    duplicate_prev_button: ui.button | None = None
+    duplicate_next_button: ui.button | None = None
+    duplicate_apply_button: ui.button | None = None
+    remote_cfg_list_dialog: ui.dialog | None = None
+    remote_cfg_list_title: ui.label | None = None
+    remote_cfg_list_subtitle: ui.label | None = None
+    remote_cfg_list_text: ui.textarea | None = None
+    remote_cfg_list_error: ui.label | None = None
+    remote_conflict_dialog: ui.dialog | None = None
+    remote_conflict_dialog_guidance: ui.label | None = None
+    remote_conflict_dialog_detail: ui.label | None = None
+    sync_after_conflict_button: ui.button | None = None
 
-    # ── Top toolbar ──────────────────────────────────────────────────────────
-    with ui.header().classes("items-center gap-2 px-4 py-2 bg-grey-9 flex-wrap") as toolbar_header:
-        state.toolbar_header = toolbar_header
-        ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
-        back_to_printers_button = ui.button(t("Back to printers"), icon="arrow_back").props("flat color=white")
-        back_to_printers_button.set_visibility(False)
-        ui.space()
-        with ui.button(t("Macro actions"), icon="menu").props("flat color=white") as macro_actions_button:
-            state.macro_actions_button = macro_actions_button
-            with ui.menu() as macro_actions_menu:
-                state.macro_actions_menu = macro_actions_menu
-                pass
-        developer_menu: ui.menu | None = None
-        if vault_cfg.developer:
-            with ui.button(t("Developer"), icon="developer_mode").props("flat color=white"):
-                with ui.menu() as developer_menu:
-                    state.developer_menu = developer_menu
+    # ── Section builder: toolbar ──────────────────────────────────────────────
+    def _build_toolbar() -> None:
+        """Build the top header toolbar and store element references on state."""
+        nonlocal back_to_printers_button, settings_toolbar_button
+        nonlocal macro_actions_button, macro_actions_menu
+        nonlocal reload_dynamic_macros_button, restart_klipper_button, duplicate_warning_button
+        nonlocal save_config_button, index_button
+        with ui.header().classes("items-center gap-2 px-4 py-2 bg-grey-9 flex-wrap") as toolbar_header:
+            state.toolbar_header = toolbar_header
+            ui.label(t("Klipper Vault")).classes("text-xl font-bold text-white")
+            back_to_printers_button = ui.button(t("Back to printers"), icon="arrow_back").props("flat color=white")
+            back_to_printers_button.set_visibility(False)
+            ui.space()
+            with ui.button(t("Macro actions"), icon="menu").props("flat color=white") as macro_actions_button_ref:
+                macro_actions_button = macro_actions_button_ref
+                state.macro_actions_button = macro_actions_button
+                with ui.menu() as macro_actions_menu_ref:
+                    macro_actions_menu = macro_actions_menu_ref
+                    state.macro_actions_menu = macro_actions_menu
                     pass
-        reload_dynamic_macros_button = ui.button(t("Reload Dynamic Macros"), icon="autorenew").props("flat color=white")
-        reload_dynamic_macros_button.classes("text-blue-4")
-        reload_dynamic_macros_button.set_visibility(False)
-        state.reload_dynamic_macros_button = reload_dynamic_macros_button
-        
-        restart_klipper_button = ui.button(t("Restart Klipper"), icon="restart_alt").props("flat color=white")
-        restart_klipper_button.classes("text-orange-4")
-        restart_klipper_button.set_visibility(False)
-        state.restart_klipper_button = restart_klipper_button
-        
-        duplicate_warning_button = ui.button(t("Duplicates found"), icon="warning").props("flat no-caps")
-        duplicate_warning_button.classes("text-yellow-5")
-        duplicate_warning_button.set_visibility(False)
-        state.duplicate_warning_button = duplicate_warning_button
-        
-        save_config_button = ui.button(t("Save Config"), icon="cloud_upload").props("flat color=white")
-        state.save_config_button = save_config_button
-        
-        index_button = ui.button(t("Scan macros"), icon="search").props("flat color=white")
-        state.index_button = index_button
+            if vault_cfg.developer:
+                with ui.button(t("Developer"), icon="developer_mode").props("flat color=white"):
+                    with ui.menu() as developer_menu:
+                        state.developer_menu = developer_menu
+                        pass
+            reload_dynamic_macros_button = ui.button(t("Reload Dynamic Macros"), icon="autorenew").props("flat color=white")
+            reload_dynamic_macros_button.classes("text-blue-4")
+            reload_dynamic_macros_button.set_visibility(False)
+            state.reload_dynamic_macros_button = reload_dynamic_macros_button
 
-        settings_toolbar_button = ui.button(icon="settings").props("flat round color=white")
-        settings_toolbar_button.tooltip(t("Settings"))
+            restart_klipper_button = ui.button(t("Restart Klipper"), icon="restart_alt").props("flat color=white")
+            restart_klipper_button.classes("text-orange-4")
+            restart_klipper_button.set_visibility(False)
+            state.restart_klipper_button = restart_klipper_button
+
+            duplicate_warning_button = ui.button(t("Duplicates found"), icon="warning").props("flat no-caps")
+            duplicate_warning_button.classes("text-yellow-5")
+            duplicate_warning_button.set_visibility(False)
+            state.duplicate_warning_button = duplicate_warning_button
+
+            save_config_button = ui.button(t("Save Config"), icon="cloud_upload").props("flat color=white")
+            state.save_config_button = save_config_button
+
+            index_button = ui.button(t("Scan macros"), icon="search").props("flat color=white")
+            state.index_button = index_button
+
+            settings_toolbar_button = ui.button(icon="settings").props("flat round color=white")
+            settings_toolbar_button.tooltip(t("Settings"))
+
+    # ── Section builder: macro page layout ───────────────────────────────────
+    def _build_macro_page() -> None:
+        """Build the macro workspace page (macro list, viewer, statistics cards)."""
+        nonlocal search_input, duplicates_button, new_button, active_filter_button, sort_radio
+        nonlocal macro_count_label, prev_page_button, next_page_button, macro_list, viewer
+        nonlocal total_macros_label, duplicate_macros_label, deleted_macros_label, distinct_files_label
+        nonlocal last_update_label, purge_deleted_button, status_label, off_printer_profile_label
+        nonlocal off_printer_cfg_list_button, backup_list, macro_page_container
+
+        with ui.column().classes("w-full") as macro_page_container_ref:
+            macro_page_container = macro_page_container_ref
+            state.macro_page_container = macro_page_container_ref
+            with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4 p-4 xl:h-[calc(100vh-110px)]"):
+                with ui.card().classes("col-span-1 xl:h-full flex flex-col overflow-hidden min-h-[55vh] xl:min-h-0"):
+                    ui.label(t("Indexed macros")).classes("text-lg font-semibold mb-2 shrink-0")
+                    search_input = ui.input(placeholder=t("Search macros…")).props("clearable dense outlined").classes("w-full mb-1 shrink-0")
+                    with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
+                        duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
+                        new_button = ui.button(t("Show new")).props("flat dense no-caps")
+                        active_filter_button = ui.button(t("Filter: {state}", state=t("all"))).props("flat dense no-caps")
+                    with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
+                        ui.label(t("Sort:")).classes("text-xs text-grey-4")
+                        sort_radio = (
+                            ui.radio(
+                                options={"load_order": t("Load order"), "alpha_asc": "A → Z", "alpha_desc": "Z → A"},
+                                value="load_order",
+                            )
+                            .props("inline dense")
+                            .classes("text-xs")
+                        )
+                    macro_count_label = ui.label(t("Items: {visible}", visible=0)).classes("text-sm text-grey-4 shrink-0")
+                    with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
+                        prev_page_button = ui.button(t("Prev"))
+                        prev_page_button.props("flat dense no-caps")
+                        next_page_button = ui.button(t("Next"))
+                        next_page_button.props("flat dense no-caps")
+                    macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
+                    state.macro_search = search_input
+                    state.macro_list = macro_list
+
+                viewer = MacroViewer()
+                state.viewer = viewer
+
+                with ui.card().classes("col-span-1 md:col-span-3 xl:col-span-1 xl:h-full overflow-auto"):
+                    ui.label(t("Stored macro statistics")).classes("text-lg font-semibold")
+                    with ui.column().classes("gap-2 mt-2"):
+                        total_macros_label = ui.label(t("Total macros: {count}", count=0))
+                        duplicate_macros_label = ui.label(t("Duplicate macros: {count}", count=0))
+                        deleted_macros_label = ui.label(t("Deleted macros: {count}", count=0))
+                        distinct_files_label = ui.label(t("Config files: {count}", count=0))
+                        last_update_label = ui.label(t("Last update: never"))
+                        purge_deleted_button = ui.button(t("Remove all deleted macros")).props(
+                            "flat color=negative no-caps"
+                        )
+                        purge_deleted_button.set_visibility(False)
+
+                    ui.separator().classes("my-2")
+                    ui.label(t("Status")).classes("text-md font-semibold mb-1")
+                    status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
+                    state.status_label = status_label
+                    off_printer_profile_label = ui.label("").classes("text-xs text-grey-5")
+                    off_printer_profile_label.set_visibility(off_printer_mode_enabled)
+                    state.off_printer_profile_label = off_printer_profile_label
+                    with ui.row().classes("items-center gap-2"):
+                        off_printer_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
+                        off_printer_cfg_list_button.set_visibility(off_printer_mode_enabled)
+                    ui.separator().classes("my-2")
+                    ui.label(t("Backups")).classes("text-md font-semibold mb-1")
+                    backup_list = ui.list().props("separator").classes("w-full max-h-[46vh] overflow-y-auto")
+
+    # ── Section builder: start page and printer editor ────────────────────────
+    def _build_start_page() -> None:
+        """Build the start page (printer selector and editor)."""
+        nonlocal start_page_container, printer_editor_card, printer_editor_title
+        nonlocal start_page_status_label, refresh_printers_button, add_printer_button, test_active_printer_button
+        nonlocal ssh_profile_select, ssh_profile_name_input, ssh_profile_host_input
+        nonlocal ssh_profile_port_input, ssh_profile_username_input, ssh_profile_remote_dir_input
+        nonlocal ssh_profile_moonraker_url_input, ssh_profile_auth_mode_select
+        nonlocal ssh_profile_secret_input, ssh_profile_secret_mode_label, ssh_profile_secret_state_label
+        nonlocal ssh_profile_active_toggle, ssh_profile_error_label, ssh_profile_status_label
+        nonlocal refresh_ssh_profiles_button, new_ssh_profile_button, delete_ssh_profile_button
+        nonlocal activate_ssh_profile_button, save_ssh_profile_button, hide_printer_editor_button
+        nonlocal printer_cards_container
+
+        with ui.column().classes("w-full p-4 gap-4") as start_page_container_ref:
+            start_page_container = start_page_container_ref
+            state.start_page_container = start_page_container_ref
+            ui.label(t("Select printer")).classes("text-2xl font-semibold")
+            ui.label(t("Choose a configured printer to open the macro workspace.")).classes("text-sm text-grey-5")
+            start_page_status_label = ui.label("").classes("text-sm text-grey-4")
+            with ui.row().classes("w-full gap-3 items-center"):
+                refresh_printers_button = ui.button(t("Refresh printers"), icon="refresh").props("flat no-caps")
+                add_printer_button = ui.button(t("Add printer"), icon="add").props("flat no-caps")
+                test_active_printer_button = ui.button(t("Test active connection"), icon="network_check").props("flat no-caps")
+            printer_cards_container = ui.row().classes("w-full gap-4 flex-wrap")
+            state.printer_cards_container = printer_cards_container
+
+        with start_page_container:
+            with ui.card().classes("w-full") as printer_editor_card_ref:
+                printer_editor_card = printer_editor_card_ref
+                printer_editor_title = ui.label(t("Printer connection management")).classes("text-lg font-semibold")
+                ui.label(t("Configure SSH settings as part of each printer profile for off-printer mode.")).classes("text-sm text-grey-5")
+                ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
+                with ui.row().classes("w-full gap-2"):
+                    ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
+                    ssh_profile_host_input = ui.input(label=t("Host"), on_change=lambda e: _sync_moonraker_url_host(str(e.value or ""))).props("outlined dense").classes("flex-1")
+                with ui.row().classes("w-full gap-2"):
+                    ssh_profile_port_input = ui.number(label=t("Port"), value=22).props("outlined dense").classes("w-32")
+                    ssh_profile_username_input = ui.input(label=t("Username")).props("outlined dense").classes("flex-1")
+                ssh_profile_remote_dir_input = ui.input(label=t("Remote config directory"), value="~/printer_data/config").props(
+                    "outlined dense"
+                ).classes("w-full")
+                ssh_profile_moonraker_url_input = ui.input(
+                    label=t("Moonraker URL"), value="http://127.0.0.1:7125"
+                ).props("outlined dense").classes("w-full")
+                ssh_profile_auth_mode_select = ui.select(
+                    options={"key": t("SSH key"), "password": t("Password")},
+                    value="key",
+                    label=t("Authentication mode"),
+                ).props("outlined dense").classes("w-full")
+                ssh_profile_secret_input = ui.input(label=t("SSH secret")).props("outlined dense type=text").classes(
+                    "w-full"
+                )
+                ssh_profile_secret_mode_label = ui.label("").classes("text-xs text-grey-5")
+                ssh_profile_secret_state_label = ui.label("").classes("text-xs text-grey-5")
+                ssh_profile_active_toggle = ui.switch(t("Set as active profile"), value=True)
+                ssh_profile_error_label = ui.label("").classes("text-sm text-negative mt-1")
+                ssh_profile_status_label = ui.label("").classes("text-sm text-positive mt-1")
+                with ui.row().classes("w-full justify-between mt-3"):
+                    with ui.row().classes("gap-2"):
+                        hide_printer_editor_button = ui.button(t("Close editor")).props("flat no-caps")
+                        refresh_ssh_profiles_button = ui.button(t("Refresh")).props("flat no-caps")
+                        new_ssh_profile_button = ui.button(t("Add printer")).props("flat no-caps")
+                    with ui.row().classes("gap-2"):
+                        delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
+                        activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")
+                        save_ssh_profile_button = ui.button(t("Save profile")).props("color=primary no-caps")
+            printer_editor_card_ref.set_visibility(False)
+
+    # ── Section builder: early dialogs ────────────────────────────────────────
+    def _build_early_dialogs() -> None:
+        """Build early dialogs: printer connecting, file operations, printer profile, app settings."""
+        nonlocal printer_connecting_dialog, printer_connecting_label
+        nonlocal file_operation_dialog, file_operation_title, file_operation_phase, file_operation_percent, file_operation_progress
+        nonlocal printer_profile_dialog, printer_vendor_input, printer_model_input, printer_profile_error, save_printer_profile_button
+        nonlocal app_settings_dialog, settings_version_history_input, settings_language_select, settings_theme_mode_select
+        nonlocal settings_repo_url_input, settings_manifest_input, settings_ref_input, settings_developer_toggle
+        nonlocal settings_error_label, settings_info_label, save_settings_button
+        nonlocal macro_migration_prompt_dialog, macro_migration_prompt_message, macro_migration_prompt_error
+        nonlocal confirm_macro_migration_button, decline_macro_migration_button
+
+        with ui.dialog().props("persistent") as printer_connecting_dialog_ref, ui.card().classes("w-[30rem] max-w-[94vw]"):
+            printer_connecting_dialog = printer_connecting_dialog_ref
+            ui.label(t("Connecting to printer...")).classes("text-lg font-semibold")
+            printer_connecting_label = ui.label(
+                t("KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again.")
+            ).classes("text-sm text-grey-5")
+            state.printer_connecting_dialog = printer_connecting_dialog_ref
+            state.printer_connecting_label = printer_connecting_label
+
+        def _set_printer_connecting_modal(visible: bool, detail: str = "") -> None:
+            """Show a modal while reconnecting to printer and hide when healthy again."""
+            if visible:
+                detail_text = str(detail or "").strip()
+                if detail_text:
+                    state.printer_connecting_label.set_text(
+                        t(
+                            "KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again."
+                        )
+                        + "\n"
+                        + detail_text
+                    )
+                else:
+                    state.printer_connecting_label.set_text(
+                        t("KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again.")
+                    )
+                if not state.printer_connecting_modal_open:
+                    state.printer_connecting_dialog.open()
+                    state.printer_connecting_modal_open = True
+                return
+
+            if state.printer_connecting_modal_open:
+                state.printer_connecting_dialog.close()
+                state.printer_connecting_modal_open = False
+
+        state._set_printer_connecting_modal = _set_printer_connecting_modal
+
+        with ui.dialog().props("persistent") as file_operation_dialog_ref, ui.card().classes("w-[34rem] max-w-[96vw]"):
+            file_operation_dialog = file_operation_dialog_ref
+            file_operation_title = ui.label(t("Working on files")).classes("text-lg font-semibold")
+            file_operation_phase = ui.label("").classes("text-sm text-grey-5")
+            file_operation_percent = ui.label("0%").classes("text-sm text-grey-5 mt-1")
+            file_operation_progress = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
+
+        def _set_file_operation_progress(phase: str, current: int, total: int) -> None:
+            """Update blocking file-operation modal progress in percent."""
+            display_total = max(int(total), 1)
+            display_current = min(max(int(current), 0), display_total)
+            value = display_current / display_total
+            percent = int(round(value * 100.0))
+            file_operation_phase.set_text(_file_operation_phase_text(phase))
+            file_operation_percent.set_text(t("{percent}%", percent=percent))
+            file_operation_progress.value = value
+            file_operation_progress.update()
+
+        async def _run_with_file_operation_modal(title_text: str, action):
+            """Run a blocking file operation in a thread while showing a progress modal."""
+            file_operation_title.set_text(str(title_text))
+            _set_file_operation_progress("", 0, 1)
+            file_operation_dialog.open()
+            await asyncio.sleep(0)
+            try:
+                return await asyncio.to_thread(action)
+            finally:
+                file_operation_dialog.close()
+
+        state._set_file_operation_progress = _set_file_operation_progress
+        state._run_with_file_operation_modal = _run_with_file_operation_modal
+
+        with ui.dialog().props("persistent") as printer_profile_dialog_ref, ui.card().classes("w-[34rem] max-w-[96vw]"):
+            printer_profile_dialog = printer_profile_dialog_ref
+            ui.label(t("Printer identity")).classes("text-lg font-semibold")
+            ui.label(t("Automatic detection could not determine vendor/model. Please enter them.")).classes("text-sm text-grey-5")
+            printer_vendor_input = ui.input(label=t("Printer vendor")).props("outlined autofocus").classes("w-full mt-2")
+            printer_model_input = ui.input(label=t("Printer model")).props("outlined").classes("w-full mt-2")
+            printer_profile_error = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                save_printer_profile_button = ui.button(t("Save")).props("color=primary no-caps")
+        state.printer_profile_dialog = printer_profile_dialog
+        state.printer_vendor_input = printer_vendor_input
+        state.printer_model_input = printer_model_input
+        state.printer_profile_error = printer_profile_error
+        state.save_printer_profile_button = save_printer_profile_button
+
+        with ui.dialog() as app_settings_dialog_ref, ui.card().classes("w-[42rem] max-w-[96vw]"):
+            app_settings_dialog = app_settings_dialog_ref
+            ui.label(t("Application settings")).classes("text-lg font-semibold")
+            ui.label(t("Configure KlipperVault settings stored in the local database.")).classes("text-sm text-grey-5")
+            settings_version_history_input = (
+                ui.number(label=t("Version history size"), value=vault_cfg.version_history_size)
+                .props("outlined dense")
+                .classes("w-full mt-2")
+            )
+            settings_language_select = (
+                ui.select(
+                    options={"en": "English", "de": "Deutsch", "fr": "Francais"},
+                    value=str(vault_cfg.ui_language or "en"),
+                    label=t("UI language"),
+                )
+                .props("outlined dense")
+                .classes("w-full")
+            )
+            settings_theme_mode_select = (
+                ui.select(
+                    options={
+                        "auto": t("Auto (follow system/browser)"),
+                        "light": t("Light"),
+                        "dark": t("Dark"),
+                    },
+                    value=_normalized_theme_mode(vault_cfg.theme_mode),
+                    label=t("Theme mode"),
+                )
+                .props("outlined dense")
+                .classes("w-full")
+            )
+            settings_repo_url_input = ui.input(label=t("Online update repository URL")).props("outlined dense").classes("w-full")
+            settings_manifest_input = ui.input(label=t("Online update manifest path")).props("outlined dense").classes("w-full")
+            settings_ref_input = ui.input(label=t("Online update reference")).props("outlined dense").classes("w-full")
+            settings_developer_toggle = ui.switch(t("Developer mode"), value=bool(vault_cfg.developer))
+            settings_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            settings_info_label = ui.label("").classes("text-sm text-grey-5 mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", app_settings_dialog_ref.close)
+                save_settings_button = ui.button(t("Save")).props("color=primary no-caps")
+
+        with ui.dialog().props("persistent") as macro_migration_prompt_dialog_ref, ui.card().classes("w-[36rem] max-w-[96vw]"):
+            macro_migration_prompt_dialog = macro_migration_prompt_dialog_ref
+            ui.label(t("Macro migration available")).classes("text-lg font-semibold")
+            macro_migration_prompt_message = ui.label("").classes("text-sm text-grey-5")
+            macro_migration_prompt_error = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                decline_macro_migration_button = ui.button(t("Don't ask again")).props("flat no-caps")
+                confirm_macro_migration_button = ui.button(t("Migrate now")).props("color=primary no-caps")
+
+    # ── Section builder: macro operation dialogs ─────────────────────────────
+    def _build_macro_operation_dialogs() -> None:
+        """Build macro operation dialogs: load order, restore, delete, export, import, create PR."""
+        nonlocal load_order_dialog, restore_dialog, delete_dialog, export_dialog, import_dialog, create_pr_dialog
+        nonlocal load_order_summary_label, load_order_text
+        nonlocal restore_error_label, delete_error_label, export_macro_list, export_error_label, import_error_label
+        nonlocal confirm_restore_button, confirm_delete_button, confirm_export_button, confirm_import_button
+        nonlocal confirm_create_pr_button, create_pr_progress_label, create_pr_progress_bar, create_pr_error_label
+        nonlocal export_macro_checkboxes
+
+        with ui.dialog() as load_order_dialog_ref, ui.card().classes(
+            "w-[56rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col overflow-hidden"
+        ):
+            load_order_dialog = load_order_dialog_ref
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.button(icon="close", on_click=load_order_dialog_ref.close).props("flat dense round")
+                ui.label(t("Klipper loading order overview")).classes("text-lg font-semibold")
+                ui.space()
+            load_order_summary_label = ui.label("").classes("text-sm text-grey-5")
+            ui.label(t("Klipper parse order")).classes("text-sm font-semibold mt-2")
+            load_order_text = ui.label("").classes(
+                "w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words border border-grey-8 rounded p-3 font-mono text-sm mt-2"
+            )
+
+            with ui.row().classes("w-full items-center mt-3"):
+                ui.space()
+                flat_dialog_button("Close", load_order_dialog_ref.close)
+        state.load_order_dialog = load_order_dialog_ref
+
+        with ui.dialog() as restore_dialog_ref, ui.card().classes("w-[30rem] max-w-[96vw]"):
+            restore_dialog = restore_dialog_ref
+            ui.label(t("Restore backup")).classes("text-lg font-semibold")
+            restore_confirm_label = ui.label("").classes("text-sm text-grey-5")
+            restore_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", restore_dialog_ref.close)
+                confirm_restore_button = ui.button(t("Restore")).props("color=warning no-caps")
+            state.restore_dialog = restore_dialog_ref
+            state.restore_confirm_label = restore_confirm_label
+            state.restore_error_label = restore_error_label
+
+        with ui.dialog() as delete_dialog_ref, ui.card().classes("w-[30rem] max-w-[96vw]"):
+            delete_dialog = delete_dialog_ref
+            ui.label(t("Delete backup")).classes("text-lg font-semibold")
+            delete_confirm_label = ui.label("").classes("text-sm text-grey-5")
+            delete_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", delete_dialog_ref.close)
+                confirm_delete_button = ui.button(t("Delete")).props("color=negative no-caps")
+            state.delete_dialog = delete_dialog_ref
+            state.delete_confirm_label = delete_confirm_label
+            state.delete_error_label = delete_error_label
+
+        with ui.dialog() as export_dialog_ref, ui.card().classes("w-[42rem] max-w-[98vw]"):
+            export_dialog = export_dialog_ref
+            ui.label(t("Export macros")).classes("text-lg font-semibold")
+            ui.label(t("Select one or more macros to export into a share file.")).classes("text-sm text-grey-5")
+            ui.label(t("Macros")).classes("text-sm mt-2")
+            export_macro_list = ui.column().classes("w-full max-h-[20rem] overflow-y-auto gap-1 border rounded p-2")
+            export_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", export_dialog_ref.close)
+                confirm_export_button = ui.button(t("Export")).props("color=primary no-caps")
+        state.export_dialog = export_dialog_ref
+        state.export_macro_list = export_macro_list
+
+        export_macro_checkboxes = {}
+
+        with ui.dialog() as import_dialog_ref, ui.card().classes("w-[38rem] max-w-[98vw]"):
+            import_dialog = import_dialog_ref
+            ui.label(t("Import macros")).classes("text-lg font-semibold")
+            ui.label(t("Import a shared macro file into inactive new versions.")).classes("text-sm text-grey-5")
+            import_file_input = ui.upload(on_upload=_on_import_upload, auto_upload=True).props("accept=.json").classes("w-full mt-2")
+            import_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", import_dialog_ref.close)
+                confirm_import_button = ui.button(t("Import")).props("color=primary no-caps")
+        state.import_dialog = import_dialog_ref
+        state.import_uploader = import_file_input
+        state.import_error_label = import_error_label
+
+        with ui.dialog() as create_pr_dialog_ref, ui.card().classes("w-[46rem] max-w-[98vw]"):
+            create_pr_dialog = create_pr_dialog_ref
+            ui.label(t("Create Pull Request")).classes("text-lg font-semibold")
+            ui.label(t("Publish active macros directly to GitHub and open a pull request.")).classes("text-sm text-grey-5")
+            pr_repo_url_input = ui.input(label=t("Repository URL")).props("outlined").classes("w-full mt-2")
+            with ui.row().classes("w-full gap-2"):
+                pr_base_branch_input = ui.input(label=t("Base branch")).props("outlined").classes("w-full")
+                pr_head_branch_input = ui.input(label=t("Head branch")).props("outlined").classes("w-full")
+            pr_title_input = ui.input(label=t("Pull request title")).props("outlined").classes("w-full")
+            pr_body_input = ui.textarea(label=t("Pull request description")).props("outlined autogrow").classes("w-full")
+            pr_token_input = ui.input(label=t("GitHub API token")).props("outlined password password_toggle_button").classes("w-full")
+            ui.label(t("Token is used only for this request and is not stored.")).classes("text-xs text-grey-5")
+            ui.label(t("Required token permissions: Contents (write) and Pull requests (write)."))
+            create_pr_progress_label = ui.label("").classes("text-sm text-grey-5 mt-2")
+            create_pr_progress_bar = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
+            create_pr_progress_label.set_visibility(False)
+            create_pr_progress_bar.set_visibility(False)
+            create_pr_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", create_pr_dialog_ref.close)
+                confirm_create_pr_button = ui.button(t("Create PR")).props("color=primary no-caps")
+            state.create_pr_dialog = create_pr_dialog_ref
+            state.pr_repo_url_input = pr_repo_url_input
+            state.pr_base_branch_input = pr_base_branch_input
+            state.pr_head_branch_input = pr_head_branch_input
+            state.pr_title_input = pr_title_input
+            state.pr_body_input = pr_body_input
+            state.pr_token_input = pr_token_input
+            state.create_pr_error_label = create_pr_error_label
+            state.confirm_create_pr_button = confirm_create_pr_button
+
+    # ── Section builder: remote dialogs ──────────────────────────────────────
+    def _build_remote_dialogs() -> None:
+        """Build remote dialogs: online update, duplicate wizard, remote cfg, remote conflict."""
+        nonlocal online_update_dialog, online_update_progress_label, online_update_progress_bar
+        nonlocal online_update_summary_label, online_update_list, online_update_error_label, confirm_online_update_button
+        nonlocal duplicate_wizard_dialog, duplicate_wizard_title, duplicate_wizard_subtitle
+        nonlocal duplicate_entry_list, duplicate_keep_select, duplicate_compare_with_select, duplicate_compare_button
+        nonlocal duplicate_wizard_error, duplicate_prev_button, duplicate_next_button, duplicate_apply_button
+        nonlocal remote_cfg_list_dialog, remote_cfg_list_title, remote_cfg_list_subtitle, remote_cfg_list_text, remote_cfg_list_error
+        nonlocal remote_conflict_dialog, remote_conflict_dialog_guidance, remote_conflict_dialog_detail, sync_after_conflict_button
+
+        with ui.dialog() as online_update_dialog_ref, ui.card().classes("w-[46rem] max-w-[98vw]"):
+            online_update_dialog = online_update_dialog_ref
+            ui.label(t("Online macro updates")).classes("text-lg font-semibold")
+            ui.label(t("Changed macros are imported as new versions. Select which ones to activate now.")).classes("text-sm text-grey-5")
+            online_update_progress_label = ui.label("").classes("text-sm text-grey-5 mt-2")
+            online_update_progress_bar = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
+            online_update_progress_label.set_visibility(False)
+            online_update_progress_bar.set_visibility(False)
+            online_update_summary_label = ui.label("").classes("text-sm text-grey-5 mt-1")
+            ui.label(t("Macros")).classes("text-sm mt-2")
+            online_update_list = ui.column().classes("w-full max-h-[20rem] overflow-y-auto gap-1 border rounded p-2")
+            online_update_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", online_update_dialog_ref.close)
+                confirm_online_update_button = ui.button(t("Import updates")).props("color=primary no-caps")
+                confirm_online_update_button.set_visibility(False)
+            state.online_update_dialog = online_update_dialog_ref
+            state.online_update_list = online_update_list
+            state.online_update_summary_label = online_update_summary_label
+            state.online_update_error_label = online_update_error_label
+            state.confirm_online_update_button = confirm_online_update_button
+
+        with ui.dialog() as duplicate_wizard_dialog_ref, ui.card().classes("w-[48rem] max-w-[98vw]"):
+            duplicate_wizard_dialog = duplicate_wizard_dialog_ref
+            duplicate_wizard_title = ui.label(t("Resolve duplicate macros")).classes("text-lg font-semibold")
+            duplicate_wizard_subtitle = ui.label("").classes("text-sm text-grey-5")
+            ui.separator().classes("my-2")
+            duplicate_entry_list = ui.list().props("separator").classes("w-full max-h-[40vh] overflow-y-auto")
+            duplicate_keep_select = (
+                ui.select(options={}, label=t("Keep definition from"))
+                .props("outlined dense")
+                .classes("w-full mt-2")
+            )
+            with ui.row().classes("w-full items-end gap-2 mt-2"):
+                duplicate_compare_with_select = (
+                    ui.select(options={}, label=t("Compare keep with"))
+                    .props("outlined dense")
+                    .classes("flex-1")
+                )
+                duplicate_compare_button = ui.button(t("Compare")).props("flat no-caps")
+            duplicate_wizard_error = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-between gap-2 mt-3"):
+                duplicate_prev_button = ui.button(t("Previous")).props("flat no-caps")
+                with ui.row().classes("gap-2"):
+                    flat_dialog_button("Cancel", duplicate_wizard_dialog_ref.close)
+                    duplicate_next_button = ui.button(t("Next")).props("flat no-caps")
+                    duplicate_apply_button = ui.button(t("Apply")).props("color=warning no-caps")
+            state.duplicate_wizard_dialog = duplicate_wizard_dialog_ref
+            state.duplicate_wizard_title = duplicate_wizard_title
+            state.duplicate_wizard_subtitle = duplicate_wizard_subtitle
+            state.duplicate_wizard_error = duplicate_wizard_error
+
+        with ui.dialog() as remote_cfg_list_dialog_ref, ui.card().classes("w-[52rem] max-w-[98vw] h-[82vh] max-h-[92vh] flex flex-col"):
+            remote_cfg_list_dialog = remote_cfg_list_dialog_ref
+            remote_cfg_list_title = ui.label(t("Remote cfg files")).classes("text-lg font-semibold")
+            remote_cfg_list_subtitle = ui.label("").classes("text-sm text-grey-5")
+            remote_cfg_list_text = ui.textarea(label=t("Files"), value="").props("readonly autogrow").classes(
+                "w-full flex-1 mt-2"
+            )
+            remote_cfg_list_error = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end mt-3"):
+                flat_dialog_button("Close", remote_cfg_list_dialog_ref.close)
+
+        with ui.dialog() as remote_conflict_dialog_ref, ui.card().classes("w-[40rem] max-w-[96vw]"):
+            remote_conflict_dialog = remote_conflict_dialog_ref
+            ui.label(t("Remote changes detected")).classes("text-lg font-semibold text-warning")
+            remote_conflict_dialog_guidance = ui.label("").classes("text-sm text-grey-4 mt-1")
+            remote_conflict_dialog_detail = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Close", remote_conflict_dialog_ref.close)
+                sync_after_conflict_button = ui.button(t("Sync and reload")).props("color=primary no-caps")
+
+    def flat_dialog_button(label_key: str, on_click) -> None:
+        """Render a standard flat no-caps dialog action button."""
+        ui.button(t(label_key), on_click=on_click).props("flat no-caps")
+
+    async def _on_import_upload(e) -> None:
+        """Capture uploaded macro share file contents for import."""
+        uploaded_file = getattr(e, "file", None)
+        if uploaded_file is None:
+            state.uploaded_import_bytes = None
+            state.uploaded_import_name = ""
+            state.import_error_label.set_text(t("Please upload a macro share file."))
+            return
+
+        state.uploaded_import_bytes = await uploaded_file.read()
+        state.uploaded_import_name = str(getattr(uploaded_file, "name", "") or "")
+        state.import_error_label.set_text("")
+
+    # ── Build top toolbar ─────────────────────────────────────────────────────
+    _build_toolbar()
+
+    # ── Build macro page layout ───────────────────────────────────────────────
+    _build_macro_page()
+
+    # ── Build start page and printer editor ────────────────────────────────────
+    _build_start_page()
+
+    # ── Build early dialogs ───────────────────────────────────────────────────
+    _build_early_dialogs()
+
+    # ── Build macro operation dialogs ─────────────────────────────────────────
+    _build_macro_operation_dialogs()
+
+    # ── Build remote dialogs ─────────────────────────────────────────────────
+    _build_remote_dialogs()
 
     # All state is now managed through the UIState container.
     # Callbacks access state directly via closure capture of the state object.
@@ -332,6 +1012,16 @@ def build_ui(app_version: str = "unknown") -> None:
     def _note_activity() -> None:
         """Record runtime activity for UI/background flow control."""
         state.last_activity_monotonic = time.monotonic()
+
+    def _ui_still_available() -> bool:
+        """Return True while this page/client still has live target elements."""
+        if state.status_label is None or state.status_label.is_deleted:
+            return False
+        if state.macro_list is None or state.macro_list.is_deleted:
+            return False
+        if backup_list is None or backup_list.is_deleted:
+            return False
+        return True
 
     def _set_view(view: str) -> None:
         """Switch between printer start page and macro workspace."""
@@ -358,23 +1048,55 @@ def build_ui(app_version: str = "unknown") -> None:
             state.save_config_button.set_visibility(is_macro)
         if state.index_button is not None:
             state.index_button.set_visibility(is_macro)
+        _refresh_macro_migration_action_visibility()
 
-    def flat_dialog_button(label_key: str, on_click) -> None:
-        """Render a standard flat no-caps dialog action button."""
-        ui.button(t(label_key), on_click=on_click).props("flat no-caps")
+    def _persist_macro_migration_prompt_enabled(enabled: bool) -> bool:
+        """Persist one-time migration prompt preference to SQLite settings."""
+        next_cfg = VaultConfig(
+            version_history_size=int(vault_cfg.version_history_size),
+            port=int(vault_cfg.port),
+            runtime_mode=str(vault_cfg.runtime_mode or "off_printer"),
+            ui_language=str(vault_cfg.ui_language or "en"),
+            printer_vendor=str(vault_cfg.printer_vendor or ""),
+            printer_model=str(vault_cfg.printer_model or ""),
+            online_update_repo_url=str(vault_cfg.online_update_repo_url or "").strip(),
+            online_update_manifest_path=str(vault_cfg.online_update_manifest_path or "").strip(),
+            online_update_ref=str(vault_cfg.online_update_ref or "").strip(),
+            theme_mode=str(vault_cfg.theme_mode or "auto"),
+            developer=bool(vault_cfg.developer),
+            printer_profile_prompt_required=bool(vault_cfg.printer_profile_prompt_required),
+            macro_migration_prompt_enabled=bool(enabled),
+        )
+        try:
+            _save_vault_config(config_dir, next_cfg, db_path)
+        except Exception as exc:
+            state.status_label.set_text(t("Failed to save migration preference: {error}", error=exc))
+            return False
 
-    async def _on_import_upload(e) -> None:
-        """Capture uploaded macro share file contents for import."""
-        uploaded_file = getattr(e, "file", None)
-        if uploaded_file is None:
-            state.uploaded_import_bytes = None
-            state.uploaded_import_name = ""
-            state.import_error_label.set_text(t("Please upload a macro share file."))
+        vault_cfg.macro_migration_prompt_enabled = bool(enabled)
+        return True
+
+    def _load_macro_migration_state() -> dict[str, object] | None:
+        """Load migration readiness state for printer.cfg -> macros.cfg flow."""
+        try:
+            return service.get_macro_migration_state()
+        except Exception as exc:
+            state.status_label.set_text(t("Failed to inspect macro migration state: {error}", error=exc))
+            return None
+
+    def _refresh_macro_migration_action_visibility() -> None:
+        """Show manual migration menu action only when migration can still run."""
+        target_element = macro_migration_menu_item_wrapper or macro_migration_menu_item
+        if target_element is None:
             return
-
-        state.uploaded_import_bytes = await uploaded_file.read()
-        state.uploaded_import_name = str(getattr(uploaded_file, "name", "") or "")
-        state.import_error_label.set_text("")
+        migration_state = _load_macro_migration_state()
+        visible = False
+        if migration_state is not None:
+            visible = (
+                state.current_view == "macro"
+                and bool(migration_state.get("can_migrate", False))
+            )
+        target_element.set_visibility(visible)
 
     def _refresh_reload_buttons() -> None:
         """Show exactly one pending reload action button when printer is idle."""
@@ -514,128 +1236,6 @@ def build_ui(app_version: str = "unknown") -> None:
         normalized = _normalize_touched_cfg_paths(paths, config_dir)
         return _paths_include_dynamic_macros(normalized, dynamic_files)
 
-    with ui.dialog().props("persistent") as printer_connecting_dialog, ui.card().classes("w-[30rem] max-w-[94vw]"):
-        ui.label(t("Connecting to printer...")).classes("text-lg font-semibold")
-        printer_connecting_label = ui.label(
-            t("KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again.")
-        ).classes("text-sm text-grey-5")
-        state.printer_connecting_dialog = printer_connecting_dialog
-        state.printer_connecting_label = printer_connecting_label
-
-    def _set_printer_connecting_modal(visible: bool, detail: str = "") -> None:
-        """Show a modal while reconnecting to printer and hide when healthy again."""
-        if visible:
-            detail_text = str(detail or "").strip()
-            if detail_text:
-                state.printer_connecting_label.set_text(
-                    t(
-                        "KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again."
-                    )
-                    + "\n"
-                    + detail_text
-                )
-            else:
-                state.printer_connecting_label.set_text(
-                    t("KlipperVault is reconnecting. The dialog closes automatically when the UI is responsive again.")
-                )
-            if not state.printer_connecting_modal_open:
-                state.printer_connecting_dialog.open()
-                state.printer_connecting_modal_open = True
-            return
-
-        if state.printer_connecting_modal_open:
-            state.printer_connecting_dialog.close()
-            state.printer_connecting_modal_open = False
-
-    with ui.dialog().props("persistent") as file_operation_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
-        file_operation_title = ui.label(t("Working on files")).classes("text-lg font-semibold")
-        file_operation_phase = ui.label("").classes("text-sm text-grey-5")
-        file_operation_percent = ui.label("0%").classes("text-sm text-grey-5 mt-1")
-        file_operation_progress = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
-
-    def _set_file_operation_progress(phase: str, current: int, total: int) -> None:
-        """Update blocking file-operation modal progress in percent."""
-        display_total = max(int(total), 1)
-        display_current = min(max(int(current), 0), display_total)
-        value = display_current / display_total
-        percent = int(round(value * 100.0))
-        file_operation_phase.set_text(_file_operation_phase_text(phase))
-        file_operation_percent.set_text(t("{percent}%", percent=percent))
-        file_operation_progress.value = value
-        file_operation_progress.update()
-
-    async def _run_with_file_operation_modal(title_text: str, action):
-        """Run a blocking file operation in a thread while showing a progress modal.
-
-        Opening the dialog and then immediately `await asyncio.sleep(0)` lets
-        the NiceGUI event loop flush the dialog-open message to the browser
-        before the worker thread starts, so the user actually sees the modal.
-        The blocking `action` runs in a thread-pool executor so the event loop
-        (and therefore the browser WebSocket) stays responsive throughout.
-        """
-        file_operation_title.set_text(str(title_text))
-        _set_file_operation_progress("", 0, 1)
-        file_operation_dialog.open()
-        await asyncio.sleep(0)  # yield so the browser renders the dialog
-        try:
-            return await asyncio.to_thread(action)
-        finally:
-            file_operation_dialog.close()
-
-    with ui.dialog().props("persistent") as printer_profile_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
-        ui.label(t("Printer identity")).classes("text-lg font-semibold")
-        ui.label(t("Automatic detection could not determine vendor/model. Please enter them.")).classes("text-sm text-grey-5")
-        printer_vendor_input = ui.input(label=t("Printer vendor")).props("outlined autofocus").classes("w-full mt-2")
-        printer_model_input = ui.input(label=t("Printer model")).props("outlined").classes("w-full mt-2")
-        printer_profile_error = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            save_printer_profile_button = ui.button(t("Save")).props("color=primary no-caps")
-    state.printer_profile_dialog = printer_profile_dialog
-    state.printer_vendor_input = printer_vendor_input
-    state.printer_model_input = printer_model_input
-    state.printer_profile_error = printer_profile_error
-    state.save_printer_profile_button = save_printer_profile_button
-
-    with ui.dialog() as app_settings_dialog, ui.card().classes("w-[42rem] max-w-[96vw]"):
-        ui.label(t("Application settings")).classes("text-lg font-semibold")
-        ui.label(t("Configure KlipperVault settings stored in the local database.")).classes("text-sm text-grey-5")
-        settings_version_history_input = (
-            ui.number(label=t("Version history size"), value=vault_cfg.version_history_size)
-            .props("outlined dense")
-            .classes("w-full mt-2")
-        )
-        settings_language_select = (
-            ui.select(
-                options={"en": "English", "de": "Deutsch", "fr": "Francais"},
-                value=str(vault_cfg.ui_language or "en"),
-                label=t("UI language"),
-            )
-            .props("outlined dense")
-            .classes("w-full")
-        )
-        settings_theme_mode_select = (
-            ui.select(
-                options={
-                    "auto": t("Auto (follow system/browser)"),
-                    "light": t("Light"),
-                    "dark": t("Dark"),
-                },
-                value=_normalized_theme_mode(vault_cfg.theme_mode),
-                label=t("Theme mode"),
-            )
-            .props("outlined dense")
-            .classes("w-full")
-        )
-        settings_repo_url_input = ui.input(label=t("Online update repository URL")).props("outlined dense").classes("w-full")
-        settings_manifest_input = ui.input(label=t("Online update manifest path")).props("outlined dense").classes("w-full")
-        settings_ref_input = ui.input(label=t("Online update reference")).props("outlined dense").classes("w-full")
-        settings_developer_toggle = ui.switch(t("Developer mode"), value=bool(vault_cfg.developer))
-        settings_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        settings_info_label = ui.label("").classes("text-sm text-grey-5 mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Cancel", app_settings_dialog.close)
-            save_settings_button = ui.button(t("Save")).props("color=primary no-caps")
-
     def _printer_profile_missing() -> bool:
         """Return True when active printer vendor/model values are not set."""
         vendor, model = _active_printer_identity()
@@ -713,6 +1313,7 @@ def build_ui(app_version: str = "unknown") -> None:
         _set_view("macro")
         _refresh_reload_buttons()
         _refresh_save_config_button()
+        _open_macro_migration_prompt_if_needed("workspace_open")
         _maybe_run_deferred_startup_scan("printer profile selected")
         message = t("Active printer profile updated.")
         status_label.set_text(message)
@@ -815,10 +1416,6 @@ def build_ui(app_version: str = "unknown") -> None:
                 active = bool(raw.get("is_active", False))
                 status = state.printer_card_status.get(profile_id, {})
                 connected = bool(status.get("connected", False))
-                printer_state = str(status.get("state", "unknown")).strip() or "unknown"
-                detail = str(status.get("message", "")).strip()
-                last_seen = state.printer_card_last_seen.get(profile_id)
-                last_seen_text = _format_ts(int(last_seen.timestamp())) if last_seen is not None else t("never")
 
                 with ui.card().classes("w-[22rem] max-w-full"):
                     with ui.row().classes("w-full items-center justify-between"):
@@ -828,10 +1425,6 @@ def build_ui(app_version: str = "unknown") -> None:
                         ui.label(badge_text).classes(badge_class)
                     ui.label(t("{vendor} {model}", vendor=vendor, model=model)).classes("text-sm text-grey-4")
                     ui.label(_printer_card_connection_text(raw)).classes("text-xs text-grey-5")
-                    ui.label(t("State: {state}", state=printer_state)).classes("text-sm")
-                    if detail:
-                        ui.label(detail).classes("text-xs text-grey-4")
-                    ui.label(t("Last seen: {value}", value=last_seen_text)).classes("text-xs text-grey-5")
                     if active:
                         ui.label(t("Active profile")).classes("text-xs text-primary")
                     with ui.row().classes("w-full justify-end gap-2 mt-2"):
@@ -841,7 +1434,7 @@ def build_ui(app_version: str = "unknown") -> None:
                             on_click=lambda _event, pid=profile_id: _open_edit_printer_editor(pid),
                         ).props("flat dense no-caps")
                         ui.button(
-                            t("Open macros"),
+                            t("Connect"),
                             icon="arrow_forward",
                             on_click=lambda _event, pid=profile_id: _open_macro_workspace_for_profile(pid),
                         ).props("flat dense no-caps")
@@ -960,224 +1553,42 @@ def build_ui(app_version: str = "unknown") -> None:
 
     save_settings_button.on_click(save_app_settings_dialog)
 
-    with ui.column().classes("w-full p-4 gap-4") as start_page_container_ref:
-        start_page_container = start_page_container_ref
-        state.start_page_container = start_page_container_ref
-        ui.label(t("Select printer")).classes("text-2xl font-semibold")
-        ui.label(t("Choose a configured printer to open the macro workspace.")).classes("text-sm text-grey-5")
-        start_page_status_label = ui.label("").classes("text-sm text-grey-4")
-        with ui.row().classes("w-full gap-3 items-center"):
-            refresh_printers_button = ui.button(t("Refresh printers"), icon="refresh").props("flat no-caps")
-            add_printer_button = ui.button(t("Add printer"), icon="add").props("flat no-caps")
-            test_active_printer_button = ui.button(t("Test active connection"), icon="network_check").props("flat no-caps")
-        printer_cards_container = ui.row().classes("w-full gap-4 flex-wrap")
-        state.printer_cards_container = printer_cards_container
+    # ── Section builder: backup dialogs ──────────────────────────────────────
+    def _build_backup_dialogs() -> None:
+        """Build create-backup and backup-view dialogs; store references on state."""
+        nonlocal backup_name_input, backup_error_label, create_backup_button
+        nonlocal backup_view_title, backup_view_subtitle, backup_view_table
 
-    with ui.column().classes("w-full") as macro_page_container_ref:
-        macro_page_container = macro_page_container_ref
-        state.macro_page_container = macro_page_container_ref
-        with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4 p-4 xl:h-[calc(100vh-110px)]"):
-            with ui.card().classes("col-span-1 xl:h-full flex flex-col overflow-hidden min-h-[55vh] xl:min-h-0"):
-                ui.label(t("Indexed macros")).classes("text-lg font-semibold mb-2 shrink-0")
-                search_input = ui.input(placeholder=t("Search macros…")).props("clearable dense outlined").classes("w-full mb-1 shrink-0")
-                with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
-                    duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
-                    new_button = ui.button(t("Show new")).props("flat dense no-caps")
-                    active_filter_button = ui.button(t("Filter: {state}", state=t("all"))).props("flat dense no-caps")
-                with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
-                    ui.label(t("Sort:")).classes("text-xs text-grey-4")
-                    sort_radio = (
-                        ui.radio(
-                            options={"load_order": t("Load order"), "alpha_asc": "A → Z", "alpha_desc": "Z → A"},
-                            value="load_order",
-                        )
-                        .props("inline dense")
-                        .classes("text-xs")
-                    )
-                macro_count_label = ui.label(t("Items: {visible}", visible=0)).classes("text-sm text-grey-4 shrink-0")
-                with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
-                    prev_page_button = ui.button(t("Prev"))
-                    prev_page_button.props("flat dense no-caps")
-                    next_page_button = ui.button(t("Next"))
-                    next_page_button.props("flat dense no-caps")
-                macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
-                state.macro_search = search_input
-                state.macro_list = macro_list
+        with ui.dialog() as backup_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
+            ui.label(t("Create macro backup")).classes("text-lg font-semibold")
+            ui.label(t("Store a named snapshot of the latest state of all macros.")).classes("text-sm text-grey-5")
+            backup_name_input = ui.input(label=t("Backup name")).props("outlined autofocus").classes("w-full mt-2")
+            backup_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", backup_dialog.close)
+                create_backup_button = ui.button(t("Create backup")).props("color=primary no-caps")
+        state.backup_dialog = backup_dialog
 
-            viewer = MacroViewer()
-            state.viewer = viewer
+        with ui.dialog() as backup_view_dialog, ui.card().classes("w-[74rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col"):
+            backup_view_title = ui.label(t("Backup contents")).classes("text-lg font-semibold")
+            backup_view_subtitle = ui.label("").classes("text-sm text-grey-5")
+            backup_view_table = ui.table(
+                columns=[
+                    {"name": "macro_name", "label": t("Macro"), "field": "macro_name", "align": "left"},
+                    {"name": "file_path", "label": t("Config file"), "field": "file_path", "align": "left"},
+                    {"name": "version", "label": t("Version"), "field": "version", "align": "right"},
+                    {"name": "status", "label": t("Status"), "field": "status", "align": "left"},
+                ],
+                rows=[],
+                row_key="_row_id",
+                pagination=40,
+            ).classes("w-full flex-1 overflow-auto mt-2")
+            with ui.row().classes("w-full justify-end mt-3"):
+                flat_dialog_button("Close", backup_view_dialog.close)
+        state.backup_view_dialog = backup_view_dialog
 
-            with ui.card().classes("col-span-1 md:col-span-3 xl:col-span-1 xl:h-full overflow-auto"):
-                ui.label(t("Stored macro statistics")).classes("text-lg font-semibold")
-                with ui.column().classes("gap-2 mt-2"):
-                    total_macros_label = ui.label(t("Total macros: {count}", count=0))
-                    duplicate_macros_label = ui.label(t("Duplicate macros: {count}", count=0))
-                    deleted_macros_label = ui.label(t("Deleted macros: {count}", count=0))
-                    distinct_files_label = ui.label(t("Config files: {count}", count=0))
-                    last_update_label = ui.label(t("Last update: never"))
-                    purge_deleted_button = ui.button(t("Remove all deleted macros")).props(
-                        "flat color=negative no-caps"
-                    )
-                    purge_deleted_button.set_visibility(False)
-
-                ui.separator().classes("my-2")
-                ui.label(t("Status")).classes("text-md font-semibold mb-1")
-                status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
-                state.status_label = status_label
-                off_printer_profile_label = ui.label("").classes("text-xs text-grey-5")
-                off_printer_profile_label.set_visibility(off_printer_mode_enabled)
-                state.off_printer_profile_label = off_printer_profile_label
-                with ui.row().classes("items-center gap-2"):
-                    off_printer_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
-                    off_printer_cfg_list_button.set_visibility(off_printer_mode_enabled)
-                ui.separator().classes("my-2")
-                ui.label(t("Backups")).classes("text-md font-semibold mb-1")
-                backup_list = ui.list().props("separator").classes("w-full max-h-[46vh] overflow-y-auto")
-
-    with ui.dialog() as backup_dialog, ui.card().classes("w-[34rem] max-w-[96vw]"):
-        ui.label(t("Create macro backup")).classes("text-lg font-semibold")
-        ui.label(t("Store a named snapshot of the latest state of all macros.")).classes("text-sm text-grey-5")
-        backup_name_input = ui.input(label=t("Backup name")).props("outlined autofocus").classes("w-full mt-2")
-        backup_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Cancel", backup_dialog.close)
-            create_backup_button = ui.button(t("Create backup")).props("color=primary no-caps")
-    state.backup_dialog = backup_dialog
-
-    with ui.dialog() as backup_view_dialog, ui.card().classes("w-[74rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col"):
-        backup_view_title = ui.label(t("Backup contents")).classes("text-lg font-semibold")
-        backup_view_subtitle = ui.label("").classes("text-sm text-grey-5")
-        backup_view_table = ui.table(
-            columns=[
-                {"name": "macro_name", "label": t("Macro"), "field": "macro_name", "align": "left"},
-                {"name": "file_path", "label": t("Config file"), "field": "file_path", "align": "left"},
-                {"name": "version", "label": t("Version"), "field": "version", "align": "right"},
-                {"name": "status", "label": t("Status"), "field": "status", "align": "left"},
-            ],
-            rows=[],
-            row_key="_row_id",
-            pagination=40,
-        ).classes("w-full flex-1 overflow-auto mt-2")
-        with ui.row().classes("w-full justify-end mt-3"):
-            flat_dialog_button("Close", backup_view_dialog.close)
-    state.backup_view_dialog = backup_view_dialog
-
-    with ui.dialog() as load_order_dialog, ui.card().classes(
-        "w-[56rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col overflow-hidden"
-    ):
-        with ui.row().classes("w-full items-center justify-between"):
-            ui.button(icon="close", on_click=load_order_dialog.close).props("flat dense round")
-            ui.label(t("Klipper loading order overview")).classes("text-lg font-semibold")
-            ui.space()
-        load_order_summary_label = ui.label("").classes("text-sm text-grey-5")
-        ui.label(t("Klipper parse order")).classes("text-sm font-semibold mt-2")
-        load_order_text = ui.label("").classes(
-            "w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words border border-grey-8 rounded p-3 font-mono text-sm mt-2"
-        )
-
-        with ui.row().classes("w-full items-center mt-3"):
-            ui.space()
-            flat_dialog_button("Close", load_order_dialog.close)
-    state.load_order_dialog = load_order_dialog
-
-    with ui.dialog() as restore_dialog, ui.card().classes("w-[30rem] max-w-[96vw]"):
-        ui.label(t("Restore backup")).classes("text-lg font-semibold")
-        restore_confirm_label = ui.label("").classes("text-sm text-grey-5")
-        restore_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Cancel", restore_dialog.close)
-            confirm_restore_button = ui.button(t("Restore")).props("color=warning no-caps")
-        state.restore_dialog = restore_dialog
-        state.restore_confirm_label = restore_confirm_label
-        state.restore_error_label = restore_error_label
-
-    with ui.dialog() as delete_dialog, ui.card().classes("w-[30rem] max-w-[96vw]"):
-        ui.label(t("Delete backup")).classes("text-lg font-semibold")
-        delete_confirm_label = ui.label("").classes("text-sm text-grey-5")
-        delete_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Cancel", delete_dialog.close)
-            confirm_delete_button = ui.button(t("Delete")).props("color=negative no-caps")
-        state.delete_dialog = delete_dialog
-        state.delete_confirm_label = delete_confirm_label
-        state.delete_error_label = delete_error_label
-
-    with ui.dialog() as export_dialog, ui.card().classes("w-[42rem] max-w-[98vw]"):
-        ui.label(t("Export macros")).classes("text-lg font-semibold")
-        ui.label(t("Select one or more macros to export into a share file.")).classes("text-sm text-grey-5")
-        ui.label(t("Macros")).classes("text-sm mt-2")
-        export_macro_list = ui.column().classes("w-full max-h-[20rem] overflow-y-auto gap-1 border rounded p-2")
-        export_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Cancel", export_dialog.close)
-            confirm_export_button = ui.button(t("Export")).props("color=primary no-caps")
-    state.export_dialog = export_dialog
-    state.export_macro_list = export_macro_list
-
-    export_macro_checkboxes: dict[str, object] = {}
-
-    with ui.dialog() as import_dialog, ui.card().classes("w-[38rem] max-w-[98vw]"):
-        ui.label(t("Import macros")).classes("text-lg font-semibold")
-        ui.label(t("Import a shared macro file into inactive new versions.")).classes("text-sm text-grey-5")
-        import_upload = ui.upload(on_upload=_on_import_upload, auto_upload=True).props("accept=.json").classes("w-full mt-2")
-        import_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Cancel", import_dialog.close)
-            confirm_import_button = ui.button(t("Import")).props("color=primary no-caps")
-    state.import_dialog = import_dialog
-    state.import_uploader = import_upload
-    state.import_error_label = import_error_label
-
-    with ui.dialog() as create_pr_dialog, ui.card().classes("w-[46rem] max-w-[98vw]"):
-        ui.label(t("Create Pull Request")).classes("text-lg font-semibold")
-        ui.label(t("Publish active macros directly to GitHub and open a pull request.")).classes("text-sm text-grey-5")
-        pr_repo_url_input = ui.input(label=t("Repository URL")).props("outlined").classes("w-full mt-2")
-        with ui.row().classes("w-full gap-2"):
-            pr_base_branch_input = ui.input(label=t("Base branch")).props("outlined").classes("w-full")
-            pr_head_branch_input = ui.input(label=t("Head branch")).props("outlined").classes("w-full")
-        pr_title_input = ui.input(label=t("Pull request title")).props("outlined").classes("w-full")
-        pr_body_input = ui.textarea(label=t("Pull request description")).props("outlined autogrow").classes("w-full")
-        pr_token_input = ui.input(label=t("GitHub API token")).props("outlined password password_toggle_button").classes("w-full")
-        ui.label(t("Token is used only for this request and is not stored.")).classes("text-xs text-grey-5")
-        ui.label(t("Required token permissions: Contents (write) and Pull requests (write)."))
-        create_pr_progress_label = ui.label("").classes("text-sm text-grey-5 mt-2")
-        create_pr_progress_bar = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
-        create_pr_progress_label.set_visibility(False)
-        create_pr_progress_bar.set_visibility(False)
-        create_pr_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Cancel", create_pr_dialog.close)
-            confirm_create_pr_button = ui.button(t("Create PR")).props("color=primary no-caps")
-        state.create_pr_dialog = create_pr_dialog
-        state.pr_repo_url_input = pr_repo_url_input
-        state.pr_base_branch_input = pr_base_branch_input
-        state.pr_head_branch_input = pr_head_branch_input
-        state.pr_title_input = pr_title_input
-        state.pr_body_input = pr_body_input
-        state.pr_token_input = pr_token_input
-        state.create_pr_error_label = create_pr_error_label
-        state.confirm_create_pr_button = confirm_create_pr_button
-
-    with ui.dialog() as online_update_dialog, ui.card().classes("w-[46rem] max-w-[98vw]"):
-        ui.label(t("Online macro updates")).classes("text-lg font-semibold")
-        ui.label(t("Changed macros are imported as new versions. Select which ones to activate now.")).classes("text-sm text-grey-5")
-        online_update_progress_label = ui.label("").classes("text-sm text-grey-5 mt-2")
-        online_update_progress_bar = ui.linear_progress(value=0.0, show_value=False).classes("w-full mt-1")
-        online_update_progress_label.set_visibility(False)
-        online_update_progress_bar.set_visibility(False)
-        online_update_summary_label = ui.label("").classes("text-sm text-grey-5 mt-1")
-        ui.label(t("Macros")).classes("text-sm mt-2")
-        online_update_list = ui.column().classes("w-full max-h-[20rem] overflow-y-auto gap-1 border rounded p-2")
-        online_update_error_label = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Cancel", online_update_dialog.close)
-            confirm_online_update_button = ui.button(t("Import updates")).props("color=primary no-caps")
-            confirm_online_update_button.set_visibility(False)
-        state.online_update_dialog = online_update_dialog
-        state.online_update_list = online_update_list
-        state.online_update_summary_label = online_update_summary_label
-        state.online_update_error_label = online_update_error_label
-        state.confirm_online_update_button = confirm_online_update_button
+    # ── Build backup dialogs ───────────────────────────────────────────────────
+    _build_backup_dialogs()
 
     with ui.dialog() as macro_delete_dialog, ui.card().classes("w-[30rem] max-w-[96vw]"):
         ui.label(t("Delete macro from cfg file")).classes("text-lg font-semibold")
@@ -1189,95 +1600,6 @@ def build_ui(app_version: str = "unknown") -> None:
         state.macro_delete_dialog = macro_delete_dialog
         state.macro_delete_confirm_label = macro_delete_confirm_label
         state.macro_delete_error_label = macro_delete_error_label
-
-    with ui.dialog() as duplicate_wizard_dialog, ui.card().classes("w-[48rem] max-w-[98vw]"):
-        duplicate_wizard_title = ui.label(t("Resolve duplicate macros")).classes("text-lg font-semibold")
-        duplicate_wizard_subtitle = ui.label("").classes("text-sm text-grey-5")
-        ui.separator().classes("my-2")
-        duplicate_entry_list = ui.list().props("separator").classes("w-full max-h-[40vh] overflow-y-auto")
-        duplicate_keep_select = (
-            ui.select(options={}, label=t("Keep definition from"))
-            .props("outlined dense")
-            .classes("w-full mt-2")
-        )
-        with ui.row().classes("w-full items-end gap-2 mt-2"):
-            duplicate_compare_with_select = (
-                ui.select(options={}, label=t("Compare keep with"))
-                .props("outlined dense")
-                .classes("flex-1")
-            )
-            duplicate_compare_button = ui.button(t("Compare")).props("flat no-caps")
-        duplicate_wizard_error = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-between gap-2 mt-3"):
-            duplicate_prev_button = ui.button(t("Previous")).props("flat no-caps")
-            with ui.row().classes("gap-2"):
-                flat_dialog_button("Cancel", duplicate_wizard_dialog.close)
-                duplicate_next_button = ui.button(t("Next")).props("flat no-caps")
-                duplicate_apply_button = ui.button(t("Apply")).props("color=warning no-caps")
-        state.duplicate_wizard_dialog = duplicate_wizard_dialog
-        state.duplicate_wizard_title = duplicate_wizard_title
-        state.duplicate_wizard_subtitle = duplicate_wizard_subtitle
-        state.duplicate_wizard_error = duplicate_wizard_error
-
-    with ui.dialog() as remote_cfg_list_dialog, ui.card().classes("w-[52rem] max-w-[98vw] h-[82vh] max-h-[92vh] flex flex-col"):
-        remote_cfg_list_title = ui.label(t("Remote cfg files")).classes("text-lg font-semibold")
-        remote_cfg_list_subtitle = ui.label("").classes("text-sm text-grey-5")
-        remote_cfg_list_text = ui.textarea(label=t("Files"), value="").props("readonly autogrow").classes(
-            "w-full flex-1 mt-2"
-        )
-        remote_cfg_list_error = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end mt-3"):
-            flat_dialog_button("Close", remote_cfg_list_dialog.close)
-
-    with ui.dialog() as remote_conflict_dialog, ui.card().classes("w-[40rem] max-w-[96vw]"):
-        ui.label(t("Remote changes detected")).classes("text-lg font-semibold text-warning")
-        remote_conflict_dialog_guidance = ui.label("").classes("text-sm text-grey-4 mt-1")
-        remote_conflict_dialog_detail = ui.label("").classes("text-sm text-negative mt-1")
-        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-            flat_dialog_button("Close", remote_conflict_dialog.close)
-            sync_after_conflict_button = ui.button(t("Sync and reload")).props("color=primary no-caps")
-
-    with start_page_container:
-        with ui.card().classes("w-full") as printer_editor_card_ref:
-            printer_editor_card = printer_editor_card_ref
-            printer_editor_title = ui.label(t("Printer connection management")).classes("text-lg font-semibold")
-            ui.label(t("Configure SSH settings as part of each printer profile for off-printer mode.")).classes("text-sm text-grey-5")
-            ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
-            with ui.row().classes("w-full gap-2"):
-                ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
-                ssh_profile_host_input = ui.input(label=t("Host"), on_change=lambda e: _sync_moonraker_url_host(str(e.value or ""))).props("outlined dense").classes("flex-1")
-            with ui.row().classes("w-full gap-2"):
-                ssh_profile_port_input = ui.number(label=t("Port"), value=22).props("outlined dense").classes("w-32")
-                ssh_profile_username_input = ui.input(label=t("Username")).props("outlined dense").classes("flex-1")
-            ssh_profile_remote_dir_input = ui.input(label=t("Remote config directory"), value="~/printer_data/config").props(
-                "outlined dense"
-            ).classes("w-full")
-            ssh_profile_moonraker_url_input = ui.input(
-                label=t("Moonraker URL"), value="http://127.0.0.1:7125"
-            ).props("outlined dense").classes("w-full")
-            ssh_profile_auth_mode_select = ui.select(
-                options={"key": t("SSH key"), "password": t("Password")},
-                value="key",
-                label=t("Authentication mode"),
-            ).props("outlined dense").classes("w-full")
-            ssh_profile_secret_input = ui.input(label=t("SSH secret")).props("outlined dense type=text").classes(
-                "w-full"
-            )
-            ssh_profile_secret_mode_label = ui.label("").classes("text-xs text-grey-5")
-            ssh_profile_secret_state_label = ui.label("").classes("text-xs text-grey-5")
-            ssh_profile_active_toggle = ui.switch(t("Set as active profile"), value=True)
-            ssh_profile_error_label = ui.label("").classes("text-sm text-negative mt-1")
-            ssh_profile_status_label = ui.label("").classes("text-sm text-positive mt-1")
-            with ui.row().classes("w-full justify-between mt-3"):
-                with ui.row().classes("gap-2"):
-                    hide_printer_editor_button = ui.button(t("Close editor")).props("flat no-caps")
-                    refresh_ssh_profiles_button = ui.button(t("Refresh")).props("flat no-caps")
-                    new_ssh_profile_button = ui.button(t("Add printer")).props("flat no-caps")
-                with ui.row().classes("gap-2"):
-                    delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
-                    activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")
-                    save_ssh_profile_button = ui.button(t("Save profile")).props("color=primary no-caps")
-        printer_editor_card_ref.set_visibility(False)
 
     def _sync_after_remote_conflict() -> None:
         """Close conflict dialog and run a one-click recovery sync/index."""
@@ -1581,14 +1903,53 @@ def build_ui(app_version: str = "unknown") -> None:
 
         duplicate_compare_button.set_enabled(bool(compare_options))
 
-    def _render_duplicate_wizard_step() -> None:
-        """Render one duplicate macro group in the wizard."""
+    def _current_duplicate_group() -> dict[str, object] | None:
+        """Return currently selected duplicate wizard group or None when unavailable."""
         if not state.duplicate_wizard_groups:
-            return
+            return None
+        return state.duplicate_wizard_groups[state.duplicate_wizard_index]
 
-        group = state.duplicate_wizard_groups[state.duplicate_wizard_index]
+    def _current_duplicate_selection() -> tuple[str, list[dict[str, object]]]:
+        """Return current duplicate macro name and entry list."""
+        group = _current_duplicate_group() or {}
         macro_name = str(group.get("macro_name", ""))
         entries = _as_dict_list(group.get("entries", []))
+        return macro_name, entries
+
+    def _wizard_has_loaded_duplicates() -> bool:
+        """Validate duplicate wizard has groups and set user-facing error when missing."""
+        if state.duplicate_wizard_groups:
+            return True
+        state.duplicate_wizard_error.set_text(t("No duplicates loaded."))
+        return False
+
+    def _advance_duplicate_wizard(step_delta: int) -> None:
+        """Move duplicate wizard index by delta when within bounds and rerender."""
+        next_index = state.duplicate_wizard_index + int(step_delta)
+        if next_index < 0 or next_index >= len(state.duplicate_wizard_groups):
+            return
+        state.duplicate_wizard_index = next_index
+        _render_duplicate_wizard_step()
+
+    def _validate_duplicate_compare_pair() -> tuple[str, str, str] | None:
+        """Return validated duplicate compare tuple (macro, keep, compare) or None with error set."""
+        macro_name, _ = _current_duplicate_selection()
+        keep_file = str(state.duplicate_keep_choices.get(macro_name, ""))
+        compare_file = str(state.duplicate_compare_with_choices.get(macro_name, ""))
+        if not keep_file or not compare_file:
+            state.duplicate_wizard_error.set_text(t("Select two definitions to compare."))
+            return None
+        if keep_file == compare_file:
+            state.duplicate_wizard_error.set_text(t("Choose a different definition for comparison."))
+            return None
+        return macro_name, keep_file, compare_file
+
+    def _render_duplicate_wizard_step() -> None:
+        """Render one duplicate macro group in the wizard."""
+        if not _wizard_has_loaded_duplicates():
+            return
+
+        macro_name, entries = _current_duplicate_selection()
 
         duplicate_wizard_title.set_text(t("Resolve duplicates: {macro_name}", macro_name=macro_name))
         duplicate_wizard_subtitle.set_text(
@@ -1630,37 +1991,29 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def _on_duplicate_keep_change(e) -> None:
         """Persist selected keep target for current duplicate group."""
-        if not state.duplicate_wizard_groups:
+        if not _wizard_has_loaded_duplicates():
             return
-        macro_name = str(state.duplicate_wizard_groups[state.duplicate_wizard_index].get("macro_name", ""))
+        macro_name, entries = _current_duplicate_selection()
         keep_file = str(e.value or "")
         state.duplicate_keep_choices[macro_name] = keep_file
-        entries = _as_dict_list(state.duplicate_wizard_groups[state.duplicate_wizard_index].get("entries", []))
         _update_duplicate_compare_choice(entries, keep_file)
 
     def _on_duplicate_compare_with_change(e) -> None:
         """Persist selected compare target for current duplicate group."""
-        if not state.duplicate_wizard_groups:
+        if not _wizard_has_loaded_duplicates():
             return
-        macro_name = str(state.duplicate_wizard_groups[state.duplicate_wizard_index].get("macro_name", ""))
+        macro_name, _ = _current_duplicate_selection()
         state.duplicate_compare_with_choices[macro_name] = str(e.value or "")
 
     def open_duplicate_pair_compare() -> None:
         """Open side-by-side compare view for currently selected duplicate pair."""
-        if not state.duplicate_wizard_groups:
-            state.duplicate_wizard_error.set_text(t("No duplicates loaded."))
+        if not _wizard_has_loaded_duplicates():
             return
 
-        group = state.duplicate_wizard_groups[state.duplicate_wizard_index]
-        macro_name = str(group.get("macro_name", ""))
-        keep_file = str(state.duplicate_keep_choices.get(macro_name, ""))
-        compare_file = str(state.duplicate_compare_with_choices.get(macro_name, ""))
-        if not keep_file or not compare_file:
-            state.duplicate_wizard_error.set_text(t("Select two definitions to compare."))
+        selection = _validate_duplicate_compare_pair()
+        if selection is None:
             return
-        if keep_file == compare_file:
-            state.duplicate_wizard_error.set_text(t("Choose a different definition for comparison."))
-            return
+        macro_name, keep_file, compare_file = selection
 
         keep_macro = _load_latest_macro_for_file(macro_name, keep_file)
         compare_macro = _load_latest_macro_for_file(macro_name, compare_file)
@@ -1711,22 +2064,15 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def duplicate_wizard_previous() -> None:
         """Navigate to previous duplicate group."""
-        if state.duplicate_wizard_index <= 0:
-            return
-        state.duplicate_wizard_index -= 1
-        _render_duplicate_wizard_step()
+        _advance_duplicate_wizard(-1)
 
     def duplicate_wizard_next() -> None:
         """Navigate to next duplicate group."""
-        if state.duplicate_wizard_index >= len(state.duplicate_wizard_groups) - 1:
-            return
-        state.duplicate_wizard_index += 1
-        _render_duplicate_wizard_step()
+        _advance_duplicate_wizard(1)
 
     def apply_duplicate_resolution() -> None:
         """Apply keep choices by deleting duplicate sections from cfg files."""
-        if not state.duplicate_wizard_groups:
-            state.duplicate_wizard_error.set_text(t("No duplicates loaded."))
+        if not _wizard_has_loaded_duplicates():
             return
 
         missing = [
@@ -1770,6 +2116,8 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def render_macro_list() -> None:
         """Render the left macro list with filters, badges, and selection state."""
+        if not _ui_still_available():
+            return
         # Memory-trim/no-client recovery can release cached list rows.
         # If rows are known to exist, repopulate from DB before rendering.
         if (not state.cached_macros) and state.total_macro_rows > 0 and (not state.is_indexing):
@@ -1893,6 +2241,8 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def render_backup_list() -> None:
         """Render right-panel backup entries and attach action handlers."""
+        if not _ui_still_available():
+            return
         backup_list.clear()
         backups = service.list_backups()
         if not backups:
@@ -1931,12 +2281,26 @@ def build_ui(app_version: str = "unknown") -> None:
             state.restore_target_id = _to_int(backup.get("backup_id", 0))
             state.restore_target_name = str(backup.get("backup_name", "-")).strip() or "-"
             state.restore_error_label.set_text("")
-            state.restore_confirm_label.set_text(
-                t(
-                    "Restore backup '{backup_name}'? This replaces the current indexed macro state.",
-                    backup_name=state.restore_target_name,
-                )
+            restore_message = t(
+                "Restore backup '{backup_name}'? This replaces the current indexed macro state.",
+                backup_name=state.restore_target_name,
             )
+            if state.restore_target_id is not None:
+                try:
+                    restore_policy = service.get_backup_restore_policy(int(state.restore_target_id))
+                except Exception:
+                    restore_policy = {}
+                if bool(restore_policy.get("will_overwrite_printer_cfg", False)):
+                    warning_message = t(
+                        "This backup will overwrite your printer.cfg, make sure your calibration is correct before pinting"
+                    )
+                    restore_message = f"{restore_message}\n\n{warning_message}\n\n{t('Abort to cancel or Continue to apply this restore.')}"
+                    confirm_restore_button.set_text(t("Continue"))
+                else:
+                    confirm_restore_button.set_text(t("Restore"))
+            else:
+                confirm_restore_button.set_text(t("Restore"))
+            state.restore_confirm_label.set_text(restore_message)
             state.restore_dialog.open()
 
         def open_delete_dialog(backup: dict[str, object]) -> None:
@@ -1970,12 +2334,21 @@ def build_ui(app_version: str = "unknown") -> None:
 
     def perform_restore() -> None:
         """Restore backup to DB and cfg files, then rescan to reflect on-disk state."""
-        if state.restore_target_id is None:
-            state.restore_error_label.set_text(t("No backup selected."))
+        restore_target_id = _selected_restore_target_id()
+        if restore_target_id is None:
+            return
+
+        asyncio.create_task(_perform_restore_async(restore_target_id))
+
+    async def _perform_restore_async(restore_target_id: int) -> None:
+        """Restore backup and immediately sync restored cfg state to the active printer when possible."""
+        if state.printer_is_printing:
+            state.restore_error_label.set_text(t("Blocked while printer is printing."))
+            state.status_label.set_text(t("Blocked: printer is currently printing. Restore is disabled."))
             return
 
         try:
-            result = service.restore_backup(state.restore_target_id)
+            result = await asyncio.to_thread(service.restore_backup, restore_target_id)
         except Exception as exc:
             if _show_remote_conflict_guidance(
                 operation_label=t("backup restore"),
@@ -1988,29 +2361,48 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         state.restore_dialog.close()
-        restored_label = _format_ts(_to_int(result.get("restored_at", 0)))
-        rewritten = _to_int(result.get("restored_cfg_files", 0))
-        if rewritten > 0:
-            state.status_label.set_text(
-                t(
-                    "Restored backup '{backup_name}' at {restored_at} with {macro_count} macro(s); rewrote {cfg_file_count} cfg file(s). Local changes pending; click Save Config to upload.",
-                    backup_name=result["backup_name"],
-                    restored_at=restored_label,
-                    macro_count=result["macro_count"],
-                    cfg_file_count=rewritten,
+        uploaded_after_restore = False
+        if off_printer_mode_enabled and state.off_printer_profile_ready:
+            try:
+                save_result = await state._run_with_file_operation_modal(
+                    t("Uploading restored cfg files to printer"),
+                    lambda: service.save_config_to_remote(
+                        allow_protected_upload=True,
+                        progress_callback=state._set_file_operation_progress,
+                    ),
                 )
-            )
+            except Exception as exc:
+                _set_restore_status_from_result(result)
+                state.status_label.set_text(
+                    t(
+                        "{status} Restore completed locally but upload failed: {error}. Use Save Config to retry upload.",
+                        status=state.status_label.text,
+                        error=exc,
+                    )
+                )
+                _mark_local_changes_pending()
+            else:
+                uploaded_after_restore = True
+                _mark_local_changes_saved()
+                _append_restart_policy_from_result(save_result)
+                state.status_label.set_text(
+                    t(
+                        "Restored backup '{backup_name}' at {restored_at} with {macro_count} macro(s); rewrote {cfg_file_count} cfg file(s). Uploaded {uploaded} and removed {removed} remote cfg file(s).",
+                        backup_name=result["backup_name"],
+                        restored_at=_format_ts(_to_int(result.get("restored_at", 0))),
+                        macro_count=result["macro_count"],
+                        cfg_file_count=_to_int(result.get("restored_cfg_files", 0), default=0),
+                        uploaded=_to_int(save_result.get("uploaded_files", 0), default=0),
+                        removed=_to_int(save_result.get("removed_remote_files", 0), default=0),
+                    )
+                )
         else:
-            state.status_label.set_text(
-                t(
-                    "Restored backup '{backup_name}' at {restored_at} with {macro_count} macro(s). "
-                    "No cfg snapshot was stored in this backup; only DB state was restored. Local changes pending; click Save Config to upload.",
-                    backup_name=result["backup_name"],
-                    restored_at=restored_label,
-                    macro_count=result["macro_count"],
-                )
-            )
-        _mark_local_changes_pending()
+            _set_restore_status_from_result(result)
+            _mark_local_changes_pending()
+
+        if not uploaded_after_restore and (not off_printer_mode_enabled or not state.off_printer_profile_ready):
+            _mark_local_changes_pending()
+
         _mark_reload_required(is_dynamic=False)
         asyncio.create_task(perform_index("backup restore", sync_remote=False))
 
@@ -2021,12 +2413,12 @@ def build_ui(app_version: str = "unknown") -> None:
             local_error_label=state.delete_error_label,
         ):
             return
-        if state.delete_target_id is None:
-            state.delete_error_label.set_text(t("No backup selected."))
+        delete_target_id = _selected_delete_target_id()
+        if delete_target_id is None:
             return
 
         try:
-            result = service.delete_backup(state.delete_target_id)
+            result = service.delete_backup(delete_target_id)
         except Exception as exc:
             state.delete_error_label.set_text(t("Delete failed: {error}", error=exc))
             state.status_label.set_text(t("Delete failed: {error}", error=exc))
@@ -2036,26 +2428,95 @@ def build_ui(app_version: str = "unknown") -> None:
         state.status_label.set_text(t("Deleted backup '{backup_name}'.", backup_name=result["backup_name"]))
         render_backup_list()
 
+    def _selected_restore_target_id() -> int | None:
+        """Return selected restore target id or set local error when none is selected."""
+        if state.restore_target_id is None:
+            state.restore_error_label.set_text(t("No backup selected."))
+            return None
+        return int(state.restore_target_id)
+
+    def _selected_delete_target_id() -> int | None:
+        """Return selected delete target id or set local error when none is selected."""
+        if state.delete_target_id is None:
+            state.delete_error_label.set_text(t("No backup selected."))
+            return None
+        return int(state.delete_target_id)
+
+    def _set_restore_status_from_result(result: dict[str, object]) -> None:
+        """Render restore completion status summary from restore result payload."""
+        restored_label = _format_ts(_to_int(result.get("restored_at", 0)))
+        rewritten = _to_int(result.get("restored_cfg_files", 0))
+        if rewritten > 0:
+            state.status_label.set_text(
+                t(
+                    "Restored backup '{backup_name}' at {restored_at} with {macro_count} macro(s); rewrote {cfg_file_count} cfg file(s).",
+                    backup_name=result["backup_name"],
+                    restored_at=restored_label,
+                    macro_count=result["macro_count"],
+                    cfg_file_count=rewritten,
+                )
+            )
+            return
+
+        state.status_label.set_text(
+            t(
+                "Restored backup '{backup_name}' at {restored_at} with {macro_count} macro(s). "
+                "No cfg snapshot was stored in this backup; only DB state was restored.",
+                backup_name=result["backup_name"],
+                restored_at=restored_label,
+                macro_count=result["macro_count"],
+            )
+        )
+
     def refresh_data() -> None:
         """Reload all list/stats data from SQLite and rerender UI sections."""
+        if not _ui_still_available():
+            return
         _note_activity()
+        loaded = _load_dashboard_page()
+        if loaded is None:
+            return
+
+        stats, _ = loaded
+        if not _normalize_dashboard_page_bounds(stats):
+            return
+
+        _apply_dashboard_stats(stats)
+
+        render_macro_list()
+        render_backup_list()
+
+    def _load_dashboard_page() -> tuple[dict[str, object], list[dict[str, object]]] | None:
+        """Load one dashboard page and update cached rows/state total counters."""
         try:
-            stats, state.cached_macros = service.load_dashboard(limit=state.list_page_size, offset=state.list_page_index * state.list_page_size)
+            stats, rows = service.load_dashboard(
+                limit=state.list_page_size,
+                offset=state.list_page_index * state.list_page_size,
+            )
         except Exception as exc:
             state.status_label.set_text(t("Data refresh failed: {error}", error=exc))
-            return
-        state.total_macro_rows = _to_int(stats.get("total_macros", len(state.cached_macros)), default=len(state.cached_macros))
+            return None
+        state.cached_macros = rows
+        state.total_macro_rows = _to_int(stats.get("total_macros", len(rows)), default=len(rows))
+        return stats, rows
 
+    def _normalize_dashboard_page_bounds(stats: dict[str, object]) -> bool:
+        """Clamp page index to valid bounds and reload when current page overflows."""
         total_pages = max(1, (max(state.total_macro_rows, 1) + state.list_page_size - 1) // state.list_page_size)
-        if state.list_page_index >= total_pages:
-            state.list_page_index = max(0, total_pages - 1)
-            try:
-                stats, state.cached_macros = service.load_dashboard(limit=state.list_page_size, offset=state.list_page_index * state.list_page_size)
-            except Exception as exc:
-                state.status_label.set_text(t("Data refresh failed: {error}", error=exc))
-                return
-            state.total_macro_rows = _to_int(stats.get("total_macros", len(state.cached_macros)), default=len(state.cached_macros))
+        if state.list_page_index < total_pages:
+            return True
 
+        state.list_page_index = max(0, total_pages - 1)
+        reloaded = _load_dashboard_page()
+        if reloaded is None:
+            return False
+        reloaded_stats, _ = reloaded
+        stats.clear()
+        stats.update(reloaded_stats)
+        return True
+
+    def _apply_dashboard_stats(stats: dict[str, object]) -> None:
+        """Apply dashboard aggregate stats and duplicate state to UI labels/flags."""
         deleted_macros = _to_int(stats.get("deleted_macros", 0))
         state.deleted_macro_count = deleted_macros
         state.cached_duplicate_names = duplicate_names_for_macros(state.cached_macros)
@@ -2070,63 +2531,25 @@ def build_ui(app_version: str = "unknown") -> None:
         purge_deleted_button.set_visibility(deleted_macros > 0)
         distinct_files_label.set_text(t("Config files: {count}", count=stats["distinct_cfg_files"]))
         last_update_label.set_text(t("Last update: {value}", value=_format_ts(_to_optional_int(stats.get("latest_update_ts")))))
-
-        render_macro_list()
-        render_backup_list()
+        _refresh_macro_migration_action_visibility()
 
     async def perform_index(trigger: str, *, sync_remote: bool = True) -> None:
         """Run cfg indexing and refresh UI when complete."""
-        if state.is_indexing:
+        if not _ui_still_available():
             return
-        if off_printer_mode_enabled:
-            refresh_off_printer_profile_state()
-        if off_printer_mode_enabled and not state.off_printer_profile_ready:
-            message = t("Cannot scan macros: configure and activate a printer connection first.")
-            state.status_label.set_text(message)
-            ui.notify(message, type="warning")
+        if not _can_start_indexing():
             return
         _note_activity()
         state.is_indexing = True
         try:
             state.status_label.set_text(t("Scanning macros ({trigger})...", trigger=trigger))
-            result = await _run_with_file_operation_modal(
+            result = await state._run_with_file_operation_modal(
                 t("Scanning and parsing cfg files"),
-                lambda: service.index(progress_callback=_set_file_operation_progress, sync_remote=sync_remote),
+                lambda: service.index(progress_callback=state._set_file_operation_progress, sync_remote=sync_remote),
             )
-            status_text = t(
-                "Stored {inserted} new version(s), {unchanged} unchanged - {scanned} .cfg files scanned",
-                inserted=result["macros_inserted"],
-                unchanged=result["macros_unchanged"],
-                scanned=result["cfg_files_scanned"],
-            )
-            remote_sync = result.get("remote_sync") if isinstance(result, dict) else None
-            if isinstance(remote_sync, dict):
-                synced_files = _to_int(remote_sync.get("synced_files", 0), default=0)
-                removed_files = _to_int(remote_sync.get("removed_local_files", 0), default=0)
-                status_text = (
-                    f"{status_text} | "
-                    + t("Remote sync: {synced} fetched, {removed} removed", synced=synced_files, removed=removed_files)
-                )
-            state.status_label.set_text(status_text)
-            if trigger != "startup" and _to_int(result.get("macros_inserted", 0)) > 0:
-                inserted = _to_int(result.get("macros_inserted", 0))
-                dynamic_inserted = _to_int(result.get("dynamic_macros_inserted", 0))
-                _mark_reload_required(is_dynamic=(inserted > 0 and dynamic_inserted == inserted))
-            refresh_data()
-            active_profile = service.get_active_printer_profile()
-            runtime_config_dir_raw = str(result.get("runtime_config_dir", "") or "").strip()
-            if not runtime_config_dir_raw:
-                if hasattr(service, "get_runtime_config_dir"):
-                    runtime_config_dir_raw = str(service.get_runtime_config_dir())
-                else:
-                    runtime_config_dir_raw = str(config_dir)
-            if isinstance(active_profile, dict):
-                vendor = str(active_profile.get("vendor", "")).strip()
-                model = str(active_profile.get("model", "")).strip()
-                if not vendor or not model:
-                    state.printer_vendor_input.set_value(vendor)
-                    state.printer_model_input.set_value(model)
-                    state.printer_profile_dialog.open()
+            if not _ui_still_available():
+                return
+            _apply_index_result(result=result, trigger=trigger)
         except FileNotFoundError as exc:
             state.status_label.set_text(t("Error: {error}", error=exc))
         except Exception as exc:
@@ -2134,17 +2557,97 @@ def build_ui(app_version: str = "unknown") -> None:
         finally:
             state.is_indexing = False
 
+    def _can_start_indexing() -> bool:
+        """Validate index preconditions and show guidance when unavailable."""
+        if state.is_indexing:
+            return False
+        if off_printer_mode_enabled:
+            refresh_off_printer_profile_state()
+        if off_printer_mode_enabled and not state.off_printer_profile_ready:
+            message = t("Cannot scan macros: configure and activate a printer connection first.")
+            state.status_label.set_text(message)
+            ui.notify(message, type="warning")
+            return False
+        return True
+
+    def _index_status_text(result: dict[str, object]) -> str:
+        """Build user-facing index completion summary including optional remote sync stats."""
+        status_text = t(
+            "Stored {inserted} new version(s), {unchanged} unchanged - {scanned} .cfg files scanned",
+            inserted=result["macros_inserted"],
+            unchanged=result["macros_unchanged"],
+            scanned=result["cfg_files_scanned"],
+        )
+        remote_sync = result.get("remote_sync") if isinstance(result, dict) else None
+        if isinstance(remote_sync, dict):
+            synced_files = _to_int(remote_sync.get("synced_files", 0), default=0)
+            removed_files = _to_int(remote_sync.get("removed_local_files", 0), default=0)
+            status_text = (
+                f"{status_text} | "
+                + t("Remote sync: {synced} fetched, {removed} removed", synced=synced_files, removed=removed_files)
+            )
+        return status_text
+
+    def _prompt_for_missing_printer_identity() -> None:
+        """Open printer profile dialog when active profile has incomplete identity fields."""
+        active_profile = service.get_active_printer_profile()
+        if not isinstance(active_profile, dict):
+            return
+
+        vendor = str(active_profile.get("vendor", "")).strip()
+        model = str(active_profile.get("model", "")).strip()
+        if vendor and model:
+            return
+        state.printer_vendor_input.set_value(vendor)
+        state.printer_model_input.set_value(model)
+        state.printer_profile_dialog.open()
+
+    def _apply_index_result(*, result: dict[str, object], trigger: str) -> None:
+        """Apply successful indexing result to UI state and follow-up actions."""
+        state.status_label.set_text(_index_status_text(result))
+        if trigger != "startup" and _to_int(result.get("macros_inserted", 0)) > 0:
+            inserted = _to_int(result.get("macros_inserted", 0))
+            dynamic_inserted = _to_int(result.get("dynamic_macros_inserted", 0))
+            _mark_reload_required(is_dynamic=(inserted > 0 and dynamic_inserted == inserted))
+
+        normalized_trigger = str(trigger or "").strip().lower()
+        if normalized_trigger in {"macro migration", "backup restore"}:
+            try:
+                purge_result = service.purge_all_deleted()
+            except Exception as exc:
+                state.status_label.set_text(t("Failed to purge deleted macros after operation: {error}", error=exc))
+            else:
+                purged_count = _to_int(purge_result.get("removed", 0), default=0)
+                if purged_count > 0:
+                    state.status_label.set_text(
+                        t(
+                            "{status} Purged {removed} deleted macro row(s).",
+                            status=state.status_label.text,
+                            removed=purged_count,
+                        )
+                    )
+        refresh_data()
+        _prompt_for_missing_printer_identity()
+
     def _maybe_run_deferred_startup_scan(reason: str) -> None:
         """Run one deferred startup scan once off-printer prerequisites are ready."""
-        if not state.deferred_startup_scan:
-            return
-        if state.is_indexing or state.printer_is_printing:
-            return
-        if off_printer_mode_enabled and not state.off_printer_profile_ready:
+        if not _can_run_deferred_startup_scan():
             return
 
         state.deferred_startup_scan = False
         asyncio.create_task(perform_index("startup"))
+
+    def _can_run_deferred_startup_scan() -> bool:
+        """Return True when deferred startup scan preconditions are satisfied."""
+        if not state.deferred_startup_scan:
+            return False
+        if state.current_view != "macro":
+            return False
+        if state.is_indexing or state.printer_is_printing:
+            return False
+        if off_printer_mode_enabled and not state.off_printer_profile_ready:
+            return False
+        return True
 
     def open_backup_dialog() -> None:
         """Open backup creation dialog with generated default name."""
@@ -2152,27 +2655,14 @@ def build_ui(app_version: str = "unknown") -> None:
         backup_name_input.update()
         state.backup_dialog.open()
 
-    def open_load_order_overview_dialog() -> None:
-        """Open a simple overview of cfg and macro parsing order for Klipper."""
-        try:
-            overview = service.load_cfg_loading_overview()
-        except Exception as exc:
-            status_label.set_text(t("Failed to load cfg parsing overview: {error}", error=exc))
-            return
+    def _dict_rows(raw_rows: object) -> list[dict[str, object]]:
+        """Normalize dynamic dashboard rows to a list of dictionaries."""
+        if not isinstance(raw_rows, list):
+            return []
+        return [row for row in raw_rows if isinstance(row, dict)]
 
-        file_rows_raw = overview.get("klipper_order", [])
-        file_rows = [row for row in file_rows_raw if isinstance(row, dict)] if isinstance(file_rows_raw, list) else []
-        macro_rows_raw = overview.get("klipper_macro_order", [])
-        macro_rows = [row for row in macro_rows_raw if isinstance(row, dict)] if isinstance(macro_rows_raw, list) else []
-
-        load_order_summary_label.set_text(
-            t(
-                "Klipper parses {klipper_count} cfg file(s) and {klipper_macro_count} macro section(s).",
-                klipper_count=overview.get("klipper_count", len(file_rows)),
-                klipper_macro_count=overview.get("klipper_macro_count", len(macro_rows)),
-            )
-        )
-
+    def _load_order_lines(file_rows: list[dict[str, object]], macro_rows: list[dict[str, object]]) -> list[str]:
+        """Build textual load-order overview lines for files and macros."""
         lines = [t("Files"), "=" * 80]
         for row in file_rows:
             lines.append(f"{int(row.get('order', 0)):>4}  {str(row.get('file_path', ''))}")
@@ -2184,29 +2674,43 @@ def build_ui(app_version: str = "unknown") -> None:
                 f"{str(row.get('macro_name', ''))}  "
                 f"[{str(row.get('file_path', ''))}:{int(row.get('line_number', 0))}]"
             )
+        return lines
 
-        load_order_text.set_text("\n".join(lines))
+    def _set_load_order_summary(overview: dict[str, object], file_rows: list[dict[str, object]], macro_rows: list[dict[str, object]]) -> None:
+        """Set load-order summary label from overview payload with row-count fallback."""
+        load_order_summary_label.set_text(
+            t(
+                "Klipper parses {klipper_count} cfg file(s) and {klipper_macro_count} macro section(s).",
+                klipper_count=overview.get("klipper_count", len(file_rows)),
+                klipper_macro_count=overview.get("klipper_macro_count", len(macro_rows)),
+            )
+        )
+
+    def open_load_order_overview_dialog() -> None:
+        """Open a simple overview of cfg and macro parsing order for Klipper."""
+        try:
+            overview = service.load_cfg_loading_overview()
+        except Exception as exc:
+            status_label.set_text(t("Failed to load cfg parsing overview: {error}", error=exc))
+            return
+
+        file_rows = _dict_rows(overview.get("klipper_order", []))
+        macro_rows = _dict_rows(overview.get("klipper_macro_order", []))
+
+        _set_load_order_summary(overview, file_rows, macro_rows)
+        load_order_text.set_text("\n".join(_load_order_lines(file_rows, macro_rows)))
         state.load_order_dialog.open()
 
-    def perform_backup() -> None:
-        """Create named backup snapshot and update status/list output."""
-        if state.printer_is_printing:
-            backup_error_label.set_text(t("Blocked while printer is printing."))
-            status_label.set_text(t("Blocked: printer is currently printing. Backup is disabled."))
-            return
+    def _validate_backup_name_input() -> str | None:
+        """Return sanitized backup name or None when current input is invalid."""
         name = str(backup_name_input.value or "").strip()
-        if not name:
-            backup_error_label.set_text(t("Please enter a backup name."))
-            return
+        if name:
+            return name
+        backup_error_label.set_text(t("Please enter a backup name."))
+        return None
 
-        try:
-            result = service.create_backup(name)
-        except Exception as exc:
-            backup_error_label.set_text(t("Backup failed: {error}", error=exc))
-            status_label.set_text(t("Backup failed: {error}", error=exc))
-            return
-
-        state.backup_dialog.close()
+    def _set_backup_created_status(result: dict[str, object]) -> None:
+        """Set backup-created status text from create-backup result payload."""
         created_label = _format_ts(_to_int(result.get("created_at", 0)))
         status_label.set_text(
             t(
@@ -2217,7 +2721,135 @@ def build_ui(app_version: str = "unknown") -> None:
                 cfg_file_count=result["cfg_file_count"],
             )
         )
+
+    def perform_backup() -> None:
+        """Create named backup snapshot and update status/list output."""
+        if state.printer_is_printing:
+            backup_error_label.set_text(t("Blocked while printer is printing."))
+            status_label.set_text(t("Blocked: printer is currently printing. Backup is disabled."))
+            return
+        name = _validate_backup_name_input()
+        if name is None:
+            return
+
+        try:
+            result = service.create_backup(name)
+        except Exception as exc:
+            backup_error_label.set_text(t("Backup failed: {error}", error=exc))
+            status_label.set_text(t("Backup failed: {error}", error=exc))
+            return
+
+        state.backup_dialog.close()
+        _set_backup_created_status(result)
         render_backup_list()
+
+    def _set_macro_migration_prompt_text(migration_state: dict[str, object]) -> None:
+        """Populate migration dialog text from current migration state."""
+        printer_cfg_count = _to_int(migration_state.get("printer_cfg_macro_count", 0))
+        macros_cfg_count = _to_int(migration_state.get("macros_cfg_macro_count", 0))
+        macro_migration_prompt_message.set_text(
+            t(
+                "Found {printer_count} macro(s) in printer.cfg and {macros_count} in macros.cfg. "
+                "Migrate now to move printer.cfg macros into macros.cfg. A backup is created first.",
+                printer_count=printer_cfg_count,
+                macros_count=macros_cfg_count,
+            )
+        )
+
+    def _open_macro_migration_prompt_if_needed(trigger: str) -> None:
+        """Show one-time migration prompt when entering macro workspace if migration is available."""
+        nonlocal _macro_migration_prompt_shown
+        normalized_trigger = str(trigger).strip().lower()
+        if normalized_trigger != "workspace_open":
+            return
+        if state.current_view != "macro":
+            return
+        if _macro_migration_prompt_shown:
+            return
+        if not bool(vault_cfg.macro_migration_prompt_enabled):
+            return
+
+        migration_state = _load_macro_migration_state()
+        if migration_state is None:
+            return
+        if not bool(migration_state.get("can_migrate", False)):
+            return
+
+        _macro_migration_prompt_shown = True
+        macro_migration_prompt_error.set_text("")
+        _set_macro_migration_prompt_text(migration_state)
+        macro_migration_prompt_dialog.open()
+
+    def _decline_macro_migration_prompt() -> None:
+        """Persist migration prompt opt-out and close migration prompt dialog."""
+        if not _persist_macro_migration_prompt_enabled(False):
+            return
+        macro_migration_prompt_dialog.close()
+        state.status_label.set_text(t("Macro migration prompt disabled. Use Macro actions to migrate later."))
+        _refresh_macro_migration_action_visibility()
+
+    async def _perform_macro_migration_async() -> None:
+        """Create backup, migrate macros, and upload resulting cfg changes to printer."""
+        if state.printer_is_printing:
+            state.status_label.set_text(t("Blocked: printer is currently printing. Macro migration is disabled."))
+            return
+
+        try:
+            result = await asyncio.to_thread(service.migrate_printer_cfg_macros)
+        except Exception as exc:
+            macro_migration_prompt_error.set_text(t("Macro migration failed: {error}", error=exc))
+            state.status_label.set_text(t("Macro migration failed: {error}", error=exc))
+            return
+
+        if macro_migration_prompt_dialog is not None:
+            macro_migration_prompt_dialog.close()
+        moved_sections = _to_int(result.get("moved_sections", 0), default=0)
+        backup_name = str(result.get("backup_name", "")).strip() or "-"
+        state.status_label.set_text(
+            t(
+                "Migrated {count} macro section(s) from printer.cfg to macros.cfg after creating backup '{backup_name}'.",
+                count=moved_sections,
+                backup_name=backup_name,
+            )
+        )
+        _mark_local_changes_pending()
+        _mark_reload_required(is_dynamic=False)
+
+        if off_printer_mode_enabled and state.off_printer_profile_ready:
+            try:
+                save_result = await state._run_with_file_operation_modal(
+                    t("Uploading migrated cfg files to printer"),
+                    lambda: service.save_config_to_remote(
+                        allow_protected_upload=True,
+                        progress_callback=state._set_file_operation_progress,
+                    ),
+                )
+            except Exception as exc:
+                state.status_label.set_text(
+                    t(
+                        "Migration completed locally but upload failed: {error}. Use Save Config to retry upload.",
+                        error=exc,
+                    )
+                )
+            else:
+                _mark_local_changes_saved()
+                _append_restart_policy_from_result(save_result)
+                state.status_label.set_text(
+                    t(
+                        "Migrated macros and uploaded config to printer: {uploaded} uploaded, {removed} removed, backup '{backup_name}'.",
+                        uploaded=_to_int(save_result.get("uploaded_files", 0), default=0),
+                        removed=_to_int(save_result.get("removed_remote_files", 0), default=0),
+                        backup_name=backup_name,
+                    )
+                )
+
+        render_backup_list()
+        _refresh_macro_migration_action_visibility()
+        asyncio.create_task(perform_index("macro migration", sync_remote=False))
+
+    def _perform_macro_migration() -> None:
+        """Run migration workflow asynchronously from UI callbacks."""
+        asyncio.create_task(_perform_macro_migration_async())
 
     def open_export_dialog() -> None:
         """Open macro export dialog with selectable latest macro identities."""
@@ -2232,24 +2864,64 @@ def build_ui(app_version: str = "unknown") -> None:
         export_error_label.set_text("")
         state.export_dialog.open()
 
-    def perform_export() -> None:
-        """Export selected macros to a share file on disk."""
-        source_vendor, source_model = _active_printer_identity()
+    def _selected_export_identities() -> list[tuple[str, str]]:
+        """Return selected export macro identities from export dialog checkboxes."""
         selections = [
             identity
             for identity, checkbox in export_macro_checkboxes.items()
             if bool(getattr(checkbox, "value", False))
         ]
-        if not selections:
-            export_error_label.set_text(t("Select at least one macro to export."))
-            return
-
         identities: list[tuple[str, str]] = []
         for identity in selections:
             if "::" not in identity:
                 continue
             file_path, macro_name = identity.split("::", 1)
             identities.append((file_path, macro_name))
+        return identities
+
+    def _set_import_status_from_result(result: dict[str, object]) -> None:
+        """Set import completion status text from service result payload."""
+        imported = _to_int(result.get("imported", 0))
+        source_vendor = str(result.get("source_vendor", "")).strip()
+        source_model = str(result.get("source_model", "")).strip()
+        if imported <= 0:
+            state.status_label.set_text(t("No macros were imported."))
+            return
+
+        if bool(result.get("printer_matches", False)):
+            state.status_label.set_text(t("Imported {count} macro(s) as new inactive entries.", count=imported))
+            return
+
+        if source_vendor and source_model:
+            state.status_label.set_text(
+                t(
+                    "Imported {count} macro(s) for printer {vendor} {model}. Review before enabling.",
+                    count=imported,
+                    vendor=source_vendor,
+                    model=source_model,
+                )
+            )
+            return
+
+        state.status_label.set_text(
+            t(
+                "Imported {count} macro(s) with unknown source printer. Review before enabling.",
+                count=imported,
+            )
+        )
+
+    def _write_uploaded_import_tempfile(suffix: str) -> Path:
+        """Write uploaded import bytes to a temporary file and return its path."""
+        temp_import_file = Path(tempfile.gettempdir()) / (
+            datetime.now().strftime("klippervault-import-%Y%m%d-%H%M%S") + suffix
+        )
+        temp_import_file.write_bytes(state.uploaded_import_bytes or b"")
+        return temp_import_file
+
+    def perform_export() -> None:
+        """Export selected macros to a share file on disk."""
+        source_vendor, source_model = _active_printer_identity()
+        identities = _selected_export_identities()
 
         if not identities:
             export_error_label.set_text(t("Select at least one macro to export."))
@@ -2297,10 +2969,7 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         suffix = Path(state.uploaded_import_name).suffix or ".json"
-        temp_import_file = Path(tempfile.gettempdir()) / (
-            datetime.now().strftime("klippervault-import-%Y%m%d-%H%M%S") + suffix
-        )
-        temp_import_file.write_bytes(state.uploaded_import_bytes)
+        temp_import_file = _write_uploaded_import_tempfile(suffix)
 
         try:
             result = service.import_macro_share_file(
@@ -2316,31 +2985,7 @@ def build_ui(app_version: str = "unknown") -> None:
             temp_import_file.unlink(missing_ok=True)
 
         state.import_dialog.close()
-        imported = _to_int(result.get("imported", 0))
-        source_vendor = str(result.get("source_vendor", "")).strip()
-        source_model = str(result.get("source_model", "")).strip()
-        if imported <= 0:
-            state.status_label.set_text(t("No macros were imported."))
-            return
-
-        if bool(result.get("printer_matches", False)):
-            state.status_label.set_text(t("Imported {count} macro(s) as new inactive entries.", count=imported))
-        elif source_vendor and source_model:
-            state.status_label.set_text(
-                t(
-                    "Imported {count} macro(s) for printer {vendor} {model}. Review before enabling.",
-                    count=imported,
-                    vendor=source_vendor,
-                    model=source_model,
-                )
-            )
-        else:
-            state.status_label.set_text(
-                t(
-                    "Imported {count} macro(s) with unknown source printer. Review before enabling.",
-                    count=imported,
-                )
-            )
+        _set_import_status_from_result(result)
 
         refresh_data()
 
@@ -2433,28 +3078,16 @@ def build_ui(app_version: str = "unknown") -> None:
         """Create a pull request on GitHub for current active macro artifacts."""
         source_vendor, source_model = _active_printer_identity()
 
-        if _printer_profile_missing():
-            state.create_pr_error_label.set_text(t("Set printer vendor/model before creating a pull request."))
+        inputs = _collect_create_pr_inputs(state)
+        validation_error = _validate_create_pr_inputs(
+            printer_profile_missing=_printer_profile_missing(),
+            inputs=inputs,
+        )
+        if validation_error:
+            state.create_pr_error_label.set_text(validation_error)
             return
 
-        repo_url = str(state.pr_repo_url_input.value or "").strip()
-        base_branch = str(state.pr_base_branch_input.value or "").strip()
-        head_branch = str(state.pr_head_branch_input.value or "").strip()
-        title = str(state.pr_title_input.value or "").strip()
-        body = str(state.pr_body_input.value or "").strip()
-        token = str(state.pr_token_input.value or "").strip()
-
-        if not repo_url or not base_branch or not head_branch or not title or not token:
-            state.create_pr_error_label.set_text(t("Repository URL, branches, title, and token are required."))
-            return
-
-        state.create_pr_in_progress = True
-        state.create_pr_progress_current = 0
-        state.create_pr_progress_total = 1
-        state.confirm_create_pr_button.set_enabled(False)
-        state.create_pr_error_label.set_text("")
-        state.status_label.set_text(t("Creating GitHub pull request..."))
-        _refresh_create_pr_progress_ui()
+        _begin_create_pr_request(state, _refresh_create_pr_progress_ui)
         await asyncio.sleep(0)
 
         def report_progress(current: int, total: int) -> None:
@@ -2466,59 +3099,20 @@ def build_ui(app_version: str = "unknown") -> None:
                 service.create_online_update_pull_request,
                 source_vendor=source_vendor,
                 source_model=source_model,
-                repo_url=repo_url,
-                base_branch=base_branch,
-                head_branch=head_branch,
+                repo_url=str(inputs.get("repo_url", "")),
+                base_branch=str(inputs.get("base_branch", "")),
+                head_branch=str(inputs.get("head_branch", "")),
                 manifest_path=vault_cfg.online_update_manifest_path,
-                github_token=token,
-                pull_request_title=title,
-                pull_request_body=body,
+                github_token=str(inputs.get("token", "")),
+                pull_request_title=str(inputs.get("title", "")),
+                pull_request_body=str(inputs.get("body", "")),
                 progress_callback=report_progress,
             )
         except Exception as exc:
-            state.create_pr_in_progress = False
-            _refresh_create_pr_progress_ui()
-            state.create_pr_error_label.set_text(t("Create PR failed: {error}", error=exc))
-            state.status_label.set_text(t("Create PR failed: {error}", error=exc))
-            state.confirm_create_pr_button.set_enabled(True)
+            _set_create_pr_request_failure(state, _refresh_create_pr_progress_ui, exc)
             return
 
-        state.create_pr_in_progress = False
-        _refresh_create_pr_progress_ui()
-        state.confirm_create_pr_button.set_enabled(True)
-        state.create_pr_dialog.close()
-        pr_number = _to_int(result.get("pull_request_number", 0))
-        pr_url = str(result.get("pull_request_url", "")).strip()
-        updated_files = _to_int(result.get("updated_files", 0))
-        macro_count = _to_int(result.get("macro_count", 0))
-        commit_count = _to_int(result.get("commit_count", 0))
-
-        if bool(result.get("no_changes", False)):
-            message = t("No macro changes detected for pull request. PR was not created.")
-            state.status_label.set_text(message)
-            ui.notify(message, type="warning")
-            return
-
-        if bool(result.get("existing", False)):
-            state.status_label.set_text(
-                t(
-                    "Open pull request already exists (#{number}): {url}",
-                    number=pr_number,
-                    url=pr_url or "-",
-                )
-            )
-            return
-
-        state.status_label.set_text(
-            t(
-                "Created pull request #{number} with {files} updated file(s), {commits} commit(s), for {count} macro(s): {url}",
-                number=pr_number,
-                files=updated_files,
-                commits=commit_count,
-                count=macro_count,
-                url=pr_url or "-",
-            )
-        )
+        _finish_create_pr_request(state, _refresh_create_pr_progress_ui, result)
 
     def _refresh_online_update_progress_ui() -> None:
         """Sync online update progress widgets with current background state."""
@@ -2542,10 +3136,8 @@ def build_ui(app_version: str = "unknown") -> None:
         online_update_progress_label.set_visibility(True)
         online_update_progress_bar.set_visibility(True)
 
-    async def open_online_update_dialog() -> None:
-        """Check online source for changed macros and open update selection dialog."""
-        source_vendor, source_model = _active_printer_identity()
-
+    def _reset_online_update_dialog_state() -> None:
+        """Reset online update dialog widgets and cached pending update state."""
         state.online_update_activate_checkboxes.clear()
         state.online_update_list.clear()
         state.online_update_error_label.set_text("")
@@ -2554,13 +3146,68 @@ def build_ui(app_version: str = "unknown") -> None:
         state.confirm_online_update_button.set_enabled(False)
         state.confirm_online_update_button.set_visibility(False)
 
+    def _validate_online_update_prerequisites() -> str | None:
+        """Return configured update repository URL when prerequisites are met, else None."""
         if _printer_profile_missing():
             state.status_label.set_text(t("Set printer vendor/model before checking updates."))
-            return
+            return None
 
         repo_url = str(vault_cfg.online_update_repo_url or "").strip()
         if not repo_url:
             state.status_label.set_text(t("Online updater repository URL is not configured."))
+            return None
+        return repo_url
+
+    def _set_online_update_summary_from_result(result: dict[str, object]) -> None:
+        """Set summary text and pending updates from online update check result."""
+        updates = result.get("updates", [])
+        state.pending_online_updates = [item for item in updates if isinstance(item, dict)] if isinstance(updates, list) else []
+        checked = _to_int(result.get("checked", 0))
+        changed = _to_int(result.get("changed", 0))
+        unchanged = _to_int(result.get("unchanged", 0))
+        state.online_update_summary_label.set_text(
+            t(
+                "Checked {checked} macro(s): {changed} update(s), {unchanged} unchanged.",
+                checked=checked,
+                changed=changed,
+                unchanged=unchanged,
+            )
+        )
+
+    def _render_online_update_candidates() -> None:
+        """Render update checkbox rows and confirm button state."""
+        with state.online_update_list:
+            if not state.pending_online_updates:
+                ui.label(t("No online updates available.")).classes("text-sm text-grey-5")
+            for item in state.pending_online_updates:
+                identity = str(item.get("identity", ""))
+                macro_name = str(item.get("macro_name", "")).strip() or t("Unnamed macro")
+                local_version = _to_int(item.get("local_version", 0))
+                remote_version = str(item.get("remote_version", "")).strip()
+                version_label = t("local v{local} -> remote {remote}", local=local_version, remote=remote_version or "-")
+                row_label = f"{macro_name} ({version_label})"
+                checkbox = ui.checkbox(row_label, value=False).props("dense")
+                state.online_update_activate_checkboxes[identity] = checkbox
+
+            state.confirm_online_update_button.set_enabled(bool(state.pending_online_updates))
+            state.confirm_online_update_button.set_visibility(bool(state.pending_online_updates))
+            state.online_update_dialog.open()
+
+    def _selected_online_update_activate_identities() -> list[str]:
+        """Return identities checked for activation during online update import."""
+        return [
+            identity
+            for identity, checkbox in state.online_update_activate_checkboxes.items()
+            if bool(getattr(checkbox, "value", False))
+        ]
+
+    async def open_online_update_dialog() -> None:
+        """Check online source for changed macros and open update selection dialog."""
+        source_vendor, source_model = _active_printer_identity()
+
+        _reset_online_update_dialog_state()
+        repo_url = _validate_online_update_prerequisites()
+        if repo_url is None:
             return
 
         state.online_update_check_in_progress = True
@@ -2594,36 +3241,8 @@ def build_ui(app_version: str = "unknown") -> None:
         state.online_update_check_in_progress = False
         _refresh_online_update_progress_ui()
 
-        updates = result.get("updates", [])
-        state.pending_online_updates = [item for item in updates if isinstance(item, dict)] if isinstance(updates, list) else []
-        checked = _to_int(result.get("checked", 0))
-        changed = _to_int(result.get("changed", 0))
-        unchanged = _to_int(result.get("unchanged", 0))
-        state.online_update_summary_label.set_text(
-            t(
-                "Checked {checked} macro(s): {changed} update(s), {unchanged} unchanged.",
-                checked=checked,
-                changed=changed,
-                unchanged=unchanged,
-            )
-        )
-
-        with state.online_update_list:
-            if not state.pending_online_updates:
-                ui.label(t("No online updates available.")).classes("text-sm text-grey-5")
-            for item in state.pending_online_updates:
-                identity = str(item.get("identity", ""))
-                macro_name = str(item.get("macro_name", "")).strip() or t("Unnamed macro")
-                local_version = _to_int(item.get("local_version", 0))
-                remote_version = str(item.get("remote_version", "")).strip()
-                version_label = t("local v{local} -> remote {remote}", local=local_version, remote=remote_version or "-")
-                row_label = f"{macro_name} ({version_label})"
-                checkbox = ui.checkbox(row_label, value=False).props("dense")
-                state.online_update_activate_checkboxes[identity] = checkbox
-
-            state.confirm_online_update_button.set_enabled(bool(state.pending_online_updates))
-            state.confirm_online_update_button.set_visibility(bool(state.pending_online_updates))
-            state.online_update_dialog.open()
+        _set_online_update_summary_from_result(result)
+        _render_online_update_candidates()
         state.status_label.set_text(t("Online update check complete."))
 
     async def _check_online_updates_on_startup() -> None:
@@ -2680,11 +3299,7 @@ def build_ui(app_version: str = "unknown") -> None:
             online_update_error_label.set_text(t("No online updates to import."))
             return
 
-        activate_identities = [
-            identity
-            for identity, checkbox in state.online_update_activate_checkboxes.items()
-            if bool(getattr(checkbox, "value", False))
-        ]
+        activate_identities = _selected_online_update_activate_identities()
 
         try:
             result = service.import_online_updates(
@@ -2746,6 +3361,23 @@ def build_ui(app_version: str = "unknown") -> None:
         """Manual scan button handler."""
         asyncio.create_task(perform_index("manual"))
 
+    def _run_printer_runtime_command(
+        *,
+        command,
+        failure_template: str,
+        success_message: str,
+    ) -> bool:
+        """Execute a runtime printer command and report status."""
+        try:
+            command()
+        except Exception as exc:
+            status_label.set_text(t(failure_template, error=exc))
+            return False
+
+        _clear_restart_required()
+        status_label.set_text(t(success_message))
+        return True
+
     def restart_klipper() -> None:
         """Request Klipper restart when macro changes are pending and printer is idle."""
         if not state.restart_required:
@@ -2755,14 +3387,11 @@ def build_ui(app_version: str = "unknown") -> None:
             status_label.set_text(t("Blocked: printer is busy or printing. Klipper restart is disabled."))
             return
 
-        try:
-            service.restart_klipper(timeout=3.0)
-        except Exception as exc:
-            status_label.set_text(t("Failed to restart Klipper: {error}", error=exc))
-            return
-
-        _clear_restart_required()
-        status_label.set_text(t("Klipper restart requested. The restart button will reappear after another macro change."))
+        _run_printer_runtime_command(
+            command=lambda: service.restart_klipper(timeout=3.0),
+            failure_template="Failed to restart Klipper: {error}",
+            success_message="Klipper restart requested. The restart button will reappear after another macro change.",
+        )
 
     def reload_dynamic_macros() -> None:
         """Request dynamic macro reload when pending dynamic macro changes exist."""
@@ -2770,43 +3399,35 @@ def build_ui(app_version: str = "unknown") -> None:
             status_label.set_text(t("No pending dynamic macro changes require a dynamic macro reload."))
             return
 
-        try:
-            service.reload_dynamic_macros(timeout=3.0)
-        except Exception as exc:
-            status_label.set_text(t("Failed to reload dynamic macros: {error}", error=exc))
-            return
-
-        _clear_restart_required()
-        status_label.set_text(
-            t("Dynamic macro reload requested. The reload button will reappear after another dynamic macro change.")
+        _run_printer_runtime_command(
+            command=lambda: service.reload_dynamic_macros(timeout=3.0),
+            failure_template="Failed to reload dynamic macros: {error}",
+            success_message=(
+                "Dynamic macro reload requested. "
+                "The reload button will reappear after another dynamic macro change."
+            ),
         )
 
-    async def save_config_to_printer() -> None:
-        """Explicitly upload local cfg changes to printer via SFTP when printer is idle."""
+    def _can_save_config_to_printer() -> bool:
+        """Validate Save Config preconditions and set user-facing status on failure."""
         if not off_printer_mode_enabled:
             status_label.set_text(t("Save Config is only available in off-printer mode."))
-            return
+            return False
         if not state.off_printer_profile_ready:
             status_label.set_text(t("Cannot save config: configure and activate a printer connection first."))
-            return
+            return False
         if state.printer_is_printing:
             status_label.set_text(t("Blocked: printer is currently printing. Save Config is disabled."))
             _refresh_save_config_button()
-            return
+            return False
         if not state.has_unsynced_local_changes:
             status_label.set_text(t("No local config changes pending upload."))
             _refresh_save_config_button()
-            return
+            return False
+        return True
 
-        try:
-            result = await _run_with_file_operation_modal(
-                t("Uploading local cfg files to printer"),
-                lambda: service.save_config_to_remote(progress_callback=_set_file_operation_progress),
-            )
-        except Exception as exc:
-            status_label.set_text(t("Save Config failed: {error}", error=exc))
-            return
-
+    def _set_save_config_success_status(result: dict[str, object]) -> None:
+        """Render Save Config completion summary from result payload."""
         uploaded = _to_int(result.get("uploaded_files", 0), default=0)
         removed = _to_int(result.get("removed_remote_files", 0), default=0)
         blocked = _to_int(result.get("blocked_files", 0), default=0)
@@ -2818,6 +3439,22 @@ def build_ui(app_version: str = "unknown") -> None:
                 blocked=blocked,
             )
         )
+
+    async def save_config_to_printer() -> None:
+        """Explicitly upload local cfg changes to printer via SFTP when printer is idle."""
+        if not _can_save_config_to_printer():
+            return
+
+        try:
+            result = await state._run_with_file_operation_modal(
+                t("Uploading local cfg files to printer"),
+                lambda: service.save_config_to_remote(progress_callback=state._set_file_operation_progress),
+            )
+        except Exception as exc:
+            status_label.set_text(t("Save Config failed: {error}", error=exc))
+            return
+
+        _set_save_config_success_status(result)
         _mark_local_changes_saved()
         _append_restart_policy_from_result(result)
 
@@ -2829,15 +3466,8 @@ def build_ui(app_version: str = "unknown") -> None:
         if bool(result.get("dynamic_reload_required", False)):
             _mark_reload_required(is_dynamic=True)
 
-    def set_print_lock(locked: bool, moonraker_state: str, moonraker_message: str) -> None:
-        """Toggle UI mutation lock while printer is actively printing."""
-        _prev_printer_state = state.printer_state
-        state.printer_is_printing = locked
-        state.printer_state = moonraker_state
-        state.printer_status_message = str(moonraker_message or "")
-        state.printer_is_busy = moonraker_state not in {"standby", "ready", "complete", "cancelled"}
-        local_actions_enabled = _remote_actions_available()
-
+    def _set_mutation_controls_enabled(local_actions_enabled: bool) -> None:
+        """Apply enabled/disabled state for macro mutation controls."""
         index_button.set_enabled(local_actions_enabled)
         macro_actions_button.set_enabled(local_actions_enabled)
         duplicate_warning_button.set_enabled(local_actions_enabled)
@@ -2862,6 +3492,36 @@ def build_ui(app_version: str = "unknown") -> None:
         _refresh_reload_buttons()
         _refresh_save_config_button()
 
+    def _set_print_state_status_text(*, locked: bool, moonraker_state: str) -> None:
+        """Set status label text based on print lock and Moonraker state."""
+        if locked:
+            status_label.set_text(
+                t(
+                    "Printing in progress ({state}). Local edits are allowed; Save Config upload is disabled.",
+                    state=moonraker_state,
+                )
+            )
+            return
+
+        if off_printer_mode_enabled and not state.off_printer_profile_ready:
+            status_label.set_text(t("Ready (waiting for active printer connection)."))
+        elif moonraker_state == "unknown":
+            status_label.set_text(t("Ready (Moonraker status unknown)."))
+        else:
+            status_label.set_text(t("Ready (printer state: {state}).", state=moonraker_state))
+        _maybe_run_deferred_startup_scan("printer became idle")
+
+    def set_print_lock(locked: bool, moonraker_state: str, moonraker_message: str) -> None:
+        """Toggle UI mutation lock while printer is actively printing."""
+        _prev_printer_state = state.printer_state
+        state.printer_is_printing = locked
+        state.printer_state = moonraker_state
+        state.printer_status_message = str(moonraker_message or "")
+        state.printer_is_busy = moonraker_state not in {"standby", "ready", "complete", "cancelled"}
+        local_actions_enabled = _remote_actions_available()
+
+        _set_mutation_controls_enabled(local_actions_enabled)
+
         if off_printer_mode_enabled and state.off_printer_profile_ready and state.off_printer_profile_label is not None:
             detail = str(moonraker_message or "").strip()
             if moonraker_state == "unknown":
@@ -2874,21 +3534,7 @@ def build_ui(app_version: str = "unknown") -> None:
                 state.off_printer_profile_label.classes(replace="text-xs text-positive")
                 state.off_printer_profile_label.set_text(state.off_printer_profile_status_text)
 
-        if locked:
-            status_label.set_text(
-                t(
-                    "Printing in progress ({state}). Local edits are allowed; Save Config upload is disabled.",
-                    state=moonraker_state,
-                )
-            )
-        else:
-            if off_printer_mode_enabled and not state.off_printer_profile_ready:
-                status_label.set_text(t("Ready (waiting for active printer connection)."))
-            elif moonraker_state == "unknown":
-                status_label.set_text(t("Ready (Moonraker status unknown)."))
-            else:
-                status_label.set_text(t("Ready (printer state: {state}).", state=moonraker_state))
-            _maybe_run_deferred_startup_scan("printer became idle")
+        _set_print_state_status_text(locked=locked, moonraker_state=moonraker_state)
 
         # Detect printer coming back online after being unreachable and auto-rescan.
         if moonraker_state != "unknown":
@@ -2897,6 +3543,7 @@ def build_ui(app_version: str = "unknown") -> None:
                 and state.printer_seen_connected
                 and not locked
                 and not state.is_indexing
+                and state.current_view == "macro"
             ):
                 asyncio.create_task(perform_index("printer came online"))
             state.printer_seen_connected = True
@@ -2905,7 +3552,7 @@ def build_ui(app_version: str = "unknown") -> None:
         """Poll Moonraker printer state and apply UI lock policy."""
         nonlocal _print_state_refresh_inflight
         if off_printer_mode_enabled and not state.off_printer_profile_ready:
-            _set_printer_connecting_modal(False)
+            state._set_printer_connecting_modal(False)
             set_print_lock(
                 locked=False,
                 moonraker_state="unknown",
@@ -2916,20 +3563,30 @@ def build_ui(app_version: str = "unknown") -> None:
         if _print_state_refresh_inflight:
             return
 
+        async def _query_print_state_status() -> dict[str, object]:
+            """Fetch current printer status payload with UI-connectivity signaling."""
+            try:
+                status = await asyncio.to_thread(service.query_printer_status, 1.5)
+                state._set_printer_connecting_modal(False)
+                return {
+                    "is_printing": bool(status.get("is_printing", False)),
+                    "state": str(status.get("state", "unknown")),
+                    "message": str(status.get("message", "")),
+                }
+            except Exception as exc:
+                state._set_printer_connecting_modal(True, str(exc))
+                return {
+                    "is_printing": False,
+                    "state": "unknown",
+                    "message": str(exc),
+                }
+
         async def _refresh_print_state_async() -> None:
             """Run Moonraker status query off the UI path to keep GUI responsive."""
             nonlocal _print_state_refresh_inflight
             _print_state_refresh_inflight = True
             try:
-                status = await asyncio.to_thread(service.query_printer_status, 1.5)
-                _set_printer_connecting_modal(False)
-            except Exception as exc:
-                _set_printer_connecting_modal(True, str(exc))
-                status = {
-                    "is_printing": False,
-                    "state": "unknown",
-                    "message": str(exc),
-                }
+                status = await _query_print_state_status()
             finally:
                 _print_state_refresh_inflight = False
 
@@ -2939,13 +3596,37 @@ def build_ui(app_version: str = "unknown") -> None:
                 moonraker_message=str(status.get("message", "")),
             )
 
+        try:
+            asyncio.create_task(_refresh_print_state_async())
+        except RuntimeError:
+            return
+
     def refresh_printer_card_statuses() -> None:
         """Refresh status snapshots for all configured printer cards."""
         nonlocal _printer_card_status_refresh_inflight
-        if state.printer_cards_container is None or state.printer_cards_container.is_deleted:
+        if _should_skip_printer_card_status_refresh(_printer_card_status_refresh_inflight):
             return
-        if _printer_card_status_refresh_inflight:
-            return
+
+        async def _update_single_printer_card_status(raw_profile: object) -> None:
+            """Update status cache for one printer profile payload."""
+            if state.printer_cards_container is None or state.printer_cards_container.is_deleted:
+                return
+            if not isinstance(raw_profile, dict):
+                return
+            profile_id = _to_int(raw_profile.get("id"), default=0)
+            if profile_id <= 0:
+                return
+            try:
+                status = await asyncio.to_thread(service.query_printer_status_for_profile, profile_id, 2.0)
+            except Exception as exc:
+                status = {
+                    "connected": False,
+                    "state": "unknown",
+                    "message": str(exc),
+                }
+            state.printer_card_status[profile_id] = status
+            if bool(status.get("connected", False)):
+                state.printer_card_last_seen[profile_id] = datetime.now()
 
         async def _refresh_printer_card_statuses_async() -> None:
             nonlocal _printer_card_status_refresh_inflight
@@ -2953,17 +3634,7 @@ def build_ui(app_version: str = "unknown") -> None:
             try:
                 profiles = service.list_printer_profiles()
                 for raw in profiles:
-                    if state.printer_cards_container is None or state.printer_cards_container.is_deleted:
-                        return
-                    if not isinstance(raw, dict):
-                        continue
-                    profile_id = _to_int(raw.get("id"), default=0)
-                    if profile_id <= 0:
-                        continue
-                    status = await asyncio.to_thread(service.query_printer_status_for_profile, profile_id, 1.25)
-                    state.printer_card_status[profile_id] = status
-                    if bool(status.get("connected", False)):
-                        state.printer_card_last_seen[profile_id] = datetime.now()
+                    await _update_single_printer_card_status(raw)
             except Exception as exc:
                 # Keep best-effort polling isolated from the main UI flow.
                 if not start_page_status_label.is_deleted:
@@ -2977,6 +3648,14 @@ def build_ui(app_version: str = "unknown") -> None:
             asyncio.create_task(_refresh_printer_card_statuses_async())
         except RuntimeError:
             return
+
+    def _should_skip_printer_card_status_refresh(refresh_inflight: bool) -> bool:
+        """Return True when printer-card status polling should not run."""
+        if state.printer_cards_container is None or state.printer_cards_container.is_deleted:
+            return True
+        if refresh_inflight:
+            return True
+        return False
 
     def test_off_printer_profile_connection() -> None:
         """Run active SSH profile connectivity test and report status."""
@@ -3153,6 +3832,69 @@ def build_ui(app_version: str = "unknown") -> None:
             reset_ssh_profile_form_for_new()
         _refresh_ssh_profile_action_buttons()
 
+    def _selected_ssh_profile_context() -> tuple[int, dict[str, object], bool]:
+        """Resolve selected SSH profile id, payload, and existing-secret status."""
+        selected_option = str(ssh_profile_select.value or "").strip()
+        selected_id = state.ssh_profile_option_ids.get(selected_option, 0)
+        selected_profile = state.ssh_profiles_by_id.get(int(selected_id), {}) if selected_id > 0 else {}
+        selected_has_secret = bool(selected_profile.get("has_secret", False)) if isinstance(selected_profile, dict) else False
+        return int(selected_id), selected_profile if isinstance(selected_profile, dict) else {}, selected_has_secret
+
+    def _read_ssh_profile_form_values() -> dict[str, object]:
+        """Read normalized SSH profile form values from dialog controls."""
+        return {
+            "profile_name": str(ssh_profile_name_input.value or "").strip(),
+            "host": str(ssh_profile_host_input.value or "").strip(),
+            "username": str(ssh_profile_username_input.value or "").strip(),
+            "remote_config_dir": str(ssh_profile_remote_dir_input.value or "").strip(),
+            "moonraker_url": str(ssh_profile_moonraker_url_input.value or "").strip(),
+            "auth_mode": str(ssh_profile_auth_mode_select.value or "key").strip().lower() or "key",
+            "port": _to_int(ssh_profile_port_input.value, default=22),
+            "secret_value": str(ssh_profile_secret_input.value or "").strip(),
+            "is_active": bool(ssh_profile_active_toggle.value),
+        }
+
+    def _validate_ssh_profile_form_values(values: dict[str, object], *, selected_has_secret: bool) -> str | None:
+        """Return localized validation error for SSH profile form or None when valid."""
+        profile_name = str(values.get("profile_name", ""))
+        host = str(values.get("host", ""))
+        username = str(values.get("username", ""))
+        remote_config_dir = str(values.get("remote_config_dir", ""))
+        moonraker_url = str(values.get("moonraker_url", ""))
+        auth_mode = str(values.get("auth_mode", "key")).strip().lower() or "key"
+        port = _to_int(values.get("port"), default=22)
+        secret_value = str(values.get("secret_value", ""))
+
+        if not profile_name:
+            return t("Profile name is required.")
+        if not host:
+            return t("Host is required.")
+        if not username:
+            return t("Username is required.")
+        if not remote_config_dir:
+            return t("Remote config directory is required.")
+        if port < 1 or port > 65535:
+            return t("Port must be between 1 and 65535.")
+        if auth_mode not in {"key", "password"}:
+            return t("Authentication mode must be key or password.")
+
+        parsed_url = urlparse(moonraker_url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            return t("Moonraker URL must start with http:// or https:// and include a host.")
+
+        if not secret_value and not selected_has_secret:
+            secret_type_label = t("password") if auth_mode == "password" else t("key path")
+            return t("Enter SSH {secret_type} before saving.", secret_type=secret_type_label)
+        return None
+
+    def _refresh_after_ssh_profile_mutation(*, hide_editor: bool = False) -> None:
+        """Refresh dependent UI state after SSH profile create/update/delete/activate."""
+        refresh_printer_profile_selector()
+        refresh_off_printer_profile_state()
+        refresh_print_state()
+        if hide_editor:
+            _hide_printer_editor()
+
     def save_ssh_profile_from_dialog() -> None:
         """Persist one SSH profile and optional credentials from form values."""
         if not off_printer_mode_enabled:
@@ -3160,59 +3902,24 @@ def build_ui(app_version: str = "unknown") -> None:
         ssh_profile_error_label.set_text("")
         ssh_profile_status_label.set_text("")
 
-        profile_name = str(ssh_profile_name_input.value or "").strip()
-        host = str(ssh_profile_host_input.value or "").strip()
-        username = str(ssh_profile_username_input.value or "").strip()
-        remote_config_dir = str(ssh_profile_remote_dir_input.value or "").strip()
-        moonraker_url = str(ssh_profile_moonraker_url_input.value or "").strip()
-        auth_mode = str(ssh_profile_auth_mode_select.value or "key").strip().lower() or "key"
-        port = _to_int(ssh_profile_port_input.value, default=22)
-        secret_value = str(ssh_profile_secret_input.value or "").strip()
-
-        if not profile_name:
-            ssh_profile_error_label.set_text(t("Profile name is required."))
-            return
-        if not host:
-            ssh_profile_error_label.set_text(t("Host is required."))
-            return
-        if not username:
-            ssh_profile_error_label.set_text(t("Username is required."))
-            return
-        if not remote_config_dir:
-            ssh_profile_error_label.set_text(t("Remote config directory is required."))
-            return
-        if port < 1 or port > 65535:
-            ssh_profile_error_label.set_text(t("Port must be between 1 and 65535."))
-            return
-        if auth_mode not in {"key", "password"}:
-            ssh_profile_error_label.set_text(t("Authentication mode must be key or password."))
-            return
-
-        parsed_url = urlparse(moonraker_url)
-        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-            ssh_profile_error_label.set_text(t("Moonraker URL must start with http:// or https:// and include a host."))
-            return
-
-        selected_option = str(ssh_profile_select.value or "").strip()
-        selected_id = state.ssh_profile_option_ids.get(selected_option, 0)
-        selected_profile = state.ssh_profiles_by_id.get(int(selected_id), {}) if selected_id > 0 else {}
-        selected_has_secret = bool(selected_profile.get("has_secret", False)) if isinstance(selected_profile, dict) else False
-        if not secret_value and not selected_has_secret:
-            secret_type_label = t("password") if auth_mode == "password" else t("key path")
-            ssh_profile_error_label.set_text(t("Enter SSH {secret_type} before saving.", secret_type=secret_type_label))
+        _, _, selected_has_secret = _selected_ssh_profile_context()
+        values = _read_ssh_profile_form_values()
+        validation_error = _validate_ssh_profile_form_values(values, selected_has_secret=selected_has_secret)
+        if validation_error:
+            ssh_profile_error_label.set_text(validation_error)
             return
 
         try:
             result = service.save_ssh_profile(
-                profile_name=profile_name,
-                host=host,
-                port=port,
-                username=username,
-                remote_config_dir=remote_config_dir,
-                moonraker_url=moonraker_url,
-                auth_mode=auth_mode,
-                is_active=bool(ssh_profile_active_toggle.value),
-                secret_value=secret_value if secret_value else None,
+                profile_name=str(values.get("profile_name", "")),
+                host=str(values.get("host", "")),
+                port=_to_int(values.get("port"), default=22),
+                username=str(values.get("username", "")),
+                remote_config_dir=str(values.get("remote_config_dir", "")),
+                moonraker_url=str(values.get("moonraker_url", "")),
+                auth_mode=str(values.get("auth_mode", "key")),
+                is_active=bool(values.get("is_active", False)),
+                secret_value=str(values.get("secret_value", "")) or None,
             )
         except Exception as exc:
             ssh_profile_error_label.set_text(t("Failed to save SSH profile: {error}", error=exc))
@@ -3232,15 +3939,11 @@ def build_ui(app_version: str = "unknown") -> None:
                     ssh_profile_select.set_value(option_label)
                     break
         _load_selected_ssh_profile()
-        refresh_printer_profile_selector()
-        refresh_off_printer_profile_state()
-        refresh_print_state()
-        _hide_printer_editor()
+        _refresh_after_ssh_profile_mutation(hide_editor=True)
 
     def activate_selected_ssh_profile() -> None:
         """Activate the profile selected in the management dialog."""
-        selected_option = str(ssh_profile_select.value or "").strip()
-        selected_id = state.ssh_profile_option_ids.get(selected_option, 0)
+        selected_id, selected_profile, _ = _selected_ssh_profile_context()
         if selected_id <= 0:
             ssh_profile_error_label.set_text(t("Select a profile to activate."))
             return
@@ -3256,8 +3959,7 @@ def build_ui(app_version: str = "unknown") -> None:
             ssh_profile_error_label.set_text(t("Failed to activate SSH profile."))
             return
 
-        profile = state.ssh_profiles_by_id.get(int(selected_id), {})
-        profile_name = str(profile.get("profile_name", "")).strip() if isinstance(profile, dict) else ""
+        profile_name = str(selected_profile.get("profile_name", "")).strip()
         service.ensure_printer_profile_for_ssh_profile(
             ssh_profile_id=int(selected_id),
             profile_name=profile_name or t("Printer"),
@@ -3266,14 +3968,11 @@ def build_ui(app_version: str = "unknown") -> None:
 
         ssh_profile_status_label.set_text(t("Active SSH profile updated."))
         refresh_ssh_profiles_dialog()
-        refresh_printer_profile_selector()
-        refresh_off_printer_profile_state()
-        refresh_print_state()
+        _refresh_after_ssh_profile_mutation()
 
     def delete_selected_ssh_profile() -> None:
         """Delete selected profile from profile storage."""
-        selected_option = str(ssh_profile_select.value or "").strip()
-        selected_id = state.ssh_profile_option_ids.get(selected_option, 0)
+        selected_id, _, _ = _selected_ssh_profile_context()
         if selected_id <= 0:
             ssh_profile_error_label.set_text(t("Select a profile to delete."))
             return
@@ -3291,8 +3990,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
         ssh_profile_status_label.set_text(t("SSH profile deleted."))
         refresh_ssh_profiles_dialog()
-        refresh_off_printer_profile_state()
-        refresh_print_state()
+        _refresh_after_ssh_profile_mutation()
 
     def open_off_printer_profile_dialog() -> None:
         """Focus printer management controls on the start page."""
@@ -3302,6 +4000,29 @@ def build_ui(app_version: str = "unknown") -> None:
             _set_auth_mode_fields()
         refresh_printer_card_statuses()
         _set_view("start")
+
+    def _show_remote_cfg_list_error(exc: Exception) -> None:
+        """Render remote cfg list dialog in failed-load state and notify user."""
+        remote_cfg_list_subtitle.set_text(t("Failed to load remote cfg files."))
+        remote_cfg_list_error.set_text(t("{error}", error=exc))
+        ui.notify(t("Failed to load remote cfg files: {error}", error=exc), type="negative")
+        remote_cfg_list_dialog.open()
+
+    def _render_remote_cfg_list(result: dict[str, object]) -> None:
+        """Render remote cfg file list result in dialog and notify summary."""
+        profile_name = str(result.get("profile_name", "")).strip() or t("unnamed")
+        count = _to_int(result.get("count", 0), default=0)
+        remote_cfg_list_title.set_text(t("Remote cfg files"))
+        remote_cfg_list_subtitle.set_text(
+            t("Profile: {profile} | Files: {count}", profile=profile_name, count=count)
+        )
+        files = result.get("files", [])
+        file_lines: list[str] = []
+        if isinstance(files, list):
+            file_lines = [str(path) for path in files if str(path).strip()]
+        remote_cfg_list_text.set_value("\n".join(file_lines))
+        ui.notify(t("Loaded {count} remote cfg file(s).", count=count), type="info")
+        remote_cfg_list_dialog.open()
 
     def open_remote_cfg_list_dialog() -> None:
         """Load and display remote cfg file list for active SSH profile."""
@@ -3313,25 +4034,10 @@ def build_ui(app_version: str = "unknown") -> None:
         try:
             result = service.list_active_remote_cfg_files()
         except Exception as exc:
-            remote_cfg_list_subtitle.set_text(t("Failed to load remote cfg files."))
-            remote_cfg_list_error.set_text(t("{error}", error=exc))
-            ui.notify(t("Failed to load remote cfg files: {error}", error=exc), type="negative")
-            remote_cfg_list_dialog.open()
+            _show_remote_cfg_list_error(exc)
             return
 
-        profile_name = str(result.get("profile_name", "")).strip() or t("unnamed")
-        count = _to_int(result.get("count", 0), default=0)
-        remote_cfg_list_title.set_text(t("Remote cfg files"))
-        remote_cfg_list_subtitle.set_text(
-            t("Profile: {profile} | Files: {count}", profile=profile_name, count=count)
-        )
-        files = result.get("files", [])
-        file_lines = []
-        if isinstance(files, list):
-            file_lines = [str(path) for path in files if str(path).strip()]
-        remote_cfg_list_text.set_value("\n".join(file_lines))
-        ui.notify(t("Loaded {count} remote cfg file(s).", count=count), type="info")
-        remote_cfg_list_dialog.open()
+        _render_remote_cfg_list(result)
 
     def check_config_changes() -> None:
         """Timer callback: auto-rescan when cfg files change."""
@@ -3384,89 +4090,132 @@ def build_ui(app_version: str = "unknown") -> None:
         state.search_query = e.value or ""
         state._search_dirty = True
 
-    update_duplicates_button_label()
-    update_new_button_label()
-    update_active_filter_button_label()
-    sort_radio.on_value_change(on_sort_change)
-    duplicate_keep_select.on_value_change(_on_duplicate_keep_change)
-    duplicate_compare_with_select.on_value_change(_on_duplicate_compare_with_change)
-    duplicate_compare_button.on_click(open_duplicate_pair_compare)
-    duplicate_prev_button.on_click(duplicate_wizard_previous)
-    duplicate_next_button.on_click(duplicate_wizard_next)
-    duplicate_apply_button.on_click(apply_duplicate_resolution)
-    duplicates_button.on_click(toggle_duplicates_filter)
-    new_button.on_click(toggle_new_filter)
-    active_filter_button.on_click(cycle_active_filter)
-    state.macro_search.on_value_change(on_search_change)
-    duplicate_warning_button.on_click(open_duplicate_wizard)
-    refresh_printers_button.on_click(refresh_printer_profile_selector)
-    add_printer_button.on_click(_open_add_printer_editor)
-    test_active_printer_button.on_click(test_off_printer_profile_connection)
-    off_printer_cfg_list_button.on_click(open_remote_cfg_list_dialog)
-    ssh_profile_select.on_value_change(_load_selected_ssh_profile)
-    ssh_profile_auth_mode_select.on_value_change(_set_auth_mode_fields)
-    hide_printer_editor_button.on_click(_hide_printer_editor)
-    refresh_ssh_profiles_button.on_click(refresh_ssh_profiles_dialog)
-    new_ssh_profile_button.on_click(_open_add_printer_editor)
-    delete_ssh_profile_button.on_click(delete_selected_ssh_profile)
-    activate_ssh_profile_button.on_click(activate_selected_ssh_profile)
-    save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
-    back_to_printers_button.on_click(open_off_printer_profile_dialog)
-    with macro_actions_menu:
-        ui.menu_item(t("Backup"), on_click=open_backup_dialog)
-        ui.menu_item(t("Export macros"), on_click=open_export_dialog)
-        ui.menu_item(t("Import macros"), on_click=open_import_dialog)
-        ui.menu_item(t("Loading order overview"), on_click=open_load_order_overview_dialog)
-        ui.menu_item(t("Check for updates"), on_click=open_online_update_dialog)
+    def _setup_periodic_updates() -> None:
+        """Register periodic background timers for UI refresh."""
 
-    if developer_menu is not None:
-        with developer_menu:
-            ui.menu_item(t("Export Update Zip"), on_click=export_online_update_repo_zip)
-            ui.menu_item(t("Create Pull Request"), on_click=open_create_pr_dialog)
-    reload_dynamic_macros_button.on_click(reload_dynamic_macros)
-    restart_klipper_button.on_click(restart_klipper)
-    create_backup_button.on_click(perform_backup)
-    confirm_export_button.on_click(perform_export)
-    confirm_import_button.on_click(perform_import)
-    confirm_create_pr_button.on_click(perform_create_pr)
-    confirm_online_update_button.on_click(perform_online_update_import)
-    purge_deleted_button.on_click(purge_deleted_macros)
-    confirm_restore_button.on_click(perform_restore)
-    confirm_delete_button.on_click(perform_delete_backup)
-    confirm_macro_delete_button.on_click(confirm_macro_delete)
+        def _flush_search() -> None:
+            if state._search_dirty:
+                state._search_dirty = False
+                render_macro_list()
 
-    index_button.on_click(run_index)
-    save_config_button.on_click(save_config_to_printer)
-    settings_toolbar_button.on_click(open_app_settings_dialog)
-    prev_page_button.on_click(_go_prev_page)
-    next_page_button.on_click(_go_next_page)
+        register_periodic_updates(
+            flush_search=_flush_search,
+            check_online_updates_on_startup=_check_online_updates_on_startup,
+            refresh_create_pr_progress_ui=_refresh_create_pr_progress_ui,
+            refresh_online_update_progress_ui=_refresh_online_update_progress_ui,
+            check_config_changes=check_config_changes,
+            refresh_off_printer_profile_state=refresh_off_printer_profile_state,
+            refresh_printer_card_statuses=refresh_printer_card_statuses,
+        )
 
-    refresh_printer_profile_selector()
-    refresh_ssh_profiles_dialog()
-    if off_printer_mode_enabled and _printer_profile_missing():
-        status_label.set_text(t("No printer configured. Complete the connection setup below."))
+    def _initialize_ui_runtime() -> None:
+        """Initialize UI state and run first refresh cycle after wiring handlers."""
+        _run_startup_status_refresh()
+        _refresh_save_config_button()
+        state.deferred_startup_scan = True
+        refresh_data()
+        _set_view("start")
 
-    if off_printer_mode_enabled:
-        refresh_off_printer_profile_state()
-    refresh_print_state()
-    refresh_printer_card_statuses()
-    _refresh_save_config_button()
-    state.deferred_startup_scan = True
-    refresh_data()
-    _set_view("start")
-    ui.timer(0.5, lambda: asyncio.create_task(_check_online_updates_on_startup()), once=True)
-    ui.timer(0.5, _refresh_create_pr_progress_ui)
-    ui.timer(0.5, _refresh_online_update_progress_ui)
-    ui.timer(2.0, check_config_changes)
-    ui.timer(5.0, refresh_off_printer_profile_state)
-    ui.timer(7.0, refresh_printer_card_statuses)
+    def _run_startup_status_refresh() -> None:
+        """Refresh startup profile and printer status state used by the start page."""
+        refresh_printer_profile_selector()
+        refresh_ssh_profiles_dialog()
+        if off_printer_mode_enabled and _printer_profile_missing():
+            status_label.set_text(t("No printer configured. Complete the connection setup below."))
 
-    def _flush_search() -> None:
-        if state._search_dirty:
-            state._search_dirty = False
-            render_macro_list()
+        if off_printer_mode_enabled:
+            refresh_off_printer_profile_state()
+        refresh_print_state()
+        refresh_printer_card_statuses()
 
-    ui.timer(0.25, _flush_search)
+    def _build_footer() -> None:
+        """Render bottom status/footer bar."""
+        with ui.footer().classes("items-center justify-end px-4 py-1 bg-grey-9 text-grey-3"):
+            ui.label(f"KlipperVault v{app_version}").classes("text-xs")
 
-    with ui.footer().classes("items-center justify-end px-4 py-1 bg-grey-9 text-grey-3"):
-        ui.label(f"KlipperVault v{app_version}").classes("text-xs")
+    def _setup_macro_action_menu_items() -> None:
+        """Attach macro and developer menu actions."""
+        nonlocal macro_migration_menu_item, macro_migration_menu_item_wrapper
+        with macro_actions_menu:
+            ui.menu_item(t("Backup"), on_click=open_backup_dialog)
+            with ui.element("div") as macro_migration_menu_item_wrapper_ref:
+                macro_migration_menu_item_wrapper = macro_migration_menu_item_wrapper_ref
+                macro_migration_menu_item = ui.menu_item(t("Migrate printer.cfg macros"), on_click=_perform_macro_migration)
+            macro_migration_menu_item_wrapper.set_visibility(False)
+            ui.menu_item(t("Export macros"), on_click=open_export_dialog)
+            ui.menu_item(t("Import macros"), on_click=open_import_dialog)
+            ui.menu_item(t("Loading order overview"), on_click=open_load_order_overview_dialog)
+            ui.menu_item(t("Check for updates"), on_click=open_online_update_dialog)
+
+        if state.developer_menu is not None:
+            with state.developer_menu:
+                ui.menu_item(t("Export Update Zip"), on_click=export_online_update_repo_zip)
+                ui.menu_item(t("Create Pull Request"), on_click=open_create_pr_dialog)
+
+    def _setup_filter_and_duplicate_handlers() -> None:
+        """Wire macro list filter, sort, and duplicate wizard controls."""
+        update_duplicates_button_label()
+        update_new_button_label()
+        update_active_filter_button_label()
+        sort_radio.on_value_change(on_sort_change)
+        duplicate_keep_select.on_value_change(_on_duplicate_keep_change)
+        duplicate_compare_with_select.on_value_change(_on_duplicate_compare_with_change)
+        duplicate_compare_button.on_click(open_duplicate_pair_compare)
+        duplicate_prev_button.on_click(duplicate_wizard_previous)
+        duplicate_next_button.on_click(duplicate_wizard_next)
+        duplicate_apply_button.on_click(apply_duplicate_resolution)
+        duplicates_button.on_click(toggle_duplicates_filter)
+        new_button.on_click(toggle_new_filter)
+        active_filter_button.on_click(cycle_active_filter)
+        state.macro_search.on_value_change(on_search_change)
+        duplicate_warning_button.on_click(open_duplicate_wizard)
+
+    def _setup_profile_and_ssh_handlers() -> None:
+        """Wire printer profile and SSH editor controls."""
+        refresh_printers_button.on_click(refresh_printer_profile_selector)
+        add_printer_button.on_click(_open_add_printer_editor)
+        test_active_printer_button.on_click(test_off_printer_profile_connection)
+        off_printer_cfg_list_button.on_click(open_remote_cfg_list_dialog)
+        ssh_profile_select.on_value_change(_load_selected_ssh_profile)
+        ssh_profile_auth_mode_select.on_value_change(_set_auth_mode_fields)
+        hide_printer_editor_button.on_click(_hide_printer_editor)
+        refresh_ssh_profiles_button.on_click(refresh_ssh_profiles_dialog)
+        new_ssh_profile_button.on_click(_open_add_printer_editor)
+        delete_ssh_profile_button.on_click(delete_selected_ssh_profile)
+        activate_ssh_profile_button.on_click(activate_selected_ssh_profile)
+        save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
+        back_to_printers_button.on_click(open_off_printer_profile_dialog)
+
+    def _setup_operation_handlers() -> None:
+        """Wire macro operations, toolbar actions, and pagination controls."""
+        reload_dynamic_macros_button.on_click(reload_dynamic_macros)
+        restart_klipper_button.on_click(restart_klipper)
+        create_backup_button.on_click(perform_backup)
+        confirm_export_button.on_click(perform_export)
+        confirm_import_button.on_click(perform_import)
+        confirm_create_pr_button.on_click(perform_create_pr)
+        confirm_online_update_button.on_click(perform_online_update_import)
+        purge_deleted_button.on_click(purge_deleted_macros)
+        confirm_restore_button.on_click(perform_restore)
+        confirm_delete_button.on_click(perform_delete_backup)
+        confirm_macro_delete_button.on_click(confirm_macro_delete)
+        confirm_macro_migration_button.on_click(_perform_macro_migration)
+        decline_macro_migration_button.on_click(_decline_macro_migration_prompt)
+        index_button.on_click(run_index)
+        save_config_button.on_click(save_config_to_printer)
+        settings_toolbar_button.on_click(open_app_settings_dialog)
+        prev_page_button.on_click(_go_prev_page)
+        next_page_button.on_click(_go_next_page)
+
+    def _setup_event_handlers() -> None:
+        """Wire UI callbacks, menu actions, and control event handlers."""
+        _setup_filter_and_duplicate_handlers()
+        _setup_profile_and_ssh_handlers()
+        _setup_macro_action_menu_items()
+        _setup_operation_handlers()
+
+    _setup_event_handlers()
+
+    _initialize_ui_runtime()
+    _setup_periodic_updates()
+    _build_footer()

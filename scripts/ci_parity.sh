@@ -158,11 +158,21 @@ if [[ "$RUN_WORKFLOWS" == "1" ]]; then
     if have_cmd actionlint; then
         actionlint
     elif have_cmd docker; then
-        docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:latest
+        if docker info >/dev/null 2>&1; then
+            docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:latest
+        else
+            if [[ "${CI:-}" == "true" ]]; then
+                echo "Docker is installed but not accessible in CI; cannot run actionlint parity."
+                exit 1
+            fi
+            echo "Warning: Docker is installed but not accessible; skipping workflow lint parity checks locally."
+        fi
     else
-        echo "Neither 'actionlint' nor 'docker' is available to run workflow lint parity checks."
-        echo "Install actionlint or Docker, or run with --quality/--security only."
-        exit 1
+        if [[ "${CI:-}" == "true" ]]; then
+            echo "Neither 'actionlint' nor accessible Docker is available in CI."
+            exit 1
+        fi
+        echo "Warning: Neither 'actionlint' nor Docker is available; skipping workflow lint parity checks locally."
     fi
 fi
 

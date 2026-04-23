@@ -180,7 +180,7 @@ def test_test_active_ssh_connection_uses_profile_and_secret(tmp_path: Path) -> N
         is_active=True,
     )
 
-    with patch("klipper_macro_gui_service.SshTransport.test_connection", return_value={
+    with patch("klipper_macro_service_profiles.SshTransport.test_connection", return_value={
         "ok": True,
         "output": "klippervault-ssh-ok",
         "error": "",
@@ -211,7 +211,7 @@ def test_list_active_remote_cfg_files_returns_count_and_files(tmp_path: Path) ->
         "klipper_macro_gui_service.MacroGuiService.resolve_ssh_secret",
         return_value={"ok": True, "has_secret": True, "secret_value": "pw123", "backend": "db_fallback"},
     ), patch(
-        "klipper_macro_gui_service.SshTransport.list_cfg_files",
+        "klipper_macro_service_profiles.SshTransport.list_cfg_files",
         return_value=["/remote/config/printer.cfg", "/remote/config/macros.cfg"],
     ):
         result = service.list_active_remote_cfg_files()
@@ -241,11 +241,11 @@ def test_off_printer_index_syncs_remote_before_index(tmp_path: Path) -> None:
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/printer.cfg", "/remote/config/macros.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             side_effect=["[include macros.cfg]\n", "[gcode_macro TEST]\ngcode:\n  RESPOND MSG=ok\n"],
         ),
     ):
@@ -278,7 +278,160 @@ def test_off_printer_index_can_skip_remote_sync(tmp_path: Path) -> None:
 
     sync_mock.assert_not_called()
     assert "remote_sync" not in result
-    assert result["cfg_files_scanned"] == 1
+
+
+def test_create_backup_syncs_remote_when_runtime_cache_is_empty(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    runtime_dir = service.get_runtime_config_dir()
+    for cfg_file in runtime_dir.glob("*.cfg"):
+        cfg_file.unlink()
+
+    with (
+        patch(
+            "klipper_macro_gui_service.MacroGuiService.sync_active_remote_cfg_to_local",
+            return_value={"ok": True, "synced_files": 1, "removed_local_files": 0},
+        ) as sync_mock,
+        patch(
+            "klipper_macro_service_backup.create_macro_backup",
+            return_value={
+                "backup_id": 1,
+                "backup_name": "nightly",
+                "created_at": 123,
+                "macro_count": 0,
+                "cfg_file_count": 1,
+            },
+        ) as backup_mock,
+    ):
+        result = service.create_backup("nightly")
+
+    sync_mock.assert_called_once_with(prune_missing=True)
+    assert backup_mock.call_count == 1
+    assert result["backup_name"] == "nightly"
+
+
+def test_create_backup_syncs_remote_even_when_runtime_cache_has_cfg_files(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    runtime_dir = service.get_runtime_config_dir()
+    (runtime_dir / "stale.cfg").write_text("[printer]\n", encoding="utf-8")
+
+    with (
+        patch(
+            "klipper_macro_gui_service.MacroGuiService.sync_active_remote_cfg_to_local",
+            return_value={"ok": True, "synced_files": 2, "removed_local_files": 1},
+        ) as sync_mock,
+        patch(
+            "klipper_macro_service_backup.create_macro_backup",
+            return_value={
+                "backup_id": 2,
+                "backup_name": "fresh",
+                "created_at": 456,
+                "macro_count": 0,
+                "cfg_file_count": 2,
+            },
+        ) as backup_mock,
+    ):
+        result = service.create_backup("fresh")
+
+    sync_mock.assert_called_once_with(prune_missing=True)
+    assert backup_mock.call_count == 1
+    assert result["backup_name"] == "fresh"
+
+
+def test_get_macro_migration_state_counts_printer_and_macros_cfg(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    runtime_dir = service.get_runtime_config_dir()
+    for cfg_file in runtime_dir.glob("*.cfg"):
+        cfg_file.unlink()
+    (runtime_dir / "printer.cfg").write_text(
+        "[gcode_macro START_PRINT]\ngcode:\n  G28\n",
+        encoding="utf-8",
+    )
+    (runtime_dir / "macros.cfg").write_text(
+        "[gcode_macro PAUSE]\ngcode:\n  PAUSE_BASE\n",
+        encoding="utf-8",
+    )
+
+    state = service.get_macro_migration_state()
+
+    assert state["printer_cfg_macro_count"] == 1
+    assert state["macros_cfg_macro_count"] == 1
+    assert state["can_migrate"] is True
+
+
+def test_migrate_printer_cfg_macros_creates_backup_and_moves_sections(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    runtime_dir = service.get_runtime_config_dir()
+    for cfg_file in runtime_dir.glob("*.cfg"):
+        cfg_file.unlink()
+    (runtime_dir / "printer.cfg").write_text(
+        "[gcode_macro START_PRINT]\ngcode:\n  G28\n",
+        encoding="utf-8",
+    )
+
+    service.index(sync_remote=False)
+    result = service.migrate_printer_cfg_macros("pre-migration")
+
+    assert result["backup_name"] == "pre-migration"
+    assert result["moved_sections"] == 1
+    assert result["local_changed"] is True
+    assert result["remote_synced"] is False
+
+    printer_cfg_text = (runtime_dir / "printer.cfg").read_text(encoding="utf-8")
+    macros_cfg_text = (runtime_dir / "macros.cfg").read_text(encoding="utf-8")
+    assert "[gcode_macro START_PRINT]" not in printer_cfg_text
+    assert "[include macros.cfg]" in printer_cfg_text
+    assert "[gcode_macro START_PRINT]" in macros_cfg_text
+
+
+def test_migrate_printer_cfg_macros_appends_when_macros_cfg_already_has_macros(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    runtime_dir = service.get_runtime_config_dir()
+    for cfg_file in runtime_dir.glob("*.cfg"):
+        cfg_file.unlink()
+
+    (runtime_dir / "printer.cfg").write_text(
+        "[gcode_macro START_PRINT]\ngcode:\n  G28\n",
+        encoding="utf-8",
+    )
+    (runtime_dir / "macros.cfg").write_text(
+        "[gcode_macro PAUSE]\ngcode:\n  PAUSE_BASE\n",
+        encoding="utf-8",
+    )
+
+    service.index(sync_remote=False)
+    result = service.migrate_printer_cfg_macros("remaining-printer-cfg")
+
+    assert result["backup_name"] == "remaining-printer-cfg"
+    assert result["moved_sections"] == 1
+    assert result["local_changed"] is True
+
+    printer_cfg_text = (runtime_dir / "printer.cfg").read_text(encoding="utf-8")
+    macros_cfg_text = (runtime_dir / "macros.cfg").read_text(encoding="utf-8")
+    assert "[gcode_macro START_PRINT]" not in printer_cfg_text
+    assert "[include macros.cfg]" in printer_cfg_text
+    assert "[gcode_macro PAUSE]" in macros_cfg_text
+    assert "[gcode_macro START_PRINT]" in macros_cfg_text
+
+
+def test_get_macro_migration_state_falls_back_to_db_when_runtime_cfg_missing(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    runtime_dir = service.get_runtime_config_dir()
+    for cfg_file in runtime_dir.glob("*.cfg"):
+        cfg_file.unlink()
+
+    (runtime_dir / "printer.cfg").write_text(
+        "[gcode_macro START_PRINT]\ngcode:\n  G28\n",
+        encoding="utf-8",
+    )
+    service.index(sync_remote=False)
+
+    # Simulate runtime cache loss/out-of-sync while DB still has latest indexed state.
+    (runtime_dir / "printer.cfg").unlink(missing_ok=True)
+
+    state = service.get_macro_migration_state()
+    assert state["printer_cfg_macro_count"] == 1
+    assert state["macros_cfg_macro_count"] == 0
+    assert state["can_migrate"] is True
 
 
 def test_query_printer_status_for_profile_uses_profile_moonraker_url(tmp_path: Path) -> None:
@@ -345,11 +498,11 @@ def test_off_printer_cfg_loading_overview_reads_active_remote_source(tmp_path: P
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/printer.cfg", "/remote/config/macros.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             side_effect=lambda remote_path: {
                 "/remote/config/printer.cfg": "[include macros.cfg]\n",
                 "/remote/config/macros.cfg": "[gcode_macro TEST]\ngcode:\n  RESPOND MSG=ok\n",
@@ -382,11 +535,11 @@ def test_off_printer_index_syncs_with_tilde_remote_root(tmp_path: Path) -> None:
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/home/pi/printer_data/config/printer.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[include macros.cfg]\n",
         ),
         patch(
@@ -426,7 +579,7 @@ def test_off_printer_save_pushes_local_file_to_remote(tmp_path: Path) -> None:
             "klipper_macro_gui_service.save_macro_edit",
             return_value={"file_path": "macros.cfg", "macro_name": "TEST", "operation": "replaced"},
         ),
-        patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
+        patch("klipper_macro_service_profiles.SshTransport.write_text_file_atomic") as write_mock,
     ):
         runtime_dir = service.get_runtime_config_dir()
         (runtime_dir / "macros.cfg").parent.mkdir(parents=True, exist_ok=True)
@@ -579,7 +732,7 @@ def test_off_printer_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) 
 
     with (
         patch(
-            "klipper_macro_gui_service.restore_macro_backup",
+            "klipper_macro_service_backup.restore_macro_backup",
                 return_value={
                     "backup_id": 7,
                     "restored_cfg_files": 2,
@@ -588,15 +741,15 @@ def test_off_printer_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) 
                 },
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=[
                 "/remote/config/printer.cfg",
                 "/remote/config/macros.cfg",
                 "/remote/config/obsolete.cfg",
             ],
         ),
-        patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
-        patch("klipper_macro_gui_service.SshTransport.remove_file", return_value=True) as remove_mock,
+        patch("klipper_macro_service_profiles.SshTransport.write_text_file_atomic") as write_mock,
+        patch("klipper_macro_service_profiles.SshTransport.remove_file", return_value=True) as remove_mock,
     ):
         result = service.restore_backup(7)
 
@@ -688,11 +841,11 @@ def test_off_printer_save_rejects_remote_conflict_after_sync(tmp_path: Path) -> 
     # Initial sync stores remote baseline checksum.
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/macros.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-old\n",
         ),
         patch(
@@ -735,11 +888,11 @@ def test_off_printer_save_allows_upload_when_remote_unchanged(tmp_path: Path) ->
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/macros.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-old\n",
         ),
         patch(
@@ -757,7 +910,7 @@ def test_off_printer_save_allows_upload_when_remote_unchanged(tmp_path: Path) ->
             "klipper_macro_gui_service.save_macro_edit",
             return_value={"file_path": "macros.cfg", "macro_name": "TEST", "operation": "replaced"},
         ),
-        patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
+        patch("klipper_macro_service_profiles.SshTransport.write_text_file_atomic") as write_mock,
     ):
         result = service.save_macro_editor_text("macros.cfg", "TEST", "[gcode_macro TEST]\n")
 
@@ -786,11 +939,11 @@ def test_off_printer_tree_sync_rejects_remote_conflict_after_sync(tmp_path: Path
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/macros.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-old\n",
         ),
         patch(
@@ -805,10 +958,10 @@ def test_off_printer_tree_sync_rejects_remote_conflict_after_sync(tmp_path: Path
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-new\n",
         ),
-        patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
+        patch("klipper_macro_service_profiles.SshTransport.write_text_file_atomic") as write_mock,
     ):
         try:
             service._sync_local_cfg_tree_to_active_remote(prune_remote_missing=False)
@@ -841,11 +994,11 @@ def test_off_printer_tree_sync_rejects_new_remote_file_prune(tmp_path: Path) -> 
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/macros.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-old\n",
         ),
         patch(
@@ -860,15 +1013,15 @@ def test_off_printer_tree_sync_rejects_new_remote_file_prune(tmp_path: Path) -> 
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/macros.cfg", "/remote/config/new.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-old\n",
         ),
-        patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic"),
-        patch("klipper_macro_gui_service.SshTransport.remove_file") as remove_mock,
+        patch("klipper_macro_service_profiles.SshTransport.write_text_file_atomic"),
+        patch("klipper_macro_service_profiles.SshTransport.remove_file") as remove_mock,
     ):
         try:
             service._sync_local_cfg_tree_to_active_remote(prune_remote_missing=True)
@@ -879,6 +1032,61 @@ def test_off_printer_tree_sync_rejects_new_remote_file_prune(tmp_path: Path) -> 
             raise AssertionError("Expected tree prune conflict for new remote cfg file")
 
     remove_mock.assert_not_called()
+
+
+def test_save_config_to_remote_prunes_missing_remote_files(tmp_path: Path) -> None:
+    service = MacroGuiService(
+        db_path=tmp_path / "vault.db",
+        config_dir=tmp_path / "config",
+        version_history_size=5,
+        runtime_mode="off_printer",
+    )
+
+    with patch.object(service, "_sync_local_cfg_tree_to_active_remote") as sync_mock:
+        sync_mock.return_value = {
+            "ok": True,
+            "uploaded_files": 0,
+            "removed_remote_files": 1,
+            "uploaded_paths": [],
+            "removed_remote_paths": ["/remote/config/macros.cfg"],
+            "blocked_files": 0,
+            "blocked_paths": [],
+            "blocked_by_protected_file": False,
+        }
+
+        result = service.save_config_to_remote()
+
+    sync_mock.assert_called_once_with(prune_remote_missing=True, allow_protected_upload=False)
+    assert result["ok"] is True
+    assert result["removed_remote_files"] == 1
+
+
+def test_save_config_to_remote_can_allow_protected_upload(tmp_path: Path) -> None:
+    service = MacroGuiService(
+        db_path=tmp_path / "vault.db",
+        config_dir=tmp_path / "config",
+        version_history_size=5,
+        runtime_mode="off_printer",
+    )
+
+    with patch.object(service, "_sync_local_cfg_tree_to_active_remote") as sync_mock:
+        sync_mock.return_value = {
+            "ok": True,
+            "uploaded_files": 2,
+            "removed_remote_files": 1,
+            "uploaded_paths": ["/remote/config/printer.cfg", "/remote/config/macros.cfg"],
+            "removed_remote_paths": ["/remote/config/legacy.cfg"],
+            "blocked_files": 0,
+            "blocked_paths": [],
+            "blocked_by_protected_file": False,
+        }
+
+        result = service.save_config_to_remote(allow_protected_upload=True)
+
+    sync_mock.assert_called_once_with(prune_remote_missing=True, allow_protected_upload=True)
+    assert result["ok"] is True
+    assert result["uploaded_files"] == 2
+    assert result["removed_remote_files"] == 1
 
 
 def test_off_printer_resolve_duplicates_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
@@ -901,11 +1109,11 @@ def test_off_printer_resolve_duplicates_rejects_remote_conflict_after_sync(tmp_p
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/macros.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-old\n",
         ),
         patch(
@@ -923,7 +1131,7 @@ def test_off_printer_resolve_duplicates_rejects_remote_conflict_after_sync(tmp_p
             "klipper_macro_gui_service.resolve_duplicate_macros",
             return_value={"removed_sections": 1, "touched_files": ["macros.cfg"]},
         ),
-        patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
+        patch("klipper_macro_service_profiles.SshTransport.write_text_file_atomic") as write_mock,
     ):
         result = service.resolve_duplicates(
             keep_choices={"TEST": "macros.cfg"},
@@ -955,11 +1163,11 @@ def test_off_printer_restore_backup_rejects_remote_conflict_after_sync(tmp_path:
 
     with (
         patch(
-            "klipper_macro_gui_service.SshTransport.list_cfg_files",
+            "klipper_macro_service_profiles.SshTransport.list_cfg_files",
             return_value=["/remote/config/macros.cfg"],
         ),
         patch(
-            "klipper_macro_gui_service.SshTransport.read_text_file",
+            "klipper_macro_service_profiles.SshTransport.read_text_file",
             return_value="[gcode_macro TEST]\ngcode:\n  RESPOND MSG=remote-old\n",
         ),
         patch(
@@ -974,7 +1182,7 @@ def test_off_printer_restore_backup_rejects_remote_conflict_after_sync(tmp_path:
 
     with (
         patch(
-            "klipper_macro_gui_service.restore_macro_backup",
+            "klipper_macro_service_backup.restore_macro_backup",
             return_value={
                 "backup_id": 7,
                 "restored_cfg_files": 1,
@@ -982,7 +1190,7 @@ def test_off_printer_restore_backup_rejects_remote_conflict_after_sync(tmp_path:
                 "touched_cfg_files": ["macros.cfg"],
             },
         ),
-        patch("klipper_macro_gui_service.SshTransport.write_text_file_atomic") as write_mock,
+        patch("klipper_macro_service_profiles.SshTransport.write_text_file_atomic") as write_mock,
     ):
         result = service.restore_backup(7)
 

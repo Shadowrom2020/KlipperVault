@@ -268,6 +268,10 @@ echo "==> Upgrading pip..."
 echo "==> Installing dependencies from requirements.txt..."
 "$VENV_DIR/bin/python" -m pip install --quiet -r "$REPO_ROOT/requirements.txt"
 
+# --- Ensure bundling toolchain ---
+echo "==> Installing PyInstaller (required for bundle builds)..."
+"$VENV_DIR/bin/python" -m pip install --quiet pyinstaller
+
 # --- Optional dev/test tooling ---
 if [[ -f "$REPO_ROOT/requirements-dev.txt" ]]; then
     echo "==> Installing dependencies from requirements-dev.txt..."

@@ -26,6 +26,79 @@ GROUP BY file_path, macro_name
 _DB_BATCH_SIZE = 500
 
 
+def _is_printer_cfg_path(rel_path: str) -> bool:
+    """Return True when a backup relative path points to printer.cfg."""
+    return Path(str(rel_path or "")).name.lower() == "printer.cfg"
+
+
+def _cfg_text_contains_gcode_macros(file_text: str) -> bool:
+    """Return True when cfg text contains at least one [gcode_macro ...] section."""
+    for raw_line in str(file_text or "").splitlines():
+        line = raw_line.strip()
+        if not (line.startswith("[") and line.endswith("]")):
+            continue
+        section = line[1:-1].strip().lower()
+        if section.startswith("gcode_macro "):
+            return True
+    return False
+
+
+def backup_printer_cfg_restore_policy(
+    db_path: Path,
+    backup_id: int,
+    printer_profile_id: int = 1,
+) -> Dict[str, object]:
+    """Return whether restoring one backup should overwrite printer.cfg."""
+    has_printer_cfg_snapshot = False
+    printer_cfg_contains_macros = False
+    has_file_snapshot = False
+
+    with open_sqlite_connection(db_path, ensure_schema=ensure_backup_schema) as conn:
+        has_file_snapshot = bool(
+            conn.execute(
+                "SELECT 1 FROM macro_backup_files WHERE backup_id = ? AND printer_profile_id = ? LIMIT 1",
+                (int(backup_id), int(printer_profile_id)),
+            ).fetchone()
+        )
+
+        if has_file_snapshot:
+            row = conn.execute(
+                """
+                SELECT file_content
+                FROM macro_backup_files
+                WHERE backup_id = ? AND printer_profile_id = ? AND lower(file_path) = 'printer.cfg'
+                LIMIT 1
+                """,
+                (int(backup_id), int(printer_profile_id)),
+            ).fetchone()
+            if row is not None:
+                has_printer_cfg_snapshot = True
+                printer_cfg_contains_macros = _cfg_text_contains_gcode_macros(str(row[0]))
+        else:
+            row = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM macro_backup_items
+                WHERE backup_id = ?
+                  AND printer_profile_id = ?
+                  AND lower(file_path) = 'printer.cfg'
+                  AND is_active = 1
+                """,
+                (int(backup_id), int(printer_profile_id)),
+            ).fetchone()
+            printer_cfg_macro_count = int(row[0]) if row is not None else 0
+            has_printer_cfg_snapshot = printer_cfg_macro_count > 0
+            printer_cfg_contains_macros = printer_cfg_macro_count > 0
+
+    will_overwrite_printer_cfg = has_printer_cfg_snapshot and printer_cfg_contains_macros
+    return {
+        "has_file_snapshot": has_file_snapshot,
+        "has_printer_cfg_snapshot": has_printer_cfg_snapshot,
+        "printer_cfg_contains_macros": printer_cfg_contains_macros,
+        "will_overwrite_printer_cfg": will_overwrite_printer_cfg,
+    }
+
+
 def _iter_cursor_batches(cursor: sqlite3.Cursor, batch_size: int = _DB_BATCH_SIZE) -> Iterable[list[tuple]]:
     """Yield cursor rows in fixed-size batches."""
     while True:
@@ -202,8 +275,7 @@ def create_macro_backup(
                    AND m.version = latest.max_version
                 WHERE m.printer_profile_id = ?
                 ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
-                """
-                ,
+                """,
                 (int(printer_profile_id),),
             )
             for chunk in _iter_cursor_batches(select_cursor):
@@ -250,10 +322,36 @@ def create_macro_backup(
         cfg_files_count = 0
         if config_source is not None:
             cfg_rows: List[tuple[int, int, str, str]] = []
-            cfg_files = config_source.list_cfg_files()
+            cfg_files = sorted({str(path) for path in config_source.list_cfg_files() if str(path).lower().endswith(".cfg")})
+
+            # File-level backups must always include printer.cfg when available.
+            if "printer.cfg" not in cfg_files:
+                printer_cfg_fallback_added = False
+                if config_dir is not None:
+                    printer_cfg_local = config_dir / "printer.cfg"
+                    if printer_cfg_local.exists() and printer_cfg_local.is_file():
+                        cfg_rows.append(
+                            (
+                                backup_id,
+                                int(printer_profile_id),
+                                "printer.cfg",
+                                printer_cfg_local.read_text(encoding="utf-8", errors="ignore"),
+                            )
+                        )
+                        cfg_files_count += 1
+                        printer_cfg_fallback_added = True
+                if not printer_cfg_fallback_added:
+                    try:
+                        printer_cfg_content = config_source.read_text("printer.cfg")
+                    except Exception:
+                        printer_cfg_content = None
+                    if printer_cfg_content is not None:
+                        cfg_rows.append((backup_id, int(printer_profile_id), "printer.cfg", printer_cfg_content))
+                        cfg_files_count += 1
+
             for rel_path in cfg_files:
                 file_content = config_source.read_text(str(rel_path))
-                cfg_rows.append((backup_id, int(printer_profile_id), rel_path, file_content))
+                cfg_rows.append((backup_id, int(printer_profile_id), str(rel_path), file_content))
                 cfg_files_count += 1
                 if len(cfg_rows) >= _DB_BATCH_SIZE:
                     conn.executemany(
@@ -300,6 +398,8 @@ def create_macro_backup(
                 )
             if cfg_files_count == 0:
                 raise ValueError("backup aborted: no .cfg files found to snapshot")
+            if not (config_dir / "printer.cfg").exists():
+                raise ValueError("backup aborted: printer.cfg not found")
         else:
             raise ValueError(f"backup aborted: config directory not found: {config_dir}")
 
@@ -509,20 +609,25 @@ def restore_macro_backup(
     now_ts: Optional[int] = None,
     printer_profile_id: int = 1,
 ) -> Dict[str, object]:
-    """Restore one backup snapshot into the active macros table."""
+    """Restore one backup snapshot on cfg file level."""
     ts = int(now_ts) if now_ts is not None else int(time.time())
     macro_count = 0
     restored_cfg_files = 0
     removed_cfg_files = 0
     touched_cfg_files: set[str] = set()
     removed_cfg_paths: set[str] = set()
+    printer_cfg_policy = backup_printer_cfg_restore_policy(
+        db_path=db_path,
+        backup_id=int(backup_id),
+        printer_profile_id=int(printer_profile_id),
+    )
+    overwrite_printer_cfg = bool(printer_cfg_policy.get("will_overwrite_printer_cfg", False))
 
     with open_sqlite_connection(
         db_path,
         ensure_schema=ensure_backup_schema,
         pragmas=("PRAGMA foreign_keys=ON",),
     ) as conn:
-        _ensure_macros_schema_for_restore(conn)
 
         backup_meta = conn.execute(
             "SELECT id, backup_name FROM macro_backups WHERE id = ? AND printer_profile_id = ?",
@@ -555,6 +660,13 @@ def restore_macro_backup(
             ).fetchone()
         )
 
+        macro_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM macro_backup_items WHERE backup_id = ? AND printer_profile_id = ?",
+                (int(backup_id), int(printer_profile_id)),
+            ).fetchone()[0]
+        )
+
         # Legacy backups created before cfg snapshots existed require
         # reconstructing cfg state from all backup macro items.
         legacy_rows: List[tuple] = []
@@ -562,67 +674,6 @@ def restore_macro_backup(
         if (config_dir is not None or config_source is not None) and not has_file_snapshot:
             legacy_rows = conn.execute(rows_query, (int(backup_id), int(printer_profile_id))).fetchall()
             legacy_file_rows = _reconstruct_cfg_files_from_backup_items(legacy_rows)
-
-        conn.execute("DELETE FROM macros WHERE printer_profile_id = ?", (int(printer_profile_id),))
-
-        insert_sql = """
-            INSERT INTO macros (
-                printer_profile_id,
-                file_path,
-                section_type,
-                macro_name,
-                line_number,
-                description,
-                gcode,
-                variables_json,
-                body_checksum,
-                is_active,
-                version,
-                indexed_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-
-        rows_iter: Iterable[list[tuple]]
-        if legacy_rows:
-            rows_iter = (legacy_rows[idx:idx + _DB_BATCH_SIZE] for idx in range(0, len(legacy_rows), _DB_BATCH_SIZE))
-        else:
-            rows_iter = _iter_cursor_batches(conn.execute(rows_query, (int(backup_id), int(printer_profile_id))))
-
-        for chunk in rows_iter:
-            conn.executemany(
-                insert_sql,
-                [
-                    (
-                        int(printer_profile_id),
-                        str(file_path),
-                        str(section_type or "gcode_macro"),
-                        str(macro_name),
-                        int(line_number),
-                        description,
-                        gcode,
-                        str(variables_json),
-                        str(body_checksum)
-                        if body_checksum
-                        else _synthetic_checksum(
-                            str(section_type or "gcode_macro"),
-                            str(macro_name),
-                            str(file_path),
-                            int(line_number),
-                            description,
-                            gcode,
-                            str(variables_json),
-                        ),
-                        int(is_active),
-                        max(1, int(version)),
-                        ts,
-                    )
-                    for section_type, macro_name, file_path, version, line_number, description, gcode, variables_json, body_checksum, is_active in chunk
-                ],
-            )
-            macro_count += len(chunk)
-
-        conn.commit()
 
         if config_source is not None:
             snapshot_paths: set[str] = set()
@@ -640,6 +691,8 @@ def restore_macro_backup(
                     for rel_path, content in chunk:
                         rel = str(rel_path)
                         snapshot_paths.add(rel)
+                        if _is_printer_cfg_path(rel) and not overwrite_printer_cfg:
+                            continue
                         touched_cfg_files.add(rel)
                         config_source.write_text(rel, str(content))
                         restored_cfg_files += 1
@@ -647,12 +700,16 @@ def restore_macro_backup(
                 for rel_path, content in legacy_file_rows:
                     rel = str(rel_path)
                     snapshot_paths.add(rel)
+                    if _is_printer_cfg_path(rel) and not overwrite_printer_cfg:
+                        continue
                     touched_cfg_files.add(rel)
                     config_source.write_text(rel, str(content))
                     restored_cfg_files += 1
 
             if snapshot_paths:
                 for rel in config_source.list_cfg_files():
+                    if _is_printer_cfg_path(rel) and not overwrite_printer_cfg:
+                        continue
                     if rel not in snapshot_paths and config_source.remove(rel):
                         removed_cfg_files += 1
                         removed_cfg_paths.add(rel)
@@ -675,6 +732,8 @@ def restore_macro_backup(
                     for rel_path, content in chunk:
                         rel = str(rel_path)
                         snapshot_paths_local.add(rel)
+                        if _is_printer_cfg_path(rel) and not overwrite_printer_cfg:
+                            continue
                         touched_cfg_files.add(rel)
                         target = _safe_cfg_path(config_dir, rel)
                         target.parent.mkdir(parents=True, exist_ok=True)
@@ -684,6 +743,8 @@ def restore_macro_backup(
                 for rel_path, content in legacy_file_rows:
                     rel = str(rel_path)
                     snapshot_paths_local.add(rel)
+                    if _is_printer_cfg_path(rel) and not overwrite_printer_cfg:
+                        continue
                     touched_cfg_files.add(rel)
                     target = _safe_cfg_path(config_dir, rel)
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -694,6 +755,8 @@ def restore_macro_backup(
                 existing_cfg = [p for p in _iter_cfg_files(config_dir)]
                 for cfg_file in existing_cfg:
                     rel = str(cfg_file.relative_to(config_dir))
+                    if _is_printer_cfg_path(rel) and not overwrite_printer_cfg:
+                        continue
                     if rel not in snapshot_paths_local:
                         cfg_file.unlink(missing_ok=True)
                         removed_cfg_files += 1
@@ -708,6 +771,7 @@ def restore_macro_backup(
         "removed_cfg_files": removed_cfg_files,
         "touched_cfg_files": sorted(touched_cfg_files),
         "removed_cfg_paths": sorted(removed_cfg_paths),
+        "printer_cfg_overwritten": overwrite_printer_cfg,
     }
 
 

@@ -64,9 +64,6 @@ class MacroExplainerView:
 
         with ui.dialog() as self._dialog, ui.card().classes("w-[74rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col"):
             ui.label(t("Script explanation")).classes("text-md font-semibold")
-            ui.label(
-                t("Disclaimer: Macro explanation is an early development feature and may be inaccurate.")
-            ).classes("text-xs text-yellow-4")
             with ui.row().classes("w-full items-center gap-2"):
                 ui.label(t("Detail level")).classes("text-xs text-grey-5")
                 self._verbosity_concise_button = ui.button(
