@@ -283,6 +283,7 @@ Developer setup, architecture, checks, and contribution guidance are in [Docs/de
 
 ## Honorable people that helped me to build this:
 @[Agent-047185](https://github.com/Agent-047185) - Thanks for being an early adopter and testing all of my stuff!
+
 @[triadterm](https://github.com/triadterm) - Thanks for being an early adopter and testing this
 
 ## License
