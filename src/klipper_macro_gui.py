@@ -287,6 +287,7 @@ def build_ui(app_version: str = "unknown") -> None:
     _print_state_refresh_inflight = False
     _printer_card_status_refresh_inflight = False
     _macro_migration_prompt_shown = False
+    _klipper_restart_grace_until: float = 0.0
 
     # ── Pre-declared local UI references (set by section builders below) ──────
     # These allow callbacks defined later to close over the same variables
@@ -2732,8 +2733,15 @@ def build_ui(app_version: str = "unknown") -> None:
         if name is None:
             return
 
+        asyncio.create_task(_perform_backup_async(name))
+
+    async def _perform_backup_async(name: str) -> None:
+        """Run backup in a thread while showing a progress modal."""
         try:
-            result = service.create_backup(name)
+            result = await state._run_with_file_operation_modal(
+                t("Creating backup…"),
+                lambda: service.create_backup(name, progress_callback=state._set_file_operation_progress),
+            )
         except Exception as exc:
             backup_error_label.set_text(t("Backup failed: {error}", error=exc))
             status_label.set_text(t("Backup failed: {error}", error=exc))
@@ -3387,11 +3395,23 @@ def build_ui(app_version: str = "unknown") -> None:
             status_label.set_text(t("Blocked: printer is busy or printing. Klipper restart is disabled."))
             return
 
-        _run_printer_runtime_command(
-            command=lambda: service.restart_klipper(timeout=3.0),
-            failure_template="Failed to restart Klipper: {error}",
-            success_message="Klipper restart requested. The restart button will reappear after another macro change.",
-        )
+        asyncio.create_task(_restart_klipper_async())
+
+    async def _restart_klipper_async() -> None:
+        """Run Klipper restart off the event loop to keep the UI responsive."""
+        nonlocal _klipper_restart_grace_until
+        status_label.set_text(t("Klipper restart requested…"))
+        try:
+            await asyncio.to_thread(service.restart_klipper, 5.0)
+        except Exception as exc:
+            status_label.set_text(t("Failed to restart Klipper: {error}", error=exc))
+            return
+
+        # Grant a grace period so the status poller doesn't immediately show
+        # the reconnecting modal while Klipper is coming back up.
+        _klipper_restart_grace_until = time.monotonic() + 60.0
+        _clear_restart_required()
+        status_label.set_text(t("Klipper restart requested. The restart button will reappear after another macro change."))
 
     def reload_dynamic_macros() -> None:
         """Request dynamic macro reload when pending dynamic macro changes exist."""
@@ -3574,6 +3594,15 @@ def build_ui(app_version: str = "unknown") -> None:
                     "message": str(status.get("message", "")),
                 }
             except Exception as exc:
+                # Suppress the reconnecting modal during the grace period after
+                # an intentional Klipper restart so the user isn't alarmed by
+                # the brief Moonraker downtime.
+                if time.monotonic() < _klipper_restart_grace_until:
+                    return {
+                        "is_printing": False,
+                        "state": "unknown",
+                        "message": str(exc),
+                    }
                 state._set_printer_connecting_modal(True, str(exc))
                 return {
                     "is_printing": False,

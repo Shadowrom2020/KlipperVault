@@ -219,8 +219,15 @@ def create_macro_backup(
     config_source: ConfigSource | None = None,
     now_ts: Optional[int] = None,
     printer_profile_id: int = 1,
+    progress_callback=None,
 ) -> Dict[str, object]:
     """Snapshot the latest row of every macro into a named backup set."""
+    def _report(phase: str, current: int, total: int) -> None:
+        if progress_callback is not None:
+            try:
+                progress_callback(phase, current, total)
+            except Exception:
+                pass
     name = backup_name.strip()
     if not name:
         raise ValueError("backup name must not be empty")
@@ -251,6 +258,7 @@ def create_macro_backup(
         )
 
         macro_count = 0
+        _report("macros", 1, 3)
         if has_macros_table:
             select_cursor = conn.execute(
                 f"""
@@ -320,6 +328,7 @@ def create_macro_backup(
                 macro_count += len(chunk)
 
         cfg_files_count = 0
+        _report("cfg", 2, 3)
         if config_source is not None:
             cfg_rows: List[tuple[int, int, str, str]] = []
             cfg_files = sorted({str(path) for path in config_source.list_cfg_files() if str(path).lower().endswith(".cfg")})
@@ -404,6 +413,7 @@ def create_macro_backup(
             raise ValueError(f"backup aborted: config directory not found: {config_dir}")
 
         conn.commit()
+        _report("done", 3, 3)
 
     return {
         "backup_id": backup_id,

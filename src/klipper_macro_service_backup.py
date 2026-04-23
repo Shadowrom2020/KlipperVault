@@ -51,10 +51,16 @@ class BackupRestoreMixin:
 
     # ------------------------------------------------------------------
 
-    def create_backup(self, name: str) -> dict[str, object]:
+    def create_backup(self, name: str, progress_callback=None) -> dict[str, object]:
         """Create a named backup snapshot from current macro state."""
         runtime_config_dir = self._resolve_runtime_config_dir()
         runtime_source = self._runtime_local_config_source()
+
+        if progress_callback is not None:
+            try:
+                progress_callback("sync", 0, 3)
+            except Exception:
+                pass
 
         # In off-printer mode, backups must reflect the current printer cfg
         # tree, not potentially stale runtime cache files.
@@ -73,6 +79,7 @@ class BackupRestoreMixin:
             config_dir=runtime_config_dir,
             config_source=runtime_source,
             printer_profile_id=self._active_printer_profile_id,
+            progress_callback=progress_callback,
         )
 
     def list_backups(self) -> list[dict[str, object]]:
