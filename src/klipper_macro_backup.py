@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -24,6 +25,8 @@ GROUP BY file_path, macro_name
 """.strip()
 
 _DB_BATCH_SIZE = 500
+
+_LOG = logging.getLogger(__name__)
 
 
 def _is_printer_cfg_path(rel_path: str) -> bool:
@@ -222,12 +225,14 @@ def create_macro_backup(
     progress_callback=None,
 ) -> Dict[str, object]:
     """Snapshot the latest row of every macro into a named backup set."""
+
     def _report(phase: str, current: int, total: int) -> None:
         if progress_callback is not None:
             try:
                 progress_callback(phase, current, total)
             except Exception:
-                pass
+                _LOG.debug("Progress callback failed during backup phase '%s'", phase, exc_info=True)
+
     name = backup_name.strip()
     if not name:
         raise ValueError("backup name must not be empty")

@@ -9,6 +9,7 @@ in focused, navigable modules. MacroGuiService inherits this mixin.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,9 @@ from klipper_macro_backup import (
     load_backup_items,
     restore_macro_backup,
 )
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class BackupRestoreMixin:
@@ -60,7 +64,7 @@ class BackupRestoreMixin:
             try:
                 progress_callback("sync", 0, 3)
             except Exception:
-                pass
+                _LOG.debug("Progress callback failed while reporting backup sync start", exc_info=True)
 
         # In off-printer mode, backups must reflect the current printer cfg
         # tree, not potentially stale runtime cache files.
