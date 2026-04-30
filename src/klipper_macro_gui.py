@@ -2687,10 +2687,13 @@ def build_ui(app_version: str = "unknown") -> None:
             )
         )
 
-    def open_load_order_overview_dialog() -> None:
-        """Open a simple overview of cfg and macro parsing order for Klipper."""
+    async def _open_load_order_overview_dialog_async() -> None:
+        """Load overview asynchronously and display in dialog with progress modal."""
         try:
-            overview = service.load_cfg_loading_overview()
+            overview = await state._run_with_file_operation_modal(
+                t("Loading cfg parsing overview…"),
+                lambda: service.load_cfg_loading_overview(),
+            )
         except Exception as exc:
             status_label.set_text(t("Failed to load cfg parsing overview: {error}", error=exc))
             return
@@ -2701,6 +2704,10 @@ def build_ui(app_version: str = "unknown") -> None:
         _set_load_order_summary(overview, file_rows, macro_rows)
         load_order_text.set_text("\n".join(_load_order_lines(file_rows, macro_rows)))
         state.load_order_dialog.open()
+
+    def open_load_order_overview_dialog() -> None:
+        """Open overview dialog asynchronously from UI callbacks."""
+        asyncio.create_task(_open_load_order_overview_dialog_async())
 
     def _validate_backup_name_input() -> str | None:
         """Return sanitized backup name or None when current input is invalid."""
