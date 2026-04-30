@@ -50,8 +50,9 @@ def _detect_os_keyring() -> tuple[bool, str]:
     except Exception as exc:
         return False, f"keyring backend load failed: {exc}"
 
-    # keyring's fail backend means no system credential store is configured.
-    if "fail" in backend_name.lower():
+    # keyring fail/null backends mean no usable OS credential store is configured.
+    lower_backend_name = backend_name.lower()
+    if "fail" in lower_backend_name or "null" in lower_backend_name:
         return False, f"keyring backend unavailable: {backend_name}"
 
     return True, backend_name

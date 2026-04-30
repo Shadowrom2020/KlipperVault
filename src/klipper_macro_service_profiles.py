@@ -10,6 +10,7 @@ in focused, navigable modules. MacroGuiService inherits this mixin.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable
@@ -49,6 +50,7 @@ from klipper_type_utils import to_text as _as_text
 
 
 _PROTECTED_CFG_FILENAME = "printer.cfg"
+_LOG = logging.getLogger(__name__)
 
 
 def _cfg_is_protected(file_path: str) -> bool:
@@ -423,7 +425,7 @@ class PrinterProfileMixin:
                     printer_cfg_content = source.read_text("printer.cfg")
                     detected_vendor, detected_model = _detect_printer_identity_from_cfg(printer_cfg_content)
                 except Exception:
-                    pass
+                    _LOG.debug("Printer identity detection fallback via printer.cfg failed", exc_info=True)
 
             if detected_vendor or detected_model:
                 update_printer_profile_identity(
@@ -433,8 +435,8 @@ class PrinterProfileMixin:
                     model=detected_model,
                 )
         except Exception:
-            # Silently fail - detection is optional, don't break activation
-            pass
+            # Detection is optional, so keep activation non-blocking while preserving diagnostics.
+            _LOG.debug("Printer identity auto-detection failed", exc_info=True)
 
     def _refresh_moonraker_base_url_from_active_profile(self) -> None:
         """Refresh Moonraker base URL from active off-printer profile when available."""
