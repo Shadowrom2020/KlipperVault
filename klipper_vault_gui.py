@@ -59,6 +59,11 @@ def _use_native_window() -> bool:
     return _is_frozen_runtime() and not _is_server_mode()
 
 
+def _use_save_dialog() -> bool:
+    """Show save-path dialog on Windows/macOS frozen binary instead of browser download."""
+    return _is_frozen_runtime() and platform.system() in {"Windows", "Darwin"}
+
+
 def _bundle_root() -> Path:
     """Return runtime root for packaged resources or repository root."""
     if _is_frozen_runtime():
@@ -228,7 +233,7 @@ def main() -> None:
 
     def build_ui_root() -> None:
         """Wrap UI building in a root function to prevent NiceGUI script mode detection."""
-        build_ui(app_version=app_version)
+        build_ui(app_version=app_version, use_save_dialog=_use_save_dialog())
 
     use_native_window = _use_native_window()
 

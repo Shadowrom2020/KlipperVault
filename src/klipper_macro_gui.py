@@ -11,6 +11,7 @@ from datetime import datetime
 import os
 
 from pathlib import Path
+import shutil
 import tempfile
 import time
 from urllib.parse import urlparse, urlunparse
@@ -253,7 +254,7 @@ def _safe_notify(message: str, notify_type: str = "info") -> None:
         return
 
 
-def build_ui(app_version: str = "unknown") -> None:
+def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> None:
     """Build the full NiceGUI interface and wire all callbacks."""
     config_dir = Path(DEFAULT_CONFIG_DIR).expanduser().resolve()
     db_path = Path(DEFAULT_DB_PATH).expanduser().resolve()
@@ -415,6 +416,10 @@ def build_ui(app_version: str = "unknown") -> None:
     create_pr_progress_label: ui.label | None = None
     create_pr_progress_bar: ui.linear_progress | None = None
     export_macro_checkboxes: dict[str, object] = {}
+    save_path_dialog: ui.dialog | None = None
+    save_path_input: ui.input | None = None
+    save_path_error_label: ui.label | None = None
+    _save_path_pending_src: Path | None = None
     # Phase 5: Remote dialogs variables
     online_update_dialog: ui.dialog | None = None
     online_update_progress_label: ui.label | None = None
@@ -786,6 +791,7 @@ def build_ui(app_version: str = "unknown") -> None:
         nonlocal confirm_restore_button, confirm_delete_button, confirm_export_button, confirm_import_button
         nonlocal confirm_create_pr_button, create_pr_progress_label, create_pr_progress_bar, create_pr_error_label
         nonlocal export_macro_checkboxes
+        nonlocal save_path_dialog, save_path_input, save_path_error_label
 
         with ui.dialog() as load_order_dialog_ref, ui.card().classes(
             "w-[56rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col overflow-hidden"
@@ -844,6 +850,19 @@ def build_ui(app_version: str = "unknown") -> None:
         state.export_macro_list = export_macro_list
 
         export_macro_checkboxes = {}
+
+        with ui.dialog().props("persistent") as save_path_dialog_ref, ui.card().classes("w-[42rem] max-w-[98vw]"):
+            save_path_dialog = save_path_dialog_ref
+            ui.label(t("Save exported file")).classes("text-lg font-semibold")
+            ui.label(t("Choose where to save the exported file on this computer.")).classes("text-sm text-grey-5")
+            save_path_input = ui.input(label=t("Save path")).props("outlined").classes("w-full mt-2")
+            save_path_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", save_path_dialog_ref.close)
+                ui.button(t("Save"), on_click=lambda: _confirm_save_path()).props("color=primary no-caps")
+        state.save_path_dialog = save_path_dialog_ref
+        state.save_path_input = save_path_input
+        state.save_path_error_label = save_path_error_label
 
         with ui.dialog() as import_dialog_ref, ui.card().classes("w-[38rem] max-w-[98vw]"):
             import_dialog = import_dialog_ref
@@ -1000,6 +1019,39 @@ def build_ui(app_version: str = "unknown") -> None:
 
     # ── Build early dialogs ───────────────────────────────────────────────────
     _build_early_dialogs()
+
+    # ── Exported-file delivery helpers ────────────────────────────────────────
+    def _deliver_exported_file(src: Path) -> None:
+        """Deliver an exported file: browser download on Linux/Docker, save dialog on Windows/macOS binary."""
+        if use_save_dialog:
+            state._save_path_pending_src = src
+            default_dest = Path.home() / "Downloads" / src.name
+            state.save_path_input.set_value(str(default_dest))
+            state.save_path_error_label.set_text("")
+            state.save_path_dialog.open()
+        else:
+            ui.download(src, filename=src.name)
+
+    def _confirm_save_path() -> None:
+        """Copy the pending export file to the user-chosen path and close the dialog."""
+        raw = str(state.save_path_input.value or "").strip()
+        if not raw:
+            state.save_path_error_label.set_text(t("Please enter a save path."))
+            return
+        dest = Path(raw)
+        src = state._save_path_pending_src
+        if src is None or not src.exists():
+            state.save_path_error_label.set_text(t("Source file is no longer available."))
+            return
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+        except Exception as exc:
+            state.save_path_error_label.set_text(t("Failed to save file: {error}", error=exc))
+            return
+        state.save_path_dialog.close()
+        state._save_path_pending_src = None
+        status_label.set_text(t("File saved to {path}.", path=str(dest)))
 
     # ── Build macro operation dialogs ─────────────────────────────────────────
     _build_macro_operation_dialogs()
@@ -2959,7 +3011,7 @@ def build_ui(app_version: str = "unknown") -> None:
 
         state.export_dialog.close()
         exported_path = Path(str(result.get("file_path", "")))
-        ui.download(exported_path, filename=exported_path.name)
+        _deliver_exported_file(exported_path)
         status_label.set_text(
             t(
                 "Exported {count} macro(s) to {path}.",
@@ -3028,7 +3080,7 @@ def build_ui(app_version: str = "unknown") -> None:
             return
 
         exported_path = Path(str(result.get("file_path", "")))
-        ui.download(exported_path, filename=exported_path.name)
+        _deliver_exported_file(exported_path)
         status_label.set_text(
             t(
                 "Exported {count} active macro(s) as update repository ZIP: {path}",
