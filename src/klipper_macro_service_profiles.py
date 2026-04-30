@@ -56,6 +56,108 @@ def _cfg_is_protected(file_path: str) -> bool:
     return Path(_as_text(file_path)).name.lower() == _PROTECTED_CFG_FILENAME
 
 
+_FREEDI_CFG_FILENAME = "freedi.cfg"
+
+
+def _read_key_value_line(raw_line: str) -> tuple[str, str] | None:
+    """Parse simple cfg lines like `key: value` or `key = value`."""
+    line = raw_line.split("#", 1)[0].strip()
+    if not line:
+        return None
+    for separator in (":", "="):
+        if separator in line:
+            key, value = line.split(separator, 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if key:
+                return key, value
+    return None
+
+
+def _detect_freedi_identity_from_cfg(freedi_cfg_content: str) -> tuple[str, str]:
+    """Detect FreeDi printer model from freedi.cfg content.
+
+    Returns ("FreeDi", printer_model) when a printer_model key is present,
+    or ("FreeDi", "") when the file exists but lacks a printer_model value.
+    """
+    for raw_line in freedi_cfg_content.splitlines():
+        parsed = _read_key_value_line(raw_line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        if key == "printer_model" and value:
+            return "FreeDi", value
+    return "FreeDi", ""
+
+
+def _detect_printer_identity_from_cfg(printer_cfg_content: str) -> tuple[str, str]:
+    """Detect printer vendor and model from printer.cfg content by pattern matching.
+
+    Returns a tuple of (vendor, model). Returns ("", "") if detection fails.
+    """
+    if not printer_cfg_content:
+        return "", ""
+    
+    content_lower = printer_cfg_content.lower()
+    
+    # VORON detection - multiple variants
+    if "[stepper_a]" in content_lower or "[stepper_b]" in content_lower or "[stepper_c]" in content_lower:
+        if "[stepper_d]" in content_lower:
+            return "Voron", "V2.4"  # V2.4 uses 4 steppers
+        elif "[display_template" in content_lower or "[voron_display]" in content_lower:
+            # Check for V2.4 indicators
+            if any(x in content_lower for x in ["[led_effects", "[case_light"]):
+                return "Voron", "V2.4"
+            return "Voron", "V2.4"
+        return "Voron", "Trident"  # 3-stepper systems
+    
+    # VORON V0 detection
+    if "[stepper_x]" in content_lower and "[stepper_y]" in content_lower:
+        # V0 and V2.4 both use X/Y, check for V0-specific patterns
+        if "[extruder_stepper" not in content_lower and "[extruder1" not in content_lower:
+            # V0 detection through absence of multi-tool patterns and presence of CoreXY-compatible stepper names
+            if "[temperature_fan" in content_lower:
+                return "Voron", "V0"
+    
+    # VORON Switchwire detection  
+    if "[stepper_z]" in content_lower and "[stepper_z1]" in content_lower:
+        if "[dual_carriage" not in content_lower:  # Not a V2.4
+            return "Voron", "Switchwire"
+    
+    # Rat Rig V-Core detection
+    if "[led_light" in content_lower or "[temperature_fan chamber" in content_lower:
+        if "[nozzle_scrub" in content_lower:
+            if "[bed_mesh" in content_lower:
+                return "RatRig", "V-Core 3"
+            return "RatRig", "V-Core"
+    
+    # Artillery detection - look for common Artillery config patterns
+    if "[artillery_z_motor_helper" in content_lower or "[z_calibration" in content_lower:
+        if "artillery" in content_lower or "[nozzle_scrub" in content_lower:
+            return "Artillery", "Sidewinder"
+    
+    # Prusa detection
+    if "[mmu" in content_lower or "[mmu2" in content_lower:
+        if "[extruder" in content_lower and "[extruder1" in content_lower:
+            return "Prusa", "MK3.9"
+        return "Prusa", "MK3"
+    
+    # Creality/Ender detection
+    if "[ender" in content_lower or "[creality" in content_lower:
+        if "ender5" in content_lower:
+            return "Creality", "Ender 5"
+        elif "ender3" in content_lower:
+            return "Creality", "Ender 3"
+        return "Creality", "Ender"
+    
+    # Generic CoreXY detection
+    if "[stepper_x]" in content_lower and "[stepper_y]" in content_lower:
+        if "[stepper_z]" in content_lower and "[stepper_z1]" in content_lower:
+            return "Generic", "CoreXY"
+    
+    return "", ""
+
+
 class MoonrakerStatusResult(BaseModel):
     """Typed Moonraker printer status payload used internally by the service."""
 
@@ -226,6 +328,10 @@ class PrinterProfileMixin:
         if profile is not None and profile.ssh_profile_id is not None:
             set_active_ssh_host_profile(self._db_path, int(profile.ssh_profile_id))
         self._refresh_moonraker_base_url_from_active_profile()
+        
+        # Try to auto-detect printer vendor/model if not yet set
+        self._try_detect_printer_identity()
+        
         return {"ok": True, "profile_id": int(profile_id)}
 
     def ensure_printer_profile_for_ssh_profile(
@@ -286,6 +392,49 @@ class PrinterProfileMixin:
         if not updated:
             return {"ok": False, "error": "profile not updated"}
         return {"ok": True, "profile_id": int(profile.id)}
+
+    def _try_detect_printer_identity(self) -> None:
+        """Attempt to auto-detect printer vendor/model via SSH if not yet set.
+
+        Checks for freedi.cfg first (FreeDi printers), then falls back to
+        pattern matching against printer.cfg content.
+        """
+        profile = get_active_printer_profile(self._db_path)
+        if profile is None or profile.id is None:
+            return
+
+        # Only detect if both vendor and model are empty
+        vendor = _as_text(profile.vendor).strip()
+        model = _as_text(profile.model).strip()
+        if vendor or model:
+            return  # Already has identity set
+
+        try:
+            source, _ = self._active_remote_config_source()
+
+            # FreeDi detection: presence of freedi.cfg is the primary signal.
+            try:
+                freedi_content = source.read_text(_FREEDI_CFG_FILENAME)
+                detected_vendor, detected_model = _detect_freedi_identity_from_cfg(freedi_content)
+            except Exception:
+                # freedi.cfg not present — fall back to printer.cfg pattern matching
+                detected_vendor, detected_model = "", ""
+                try:
+                    printer_cfg_content = source.read_text("printer.cfg")
+                    detected_vendor, detected_model = _detect_printer_identity_from_cfg(printer_cfg_content)
+                except Exception:
+                    pass
+
+            if detected_vendor or detected_model:
+                update_printer_profile_identity(
+                    self._db_path,
+                    profile_id=int(profile.id),
+                    vendor=detected_vendor,
+                    model=detected_model,
+                )
+        except Exception:
+            # Silently fail - detection is optional, don't break activation
+            pass
 
     def _refresh_moonraker_base_url_from_active_profile(self) -> None:
         """Refresh Moonraker base URL from active off-printer profile when available."""
