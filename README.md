@@ -101,7 +101,7 @@ Primary dependency profile:
 
 - GUI + remote workflows: [requirements.txt](requirements.txt)
 
-Off-printer credential storage:
+Credential storage:
 
 - SSH profile metadata is stored in the KlipperVault SQLite database.
 - SSH secrets use OS key storage (keyring) when available.
@@ -109,7 +109,6 @@ Off-printer credential storage:
 
 ## Default Paths
 
-- Runtime mode: `off_printer`
 - Config directory:
   - Linux: `~/.config/klippervault`
   - macOS: `~/Library/Application Support/KlipperVault`
@@ -131,7 +130,6 @@ KlipperVault stores application settings in the SQLite database and exposes them
 
 - `version_history_size`: max stored versions per macro
 - `port`: web UI port
-- `runtime_mode`: fixed to `off_printer`
 - `ui_language`: UI language (`en`, `de`, `fr`)
 - `online_update_repo_url`: optional GitHub URL for macro update repository
 - `online_update_manifest_path`: path to manifest file inside the update repository (default: `updates/manifest.json`)
@@ -199,7 +197,7 @@ See [docker.md](Docs/docker.md) for Docker build, run, persistence, networking, 
 
 ## Usage
 
-Typical off-printer flow:
+Typical flow:
 
 1. Open KlipperVault.
 2. Open `Printers` and choose `Manage printer connections`, then save and activate a profile.
@@ -267,7 +265,7 @@ App does not start:
 
 No macros found:
 
-- In `off_printer` mode, verify an active printer connection exists, credentials are set, and `Test printer connection` succeeds.
+- Verify an active printer connection exists, credentials are set, and `Test printer connection` succeeds.
 - Check `printer.cfg` includes and file readability.
 - Trigger a manual scan.
 
