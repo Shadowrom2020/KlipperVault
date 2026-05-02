@@ -8,12 +8,13 @@ Included files:
 - `docker-compose.yml`
 - `.dockerignore`
 
-## 1) Build and start
+## 1) Start from Docker Hub (default)
 
 From repository root:
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 Web UI will be available on:
@@ -22,7 +23,7 @@ Web UI will be available on:
 http://<host-ip>:10090
 ```
 
-## 2) Install from Docker Hub
+## 2) Install from Docker Hub (direct run)
 
 Published image:
 
@@ -101,11 +102,20 @@ If your printer is on another VLAN/subnet, allow outbound access from the Docker
 ## 6) Upgrade flow
 
 ```bash
-git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-## 7) First-run checklist
+## 7) Local build (development)
+
+To build and run from your local source checkout instead of Docker Hub:
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+## 8) First-run checklist
 
 1. Open KlipperVault UI.
 2. Open `Printers` -> `Manage printer connections`.

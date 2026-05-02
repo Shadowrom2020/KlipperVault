@@ -40,10 +40,16 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.value }}"
           REPO="shadowrom2020/klippervault"
+          REF_NAME="${GITHUB_REF_NAME}"
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "value=${REPO}:${VERSION},${REPO}:latest" >> "$GITHUB_OUTPUT"
+            TAG_VERSION="${REF_NAME#v}"
+            if [[ -n "${TAG_VERSION}" && "${TAG_VERSION}" != "${VERSION}" ]]; then
+              echo "value=${REPO}:${VERSION},${REPO}:${TAG_VERSION},${REPO}:latest" >> "$GITHUB_OUTPUT"
+            else
+              echo "value=${REPO}:${VERSION},${REPO}:latest" >> "$GITHUB_OUTPUT"
+            fi
           else
-            echo "value=${REPO}:latest" >> "$GITHUB_OUTPUT"
+            echo "value=${REPO}:${VERSION},${REPO}:latest" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build and push Docker image
@@ -51,6 +57,7 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.tags.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

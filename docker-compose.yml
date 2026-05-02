@@ -1,8 +1,6 @@
 services:
   klippervault:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: shadowrom2020/klippervault:latest
     container_name: klippervault
     restart: unless-stopped
     environment:
