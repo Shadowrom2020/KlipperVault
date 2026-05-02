@@ -33,7 +33,7 @@ VS Code debug configs use `${workspaceFolder}/.venv/bin/python` so launch runs w
 
 Generated debug configurations include full app workflows:
 
-- `Python: KlipperVault GUI (off_printer debug)`
+- `Python: KlipperVault GUI (standard debug)`
 
 Manual setup alternative:
 
@@ -53,7 +53,7 @@ pip install -r requirements.txt
 
 Notes:
 
-- In `off_printer` mode, indexing mirrors remote cfg files into a local OS-standard data directory before scan.
+- In `standard` mode, indexing mirrors remote cfg files into a local OS-standard data directory before scan.
 - Mutating operations (edit/delete/restore/duplicate resolve/backup restore) sync changed cfg content back to remote over SSH.
 - Manual/startup scan is intentionally blocked until an active SSH profile with credentials is configured.
 
@@ -75,7 +75,7 @@ src/
   klipper_macro_backup.py         Backup and restore support
   klipper_macro_compare.py        Version compare UI
   klipper_macro_compare_core.py   Diff logic used by compare dialog
-  klipper_vault_ssh_transport.py  SSH/SFTP read-write transport for off_printer mode
+  klipper_vault_ssh_transport.py  SSH/SFTP read-write transport for standard mode
   klipper_vault_remote_profiles.py SQLite profile metadata and credential index tables
   klipper_vault_secret_store.py   Keyring-first secret storage with DB fallback
   klipper_vault_config.py         SQLite-backed app settings handling
@@ -87,9 +87,9 @@ src/
 
 Supported `runtime_mode` value from app settings:
 
-- `off_printer`: SSH/SFTP-driven remote config workflow.
+- `standard`: SSH/SFTP-driven remote config workflow.
 
-Off-printer persistence model:
+Standard persistence model:
 
 - App settings are stored in SQLite (`vault_settings`).
 - SSH host profiles are stored in SQLite (`ssh_host_profiles`).

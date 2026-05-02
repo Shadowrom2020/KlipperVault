@@ -40,6 +40,13 @@ def _macro_relative_path(vendor: str, model: str, macro_name: str) -> str:
     return f"{vendor}/{model}/{_safe_macro_file_name(macro_name)}"
 
 
+def build_printer_manifest_path(source_vendor: str, source_model: str) -> str:
+    """Return the per-printer manifest path colocated with printer macro files."""
+    vendor = _normalize_component(source_vendor)
+    model = _normalize_component(source_model)
+    return f"{vendor}/{model}/manifest.json"
+
+
 def _macro_version(indexed_at_raw: object, fallback_ts: int) -> str:
     """Derive stable YYYY-MM-DD version text from one macro timestamp value."""
     indexed_at = _as_int(indexed_at_raw, default=fallback_ts)
@@ -145,7 +152,7 @@ def build_online_update_repository_artifacts(
     source_model: str,
     repo_url: str | None = None,
     repo_ref: str | None = None,
-    manifest_path: str = "updates/manifest.json",
+    manifest_path: str = "",
     now_ts: int | None = None,
     existing_manifest: dict[str, object] | None = None,
 ) -> dict[str, object]:
@@ -171,16 +178,21 @@ def build_online_update_repository_artifacts(
     manifest: dict[str, object]
     clean_repo_url = str(repo_url or "").strip()
     clean_repo_ref = str(repo_ref or "main").strip() or "main"
-    clean_manifest_path = str(manifest_path or "updates/manifest.json").strip() or "updates/manifest.json"
+    _ = manifest_path  # Deprecated for PR flow; manifest path is now printer-local.
+    target_manifest_path = build_printer_manifest_path(vendor, model)
 
     if existing_manifest is not None:
         manifest = dict(existing_manifest)
     elif clean_repo_url:
-        manifest = _load_remote_manifest(clean_repo_url, clean_repo_ref, clean_manifest_path)
+        manifest = _load_remote_manifest(clean_repo_url, clean_repo_ref, target_manifest_path)
     else:
         manifest = {"manifest_version": "1", "macros": []}
 
-    existing_entries = _normalize_manifest_entries(manifest.get("macros", []))
+    existing_entries = [
+        entry
+        for entry in _normalize_manifest_entries(manifest.get("macros", []))
+        if str(entry.get("vendor", "")) == vendor and str(entry.get("model", "")) == model
+    ]
 
     # Lookup: (vendor, model, macro_name) -> existing manifest entry for checksum comparison.
     existing_by_key: dict[tuple[str, str, str], dict[str, object]] = {
@@ -235,21 +247,18 @@ def build_online_update_repository_artifacts(
             }
         )
 
-    exported_keyed = {
-        (vendor, model, str(entry["macro_name"])): entry
-        for entry in macro_entries
-    }
+    exported_keyed = {str(entry["macro_name"]): entry for entry in macro_entries}
     merged_entries: list[dict[str, object]] = []
     for entry in existing_entries:
-        key = (str(entry.get("vendor", "")), str(entry.get("model", "")), str(entry.get("macro_name", "")))
-        if key[0] == vendor and key[1] == model and key not in exported_keyed:
+        key = str(entry.get("macro_name", ""))
+        replacement = exported_keyed.pop(key, None)
+        if replacement is None:
             deleted_path = str(entry.get("path", "")).strip().lstrip("/")
             if deleted_path:
                 files_to_delete.append(deleted_path)
                 any_content_changed = True
             continue
-        replacement = exported_keyed.pop(key, None)
-        merged_entries.append(replacement if replacement is not None else entry)
+        merged_entries.append(replacement)
     merged_entries.extend(exported_keyed.values())
 
     manifest["manifest_version"] = str(manifest.get("manifest_version", "1") or "1")
@@ -269,7 +278,7 @@ def build_online_update_repository_artifacts(
 
     return {
         "manifest": manifest,
-        "manifest_path": clean_manifest_path,
+        "manifest_path": target_manifest_path,
         "files_to_write": files_to_write,
         "files_to_delete": sorted(set(files_to_delete)),
         "macro_count": len(macro_entries),
@@ -286,7 +295,7 @@ def export_online_update_repository_zip(
     source_model: str,
     repo_url: str | None = None,
     repo_ref: str | None = None,
-    manifest_path: str = "updates/manifest.json",
+    manifest_path: str = "",
     now_ts: int | None = None,
 ) -> dict[str, object]:
     """Export active local macros into a zip for the online update repository."""
@@ -341,13 +350,18 @@ def export_online_update_repository_zip(
     manifest: dict[str, object]
     clean_repo_url = str(repo_url or "").strip()
     clean_repo_ref = str(repo_ref or "main").strip() or "main"
-    clean_manifest_path = str(manifest_path or "updates/manifest.json").strip() or "updates/manifest.json"
+    _ = manifest_path  # Deprecated: ZIP export now uses printer-local manifests.
+    clean_manifest_path = build_printer_manifest_path(vendor, model)
     if clean_repo_url:
         manifest = _load_remote_manifest(clean_repo_url, clean_repo_ref, clean_manifest_path)
     else:
         manifest = {"manifest_version": "1", "macros": []}
 
-    existing_entries = _normalize_manifest_entries(manifest.get("macros", []))
+    existing_entries = [
+        entry
+        for entry in _normalize_manifest_entries(manifest.get("macros", []))
+        if str(entry.get("vendor", "")) == vendor and str(entry.get("model", "")) == model
+    ]
 
     exported_keyed = {
         (vendor, model, str(entry["macro_name"])): entry

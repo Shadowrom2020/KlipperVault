@@ -292,6 +292,7 @@ class PrinterProfileMixin:
                     "ssh_profile_id": profile.ssh_profile_id,
                     "is_active": profile.is_active,
                     "is_archived": profile.is_archived,
+                    "is_virtual": profile.is_virtual,
                 }
             )
         return payloads
@@ -317,6 +318,42 @@ class PrinterProfileMixin:
             "ssh_profile_id": profile.ssh_profile_id,
             "is_active": profile.is_active,
             "is_archived": profile.is_archived,
+            "is_virtual": profile.is_virtual,
+        }
+
+    def create_virtual_printer_profile(
+        self,
+        *,
+        profile_name: str,
+        vendor: str,
+        model: str,
+        activate: bool = True,
+    ) -> dict[str, object]:
+        """Create a developer virtual printer profile for local-only workflows."""
+        normalized_name = self._require_non_empty(profile_name, "profile_name is required")
+        normalized_vendor = self._require_non_empty(vendor, "vendor is required")
+        normalized_model = self._require_non_empty(model, "model is required")
+
+        created_profile_id = create_printer_profile(
+            self._db_path,
+            profile_name=normalized_name,
+            vendor=normalized_vendor,
+            model=normalized_model,
+            connection_type="standard",
+            ssh_profile_id=None,
+            is_active=bool(activate),
+            is_virtual=True,
+        )
+
+        if activate:
+            self.activate_printer_profile(created_profile_id)
+
+        return {
+            "ok": True,
+            "profile_id": int(created_profile_id),
+            "created": True,
+            "is_virtual": True,
+            "is_active": bool(activate),
         }
 
     def activate_printer_profile(self, profile_id: int) -> dict[str, object]:
@@ -332,9 +369,25 @@ class PrinterProfileMixin:
         self._refresh_moonraker_base_url_from_active_profile()
         
         # Try to auto-detect printer vendor/model if not yet set
-        self._try_detect_printer_identity()
+        if profile is None or not bool(profile.is_virtual):
+            self._try_detect_printer_identity()
         
         return {"ok": True, "profile_id": int(profile_id)}
+
+    def delete_printer_profile(self, profile_id: int) -> dict[str, object]:
+        """Delete a printer profile and all associated data."""
+        try:
+            from klipper_vault_printer_profiles import delete_printer_profile as delete_profile_impl
+            success = delete_profile_impl(self._db_path, int(profile_id))
+            return {
+                "ok": success,
+                "error": "" if success else "Failed to delete printer profile"
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc)
+            }
 
     def ensure_printer_profile_for_ssh_profile(
         self,
@@ -364,7 +417,7 @@ class PrinterProfileMixin:
         created_profile_id = create_printer_profile(
             self._db_path,
             profile_name=profile_name,
-            connection_type="off_printer",
+            connection_type="standard",
             ssh_profile_id=int(ssh_profile_id),
             is_active=bool(activate),
         )
@@ -439,7 +492,7 @@ class PrinterProfileMixin:
             _LOG.debug("Printer identity auto-detection failed", exc_info=True)
 
     def _refresh_moonraker_base_url_from_active_profile(self) -> None:
-        """Refresh Moonraker base URL from active off-printer profile when available."""
+        """Refresh Moonraker base URL from active standard profile when available."""
         active_printer = get_active_printer_profile(self._db_path)
         profile_moonraker_url = _as_text(active_printer.ssh_moonraker_url) if active_printer is not None else ""
         profile_ssh_host = _as_text(active_printer.ssh_host) if active_printer is not None else ""
@@ -451,12 +504,12 @@ class PrinterProfileMixin:
             if not profile_ssh_host:
                 profile_ssh_host = _as_text(active_profile.host)
         if profile_moonraker_url:
-            normalized = self._normalize_off_printer_moonraker_url(profile_moonraker_url, profile_ssh_host)
+            normalized = self._normalize_standard_moonraker_url(profile_moonraker_url, profile_ssh_host)
             self._moonraker_base_url = normalized.rstrip("/")
 
     @staticmethod
-    def _normalize_off_printer_moonraker_url(moonraker_url: str, ssh_host: str) -> str:
-        """Rewrite localhost Moonraker URLs to the remote SSH host for off-printer mode."""
+    def _normalize_standard_moonraker_url(moonraker_url: str, ssh_host: str) -> str:
+        """Rewrite localhost Moonraker URLs to the remote SSH host for standard mode."""
         raw_url = _as_text(moonraker_url)
         remote_host = _as_text(ssh_host)
         if not raw_url:
@@ -543,10 +596,10 @@ class PrinterProfileMixin:
     # ------------------------------------------------------------------ #
 
     def list_ssh_profiles(self) -> list[dict[str, object]]:
-        """Return off-printer connection profiles (owned by printer profiles)."""
+        """Return standard connection profiles (owned by printer profiles)."""
         payloads: list[dict[str, object]] = []
         for printer_profile in self.list_printer_profiles():
-            if _as_text(printer_profile.get("connection_type", "")) != "off_printer":
+            if bool(printer_profile.get("is_virtual", False)):
                 continue
             if not _as_text(printer_profile.get("ssh_host", "")):
                 continue
@@ -559,15 +612,19 @@ class PrinterProfileMixin:
         return payloads
 
     def get_active_ssh_profile(self) -> dict[str, object] | None:
-        """Return active off-printer connection settings from active printer profile."""
+        """Return active standard connection settings from active printer profile."""
         active_printer = self.get_active_printer_profile()
         if isinstance(active_printer, dict) and active_printer:
             payload = self._printer_profile_to_ssh_payload(active_printer)
+            payload["is_virtual"] = bool(active_printer.get("is_virtual", False))
             if _as_text(payload.get("host", "")):
                 credential_ref = _as_text(payload.get("credential_ref", ""))
                 backend = get_credential_backend(self._db_path, credential_ref) if credential_ref else None
                 payload["secret_backend"] = backend or ""
                 payload["has_secret"] = bool(self._credential_store.get_secret(credential_ref=credential_ref))
+                return payload
+            if bool(active_printer.get("is_virtual", False)):
+                payload["has_secret"] = True
                 return payload
 
         # Legacy fallback while older profile rows are still in use.
@@ -600,7 +657,7 @@ class PrinterProfileMixin:
         username = self._require_non_empty(username, "username is required")
         remote_config_dir = self._require_non_empty(remote_config_dir, "remote_config_dir is required")
         moonraker_url = self._require_non_empty(moonraker_url, "moonraker_url is required")
-        moonraker_url = self._normalize_off_printer_moonraker_url(moonraker_url, host)
+        moonraker_url = self._normalize_standard_moonraker_url(moonraker_url, host)
         auth_mode = (_as_text(auth_mode).lower() or "key")
         if auth_mode not in {"key", "password"}:
             raise ValueError("auth_mode must be 'key' or 'password'")
@@ -670,7 +727,7 @@ class PrinterProfileMixin:
         }
 
     def activate_ssh_profile(self, profile_id: int) -> dict[str, object]:
-        """Activate one saved off-printer connection profile."""
+        """Activate one saved standard connection profile."""
         linked_profile = get_printer_profile_by_ssh_profile_id(self._db_path, int(profile_id))
         if linked_profile is not None and linked_profile.id is not None:
             resolved_printer_profile_id = int(linked_profile.id)
@@ -803,7 +860,7 @@ class PrinterProfileMixin:
         return SshConfigSource(transport=transport, remote_root=remote_config_dir), profile
 
     def test_active_ssh_connection(self) -> dict[str, object]:
-        """Validate active off-printer SSH profile connectivity."""
+        """Validate active standard SSH profile connectivity."""
         transport, profile = self._active_ssh_transport()
         result = transport.test_connection()
         return {
@@ -1056,7 +1113,24 @@ class PrinterProfileMixin:
         progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> dict[str, object]:
         """Explicitly sync local cfg tree to remote printer config via SFTP."""
-        if self._runtime_mode != "off_printer":
+        active_printer = self.get_active_printer_profile()
+        if isinstance(active_printer, dict) and bool(active_printer.get("is_virtual", False)):
+            return {
+                "ok": True,
+                "uploaded_files": 0,
+                "removed_remote_files": 0,
+                "uploaded_paths": [],
+                "removed_remote_paths": [],
+                "blocked_files": 0,
+                "blocked_paths": [],
+                "blocked_by_protected_file": False,
+                "remote_synced": False,
+                "restart_required": False,
+                "dynamic_reload_required": False,
+                "restart_message": "Virtual printer profile: remote upload is skipped.",
+            }
+
+        if self._runtime_mode != "standard":
             return {
                 "ok": False,
                 "uploaded_files": 0,
@@ -1128,7 +1202,7 @@ class PrinterProfileMixin:
         if not moonraker_url:
             raise ValueError("Printer profile is missing Moonraker URL")
 
-        return self._normalize_off_printer_moonraker_url(moonraker_url, ssh_host).rstrip("/")
+        return self._normalize_standard_moonraker_url(moonraker_url, ssh_host).rstrip("/")
 
     @staticmethod
     @retry(
@@ -1236,6 +1310,16 @@ class PrinterProfileMixin:
 
     def query_printer_status(self, timeout: float = 2.0) -> dict[str, object]:
         """Query Moonraker print stats and return normalized printer status."""
+        active_profile = self.get_active_printer_profile()
+        if isinstance(active_profile, dict) and bool(active_profile.get("is_virtual", False)):
+            return MoonrakerStatusResult(
+                connected=True,
+                state="virtual",
+                message="Virtual printer (local-only mode)",
+                is_printing=False,
+                is_busy=False,
+            ).as_dict()
+
         try:
             url = self._moonraker_url("/printer/objects/query")
             response = self._moonraker_get(url, params={"print_stats": "state,message"}, timeout=timeout)
@@ -1263,6 +1347,25 @@ class PrinterProfileMixin:
 
     def query_printer_status_for_profile(self, profile_id: int, timeout: float = 2.0) -> dict[str, object]:
         """Query Moonraker status for one printer profile without changing active state."""
+        profile_payload = next(
+            (
+                profile
+                for profile in self.list_printer_profiles()
+                if _as_int(profile.get("id"), default=0) == int(profile_id)
+            ),
+            None,
+        )
+        if isinstance(profile_payload, dict) and bool(profile_payload.get("is_virtual", False)):
+            result = MoonrakerStatusResult(
+                connected=True,
+                state="virtual",
+                message="Virtual printer (local-only mode)",
+                is_printing=False,
+                is_busy=False,
+            ).as_dict()
+            result["profile_id"] = int(profile_id)
+            return result
+
         try:
             base_url = self._moonraker_base_url_for_profile(profile_id)
             url = self._moonraker_url_from_base(base_url, "/printer/objects/query")

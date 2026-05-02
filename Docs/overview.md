@@ -27,8 +27,11 @@ The toolbar provides quick access to essential operations for managing your macr
   - **Check for Updates**: Search for macro updates from configured GitHub repositories
   - **Loading order overview**: Inspect Klipper parse order for cfg files and macro sections
 - **Developer Menu** (developer mode only):
+  - **Create Virtual Printer**: Create a local-only virtual profile for development workflows
   - **Export Update Zip**: Export local macros as an update repository bundle
   - **Create Pull Request**: Publish active macros directly to GitHub
+  - **Import macro.cfg**: Import macros from a local macro.cfg file into the vault
+  - On the printer selection page, only **Create Virtual Printer** is shown.
 - **Scan Macros**: Re-index all macros from your config files
 - **Backup**: Create snapshots of your current macro state
 - **Reload Dynamic Macros**: Update macros loaded via DynamicMacros plugin
@@ -100,6 +103,11 @@ Check for and import macro updates from GitHub-hosted repositories with selectiv
 - Export macros for sharing or archival
 - Import macros from other users
 
+### 🖨️ Printer Profiles
+- Start page printer cards show profile status and quick actions
+- Delete action on printer cards opens a confirmation dialog
+- Confirmed deletion removes the printer profile and associated printer-scoped vault data
+
 ### 🔐 Safe Editing
 - In-place editing with write-back to cfg files
 - Moonraker print-state safety gates prevent editing during active prints
@@ -118,6 +126,11 @@ Check for and import macro updates from GitHub-hosted repositories with selectiv
 - Import updates as inactive versions for selective activation
 - Support for printer-specific macro variants
 - Developer mode for exporting macro bundles
+
+### 🧪 Virtual Printer Workflows
+- Create virtual printers from the Developer menu
+- Virtual profiles are local-only and do not require SSH or Moonraker connectivity
+- Useful for repository maintenance and macro publishing when no physical printer is connected
 
 ## Publishing Macros via GitHub
 

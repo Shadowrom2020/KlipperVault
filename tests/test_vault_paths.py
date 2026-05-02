@@ -7,7 +7,7 @@ def _reload_paths_module():
     return importlib.reload(module)
 
 
-def test_off_printer_defaults_use_user_config_and_share_dirs(monkeypatch):
+def test_standard_defaults_use_user_config_and_share_dirs(monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Linux")
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
@@ -20,12 +20,12 @@ def test_off_printer_defaults_use_user_config_and_share_dirs(monkeypatch):
     assert module.DEFAULT_DB_PATH.endswith(expected_db_suffix)
 
 
-def test_runtime_mode_is_fixed_to_off_printer(monkeypatch):
+def test_runtime_mode_is_fixed_to_standard(monkeypatch):
     monkeypatch.setattr("platform.system", lambda: "Linux")
 
     module = _reload_paths_module()
 
-    assert module._runtime_mode() == "off_printer"
+    assert module._runtime_mode() == "standard"
 
 
 def test_xdg_overrides_are_used_on_linux(monkeypatch, tmp_path):

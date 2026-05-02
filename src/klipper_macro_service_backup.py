@@ -66,9 +66,9 @@ class BackupRestoreMixin:
             except Exception:
                 _LOG.debug("Progress callback failed while reporting backup sync start", exc_info=True)
 
-        # In off-printer mode, backups must reflect the current printer cfg
+        # In standard mode, backups must reflect the current printer cfg
         # tree, not potentially stale runtime cache files.
-        if str(self._runtime_mode).strip().lower() == "off_printer":
+        if str(self._runtime_mode).strip().lower() == "standard":
             try:
                 self.sync_active_remote_cfg_to_local(prune_missing=True)
             except Exception:

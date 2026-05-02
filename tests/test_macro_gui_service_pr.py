@@ -98,7 +98,7 @@ def test_create_online_update_pull_request_happy_path() -> None:
 
     artifacts = {
         "manifest": {"manifest_version": "1", "macros": []},
-        "manifest_path": "updates/manifest.json",
+        "manifest_path": "voron/trident/manifest.json",
         "files_to_write": {"voron/trident/PRINT_START.json": "{}"},
         "files_to_delete": ["voron/trident/OLD_MACRO.json"],
         "macro_count": 1,
@@ -126,7 +126,7 @@ def test_create_online_update_pull_request_no_changes_skips_pr() -> None:
 
     artifacts = {
         "manifest": {"manifest_version": "1", "macros": []},
-        "manifest_path": "updates/manifest.json",
+        "manifest_path": "voron/trident/manifest.json",
         "files_to_write": {"voron/trident/PRINT_START.json": "{}"},
         "files_to_delete": [],
         "macro_count": 1,
@@ -290,7 +290,7 @@ def test_create_online_update_pull_request_rejects_invalid_files_to_write_payloa
 
     artifacts = {
         "manifest": {"manifest_version": "1", "macros": []},
-        "manifest_path": "updates/manifest.json",
+        "manifest_path": "voron/trident/manifest.json",
         "files_to_write": [],
         "files_to_delete": [],
         "macro_count": 1,
@@ -312,7 +312,7 @@ def test_create_online_update_pull_request_rejects_invalid_manifest_payload() ->
 
     artifacts = {
         "manifest": [],
-        "manifest_path": "updates/manifest.json",
+        "manifest_path": "voron/trident/manifest.json",
         "files_to_write": {"voron/trident/PRINT_START.json": "{}"},
         "files_to_delete": [],
         "macro_count": 1,
@@ -327,6 +327,50 @@ def test_create_online_update_pull_request_rejects_invalid_manifest_payload() ->
                     assert "invalid manifest payload generated for pull request" in str(exc)
                 else:
                     raise AssertionError("Expected RuntimeError for invalid manifest payload")
+
+
+def test_create_online_update_pull_request_uses_printer_local_manifest_path() -> None:
+    service = _service()
+
+    artifacts = {
+        "manifest": {"manifest_version": "1", "macros": []},
+        "manifest_path": "voron/trident/manifest.json",
+        "files_to_write": {"voron/trident/PRINT_START.json": "{}"},
+        "files_to_delete": [],
+        "macro_count": 1,
+    }
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("klipper_macro_service_online.get_open_pull_request_for_head", return_value=None))
+        load_manifest_mock = stack.enter_context(
+            patch(
+                "klipper_macro_service_online.load_json_file_from_branch",
+                return_value={"manifest_version": "1", "macros": []},
+            )
+        )
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.build_online_update_repository_artifacts",
+                return_value=artifacts,
+            )
+        )
+        stack.enter_context(patch("klipper_macro_service_online.create_branch", return_value={"already_exists": False}))
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.commit_changed_text_files",
+                return_value={"changed_files": 1, "commit_sha": "abc123", "created": True},
+            )
+        )
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.create_pull_request",
+                return_value={"existing": False, "number": 99, "url": "https://github.com/example/repo/pull/99"},
+            )
+        )
+
+        _create_pr(service)
+
+    assert load_manifest_mock.call_args.kwargs.get("file_path") == "voron/trident/manifest.json"
 
 
 def test_import_online_updates_activates_selected_identities() -> None:

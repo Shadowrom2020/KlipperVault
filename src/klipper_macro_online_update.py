@@ -26,6 +26,7 @@ from klipper_macro_indexer import (
 from klipper_type_utils import to_text as _as_text
 from klipper_vault_db import open_sqlite_connection
 from klipper_repo_url_utils import build_raw_githubusercontent_url
+from klipper_macro_online_repo_export import build_printer_manifest_path
 
 
 @functools.lru_cache(maxsize=256)
@@ -381,10 +382,10 @@ def check_online_macro_updates(
     db_path: Path,
     *,
     repo_url: str,
-    manifest_path: str,
     repo_ref: str,
     source_vendor: str,
     source_model: str,
+    manifest_path: str = "",
     now_ts: int | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> Dict[str, object]:
@@ -393,7 +394,8 @@ def check_online_macro_updates(
     if not clean_repo:
         raise ValueError("online update repository URL is not configured")
 
-    clean_manifest = str(manifest_path or "updates/manifest.json").strip() or "updates/manifest.json"
+    _ = manifest_path  # Deprecated: online updates now always use printer-local manifests.
+    clean_manifest = build_printer_manifest_path(source_vendor, source_model)
     clean_ref = str(repo_ref or "main").strip() or "main"
     checked_at = int(now_ts) if now_ts is not None else int(time.time())
 

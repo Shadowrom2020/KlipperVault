@@ -1,6 +1,6 @@
 # macOS Installation
 
-This guide covers source installation and running KlipperVault on macOS in remote-only off_printer mode.
+This guide covers source installation and running KlipperVault on macOS, including standard remote profiles and developer-mode virtual local-only profiles.
 
 ## Prerequisites
 

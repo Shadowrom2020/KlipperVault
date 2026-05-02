@@ -18,7 +18,7 @@ def register_periodic_updates(
     refresh_create_pr_progress_ui: Callable[[], None],
     refresh_online_update_progress_ui: Callable[[], None],
     check_config_changes: Callable[[], None],
-    refresh_off_printer_profile_state: Callable[[], None],
+    refresh_standard_profile_state: Callable[[], None],
     refresh_printer_card_statuses: Callable[[], None],
 ) -> None:
     """Register all recurring UI timers in one place."""
@@ -27,5 +27,5 @@ def register_periodic_updates(
     ui.timer(0.5, refresh_create_pr_progress_ui)
     ui.timer(0.5, refresh_online_update_progress_ui)
     ui.timer(2.0, check_config_changes)
-    ui.timer(5.0, refresh_off_printer_profile_state)
+    ui.timer(5.0, refresh_standard_profile_state)
     ui.timer(7.0, refresh_printer_card_statuses)

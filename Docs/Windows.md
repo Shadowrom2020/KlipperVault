@@ -1,6 +1,6 @@
 # Windows Installation (Windows 10 and up)
 
-This guide covers source installation and running KlipperVault on Windows in remote-only off_printer mode.
+This guide covers source installation and running KlipperVault on Windows, including standard remote profiles and developer-mode virtual local-only profiles.
 
 ## Prerequisites
 

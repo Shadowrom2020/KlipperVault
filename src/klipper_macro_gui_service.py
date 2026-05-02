@@ -72,13 +72,13 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         db_path: Path,
         config_dir: Path,
         version_history_size: int,
-        runtime_mode: str = "off_printer",
+        runtime_mode: str = "standard",
         moonraker_base_url: str = "",
     ) -> None:
         self._db_path = db_path
         self._config_dir = config_dir
         self._version_history_size = version_history_size
-        self._runtime_mode = "off_printer"
+        self._runtime_mode = "standard"
         self._moonraker_base_url = moonraker_base_url.rstrip("/")
         self._cache_base_dir = Path(tempfile.gettempdir()) / "klippervault"
         self._active_cache_dir: Path | None = None
@@ -86,14 +86,14 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         self._remote_cfg_checksums: dict[str, str] = {}
         self._credential_store = CredentialStore(self._db_path)
         atexit.register(self.cleanup_runtime_cache)
-        # Prepare off-printer profile/credential tables before SSH features are wired into UI.
+        # Prepare standard profile/credential tables before SSH features are wired into UI.
         with open_sqlite_connection(self._db_path, ensure_schema=ensure_remote_profile_schema) as conn:
             conn.commit()
         with open_sqlite_connection(self._db_path, ensure_schema=ensure_printer_profile_schema) as conn:
             conn.commit()
         self._active_printer_profile_id = int(ensure_default_printer_profile(self._db_path))
 
-        # In off-printer mode the active SSH profile is the source of Moonraker routing.
+        # In standard mode the active SSH profile is the source of Moonraker routing.
         self._refresh_moonraker_base_url_from_active_profile()
 
     @staticmethod
@@ -126,7 +126,7 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         self._version_history_size = max(int(value), 1)
 
     def cleanup_runtime_cache(self) -> None:
-        """Remove active off-printer cache directory when available."""
+        """Remove active standard cache directory when available."""
         if self._active_cache_dir is not None:
             shutil.rmtree(self._active_cache_dir, ignore_errors=True)
         self._active_cache_dir = None
@@ -186,7 +186,11 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         """Run config indexing with configured retention settings."""
         sync_result: dict[str, object] | None = None
         runtime_config_dir = self._resolve_runtime_config_dir()
-        if self._runtime_mode == "off_printer" and sync_remote:
+        active_profile = self.get_active_printer_profile()
+        is_virtual_printer = isinstance(active_profile, dict) and bool(active_profile.get("is_virtual", False))
+        effective_sync_remote = bool(sync_remote) and not is_virtual_printer
+
+        if self._runtime_mode == "standard" and effective_sync_remote:
             sync_result = self.sync_active_remote_cfg_to_local(
                 prune_missing=True,
                 progress_callback=progress_callback,
@@ -200,6 +204,7 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
             db_path=self._db_path,
             max_versions=self._version_history_size,
             printer_profile_id=self._active_printer_profile_id,
+            mark_missing_as_deleted=not is_virtual_printer,
             progress_callback=_parse_progress,
         )
         if sync_result is not None:
@@ -209,10 +214,40 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
 
     def load_cfg_loading_overview(self) -> dict[str, object]:
         """Load cfg parse-order overview for Klipper and KlipperVault."""
-        if self._runtime_mode == "off_printer":
+        if self._runtime_mode == "standard":
             remote_source, _ = self._active_remote_config_source()
             return get_cfg_loading_overview_from_source(remote_source)
         return get_cfg_loading_overview(self._resolve_runtime_config_dir())
+
+    def import_cfg_file_to_runtime(
+        self,
+        *,
+        import_file: Path,
+        target_rel_path: str | None = None,
+    ) -> dict[str, object]:
+        """Import one local .cfg file into the active runtime config directory."""
+        source_path = Path(import_file)
+        if not source_path.exists() or not source_path.is_file():
+            raise ValueError("Import file does not exist")
+        if source_path.suffix.lower() != ".cfg":
+            raise ValueError("Import file must use .cfg extension")
+
+        target_name = _as_text(target_rel_path or source_path.name).replace("\\", "/").strip()
+        if not target_name:
+            raise ValueError("Target cfg file path is required")
+        if not target_name.lower().endswith(".cfg"):
+            raise ValueError("Target cfg file must use .cfg extension")
+
+        source_text = source_path.read_text(encoding="utf-8")
+        local_source = self._runtime_local_config_source()
+        local_source.write_text(target_name, source_text)
+
+        return {
+            "ok": True,
+            "imported_path": target_name,
+            "runtime_config_dir": str(self._resolve_runtime_config_dir()),
+            "bytes": len(source_text.encode("utf-8")),
+        }
 
     def load_dashboard(self, *, limit: int = 500, offset: int = 0) -> tuple[dict[str, object], list[dict[str, object]]]:
         """Load aggregate stats and paged latest macro list for dashboard refresh."""

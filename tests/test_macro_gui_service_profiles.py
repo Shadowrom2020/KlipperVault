@@ -120,7 +120,7 @@ def test_save_profile_rejects_invalid_auth_mode(tmp_path: Path) -> None:
         raise AssertionError("Expected ValueError for invalid auth_mode")
 
 
-def test_off_printer_mode_uses_active_profile_moonraker_url(tmp_path: Path) -> None:
+def test_standard_mode_uses_active_profile_moonraker_url(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service.save_ssh_profile(
         profile_name="Remote",
@@ -132,24 +132,24 @@ def test_off_printer_mode_uses_active_profile_moonraker_url(tmp_path: Path) -> N
         is_active=True,
     )
 
-    off_printer_service = MacroGuiService(
+    standard_service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
         moonraker_base_url="http://127.0.0.1:7125",
     )
 
-    url = off_printer_service._moonraker_url("/printer/restart")
+    url = standard_service._moonraker_url("/printer/restart")
     assert url.startswith("http://remote.local:8125")
 
 
-def test_off_printer_rewrites_localhost_moonraker_url_to_remote_host(tmp_path: Path) -> None:
+def test_standard_rewrites_localhost_moonraker_url_to_remote_host(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
         moonraker_base_url="http://127.0.0.1:7125",
     )
 
@@ -221,12 +221,12 @@ def test_list_active_remote_cfg_files_returns_count_and_files(tmp_path: Path) ->
     assert result["files"] == ["/remote/config/printer.cfg", "/remote/config/macros.cfg"]
 
 
-def test_off_printer_index_syncs_remote_before_index(tmp_path: Path) -> None:
+def test_standard_index_syncs_remote_before_index(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -259,12 +259,12 @@ def test_off_printer_index_syncs_remote_before_index(tmp_path: Path) -> None:
     assert (runtime_dir / "macros.cfg").exists()
 
 
-def test_off_printer_index_can_skip_remote_sync(tmp_path: Path) -> None:
+def test_standard_index_can_skip_remote_sync(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
 
     with (
@@ -278,6 +278,160 @@ def test_off_printer_index_can_skip_remote_sync(tmp_path: Path) -> None:
 
     sync_mock.assert_not_called()
     assert "remote_sync" not in result
+
+
+def test_create_virtual_printer_profile_auto_activates(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    result = service.create_virtual_printer_profile(
+        profile_name="Virtual RatRig",
+        vendor="RatRig",
+        model="V-Core 3",
+        activate=True,
+    )
+
+    assert result["ok"] is True
+    assert result["is_virtual"] is True
+    active = service.get_active_printer_profile()
+    assert active is not None
+    assert active["profile_name"] == "Virtual RatRig"
+    assert active["is_virtual"] is True
+
+
+def test_virtual_printer_index_forces_local_only_sync(tmp_path: Path) -> None:
+    service = MacroGuiService(
+        db_path=tmp_path / "vault.db",
+        config_dir=tmp_path / "config",
+        version_history_size=5,
+        runtime_mode="standard",
+    )
+    service.create_virtual_printer_profile(
+        profile_name="Virtual Voron",
+        vendor="Voron",
+        model="Trident",
+        activate=True,
+    )
+
+    with (
+        patch("klipper_macro_gui_service.MacroGuiService.sync_active_remote_cfg_to_local") as sync_mock,
+        patch(
+            "klipper_macro_gui_service.run_indexing_from_source",
+            return_value={"cfg_files_scanned": 1, "macros_inserted": 1, "macros_unchanged": 0},
+        ),
+    ):
+        _ = service.index(sync_remote=True)
+
+    sync_mock.assert_not_called()
+
+
+def test_virtual_printer_index_never_marks_macros_deleted(tmp_path: Path) -> None:
+        service = _service(tmp_path)
+        service.create_virtual_printer_profile(
+                profile_name="Virtual Voron",
+                vendor="Voron",
+                model="Trident",
+                activate=True,
+        )
+
+        runtime_dir = service.get_runtime_config_dir()
+        printer_cfg = runtime_dir / "printer.cfg"
+        printer_cfg.write_text(
+                """
+[gcode_macro HELLO]
+gcode:
+    RESPOND MSG=hello
+
+[gcode_macro BYE]
+gcode:
+    RESPOND MSG=bye
+""".strip()
+                + "\n",
+                encoding="utf-8",
+        )
+        _ = service.index(sync_remote=False)
+
+        printer_cfg.write_text(
+                """
+[gcode_macro HELLO]
+gcode:
+    RESPOND MSG=hello
+""".strip()
+                + "\n",
+                encoding="utf-8",
+        )
+        _ = service.index(sync_remote=False)
+
+        stats, macros = service.load_dashboard(limit=200)
+        assert _as_int(stats.get("deleted_macros", 0)) == 0
+        assert all(not bool(macro.get("is_deleted", False)) for macro in macros)
+
+
+def test_virtual_printer_status_does_not_query_moonraker(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.create_virtual_printer_profile(
+        profile_name="Virtual Voron",
+        vendor="Voron",
+        model="Trident",
+        activate=True,
+    )
+
+    with patch("klipper_macro_service_profiles.httpx.get") as get_mock:
+        status = service.query_printer_status()
+
+    get_mock.assert_not_called()
+    assert status["connected"] is True
+    assert status["state"] == "virtual"
+
+
+def test_virtual_printer_save_config_to_remote_is_noop(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.create_virtual_printer_profile(
+        profile_name="Virtual Voron",
+        vendor="Voron",
+        model="Trident",
+        activate=True,
+    )
+
+    result = service.save_config_to_remote()
+    assert result["ok"] is True
+    assert result["uploaded_files"] == 0
+    assert result["remote_synced"] is False
+
+
+def test_import_cfg_file_to_runtime_for_virtual_printer(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.create_virtual_printer_profile(
+        profile_name="Virtual Voron",
+        vendor="Voron",
+        model="Trident",
+        activate=True,
+    )
+
+    import_file = tmp_path / "macro.cfg"
+    import_file.write_text("[gcode_macro TEST]\ngcode:\n  RESPOND MSG=ok\n", encoding="utf-8")
+
+    result = service.import_cfg_file_to_runtime(import_file=import_file)
+
+    runtime_dir = service.get_runtime_config_dir()
+    imported_path = runtime_dir / "macro.cfg"
+    assert result["ok"] is True
+    assert result["imported_path"] == "macro.cfg"
+    assert imported_path.exists()
+    assert "[gcode_macro TEST]" in imported_path.read_text(encoding="utf-8")
+
+
+def test_import_cfg_file_to_runtime_rejects_non_cfg_extension(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    import_file = tmp_path / "macro.txt"
+    import_file.write_text("[gcode_macro TEST]\n", encoding="utf-8")
+
+    try:
+        service.import_cfg_file_to_runtime(import_file=import_file)
+    except ValueError as exc:
+        assert ".cfg" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for non-.cfg import file")
 
 
 def test_create_backup_syncs_remote_when_runtime_cache_is_empty(tmp_path: Path) -> None:
@@ -478,12 +632,12 @@ def test_query_printer_status_for_profile_returns_disconnected_for_unknown_profi
     assert "not found" in str(status["message"]).lower()
 
 
-def test_off_printer_cfg_loading_overview_reads_active_remote_source(tmp_path: Path) -> None:
+def test_standard_cfg_loading_overview_reads_active_remote_source(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -515,12 +669,12 @@ def test_off_printer_cfg_loading_overview_reads_active_remote_source(tmp_path: P
     assert overview["klipper_macro_count"] == 1
 
 
-def test_off_printer_index_syncs_with_tilde_remote_root(tmp_path: Path) -> None:
+def test_standard_index_syncs_with_tilde_remote_root(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -556,12 +710,12 @@ def test_off_printer_index_syncs_with_tilde_remote_root(tmp_path: Path) -> None:
     assert (runtime_dir / "printer.cfg").exists()
 
 
-def test_off_printer_save_pushes_local_file_to_remote(tmp_path: Path) -> None:
+def test_standard_save_pushes_local_file_to_remote(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -707,12 +861,12 @@ def test_activate_ssh_profile_switches_active_printer_profile(tmp_path: Path) ->
     assert active_printer["ssh_profile_id"] == _as_int(right["profile_id"])
 
 
-def test_off_printer_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) -> None:
+def test_standard_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -759,12 +913,12 @@ def test_off_printer_restore_backup_syncs_and_prunes_remote_cfg(tmp_path: Path) 
     remove_mock.assert_not_called()
 
 
-def test_off_printer_blocks_printer_cfg_macro_edit(tmp_path: Path) -> None:
+def test_standard_blocks_printer_cfg_macro_edit(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -785,12 +939,12 @@ def test_off_printer_blocks_printer_cfg_macro_edit(tmp_path: Path) -> None:
         raise AssertionError("Expected protected printer.cfg edit to be blocked")
 
 
-def test_off_printer_duplicate_resolve_upload_error_includes_file_context(tmp_path: Path) -> None:
+def test_standard_duplicate_resolve_upload_error_includes_file_context(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -820,12 +974,12 @@ def test_off_printer_duplicate_resolve_upload_error_includes_file_context(tmp_pa
     assert result["local_changed"] is True
 
 
-def test_off_printer_save_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
+def test_standard_save_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -868,12 +1022,12 @@ def test_off_printer_save_rejects_remote_conflict_after_sync(tmp_path: Path) -> 
     assert result["local_changed"] is True
 
 
-def test_off_printer_save_allows_upload_when_remote_unchanged(tmp_path: Path) -> None:
+def test_standard_save_allows_upload_when_remote_unchanged(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -919,12 +1073,12 @@ def test_off_printer_save_allows_upload_when_remote_unchanged(tmp_path: Path) ->
     assert result["local_changed"] is True
 
 
-def test_off_printer_tree_sync_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
+def test_standard_tree_sync_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -974,12 +1128,12 @@ def test_off_printer_tree_sync_rejects_remote_conflict_after_sync(tmp_path: Path
     write_mock.assert_not_called()
 
 
-def test_off_printer_tree_sync_rejects_new_remote_file_prune(tmp_path: Path) -> None:
+def test_standard_tree_sync_rejects_new_remote_file_prune(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -1039,7 +1193,7 @@ def test_save_config_to_remote_prunes_missing_remote_files(tmp_path: Path) -> No
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
 
     with patch.object(service, "_sync_local_cfg_tree_to_active_remote") as sync_mock:
@@ -1066,7 +1220,7 @@ def test_save_config_to_remote_can_allow_protected_upload(tmp_path: Path) -> Non
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
 
     with patch.object(service, "_sync_local_cfg_tree_to_active_remote") as sync_mock:
@@ -1089,12 +1243,12 @@ def test_save_config_to_remote_can_allow_protected_upload(tmp_path: Path) -> Non
     assert result["removed_remote_files"] == 1
 
 
-def test_off_printer_resolve_duplicates_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
+def test_standard_resolve_duplicates_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",
@@ -1143,12 +1297,12 @@ def test_off_printer_resolve_duplicates_rejects_remote_conflict_after_sync(tmp_p
     assert result["local_changed"] is True
 
 
-def test_off_printer_restore_backup_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
+def test_standard_restore_backup_rejects_remote_conflict_after_sync(tmp_path: Path) -> None:
     service = MacroGuiService(
         db_path=tmp_path / "vault.db",
         config_dir=tmp_path / "config",
         version_history_size=5,
-        runtime_mode="off_printer",
+        runtime_mode="standard",
     )
     service.save_ssh_profile(
         profile_name="Remote",

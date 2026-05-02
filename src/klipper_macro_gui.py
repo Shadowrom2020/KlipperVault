@@ -173,8 +173,8 @@ def _paths_include_dynamic_macros(normalized_paths: set[str], dynamic_files: set
     return False
 
 
-def _off_printer_profile_status(ready: bool, detail: str) -> tuple[str, str]:
-    """Return status text and label class for off-printer profile readiness."""
+def _standard_profile_status(ready: bool, detail: str) -> tuple[str, str]:
+    """Return status text and label class for standard profile readiness."""
     detail_text = str(detail or "").strip()
     if ready:
         status_text = t("Printer connection ready")
@@ -219,8 +219,16 @@ def _reload_button_state(
     return show_restart, show_dynamic_reload
 
 
-def _save_config_button_enabled(*, is_ready: bool, printer_is_printing: bool, has_unsynced_local_changes: bool) -> bool:
+def _save_config_button_enabled(
+    *,
+    is_ready: bool,
+    printer_is_printing: bool,
+    has_unsynced_local_changes: bool,
+    is_virtual_printer: bool,
+) -> bool:
     """Return True when Save Config action should be enabled."""
+    if is_virtual_printer:
+        return False
     can_upload_now = is_ready and (not printer_is_printing)
     return can_upload_now and has_unsynced_local_changes
 
@@ -265,8 +273,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     dark_mode = ui.dark_mode()
     _apply_theme_mode(dark_mode, str(vault_cfg.theme_mode or "auto"))
     ui.page_title(t("Klipper Vault"))
-    runtime_mode = "off_printer"
-    off_printer_mode_enabled = True
+    runtime_mode = "standard"
+    standard_mode_enabled = True
     service = MacroGuiService(
         db_path=db_path,
         config_dir=config_dir,
@@ -280,7 +288,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         service=service,
         config_dir=config_dir,
         app_version=app_version,
-        off_printer_profile_ready=not off_printer_mode_enabled,
+        standard_profile_ready=not standard_mode_enabled,
         list_page_size=max(50, _to_int(os.environ.get("KLIPPERVAULT_LIST_PAGE_SIZE", "200"), default=200)),
         last_activity_monotonic=time.monotonic(),
         duplicate_compare_view=MacroCompareView(),
@@ -337,8 +345,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     last_update_label: ui.label | None = None
     purge_deleted_button: ui.button | None = None
     status_label: ui.label | None = None
-    off_printer_profile_label: ui.label | None = None
-    off_printer_cfg_list_button: ui.button | None = None
+    standard_profile_label: ui.label | None = None
+    standard_cfg_list_button: ui.button | None = None
     backup_list: ui.list | None = None
     # Start page section variables
     printer_editor_card: ui.card | None = None
@@ -382,7 +390,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     settings_language_select: ui.select | None = None
     settings_theme_mode_select: ui.select | None = None
     settings_repo_url_input: ui.input | None = None
-    settings_manifest_input: ui.input | None = None
     settings_ref_input: ui.input | None = None
     settings_developer_toggle: ui.switch | None = None
     settings_error_label: ui.label | None = None
@@ -399,20 +406,33 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     restore_error_label: ui.label | None = None
     delete_dialog: ui.dialog | None = None
     delete_error_label: ui.label | None = None
+    printer_delete_dialog: ui.dialog | None = None
+    printer_delete_dialog_title: ui.label | None = None
+    printer_delete_error_label: ui.label | None = None
+    confirm_printer_delete_button: ui.button | None = None
     export_dialog: ui.dialog | None = None
     export_macro_list: ui.list | None = None
     export_error_label: ui.label | None = None
     import_dialog: ui.dialog | None = None
     import_error_label: ui.label | None = None
+    import_cfg_dialog: ui.dialog | None = None
+    import_cfg_error_label: ui.label | None = None
     create_pr_dialog: ui.dialog | None = None
     create_pr_error_label: ui.label | None = None
+    create_virtual_printer_dialog: ui.dialog | None = None
+    virtual_printer_name_input: ui.input | None = None
+    virtual_printer_vendor_input: ui.input | None = None
+    virtual_printer_model_input: ui.input | None = None
+    create_virtual_printer_error_label: ui.label | None = None
     load_order_summary_label: ui.label | None = None
     load_order_text: ui.label | None = None
     confirm_restore_button: ui.button | None = None
     confirm_delete_button: ui.button | None = None
     confirm_export_button: ui.button | None = None
     confirm_import_button: ui.button | None = None
+    confirm_import_cfg_button: ui.button | None = None
     confirm_create_pr_button: ui.button | None = None
+    confirm_create_virtual_printer_button: ui.button | None = None
     create_pr_progress_label: ui.label | None = None
     create_pr_progress_bar: ui.linear_progress | None = None
     export_macro_checkboxes: dict[str, object] = {}
@@ -448,6 +468,9 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     remote_conflict_dialog_guidance: ui.label | None = None
     remote_conflict_dialog_detail: ui.label | None = None
     sync_after_conflict_button: ui.button | None = None
+    developer_menu_import_cfg_item: ui.menu_item | None = None
+    developer_menu_export_update_item: ui.menu_item | None = None
+    developer_menu_create_pr_item: ui.menu_item | None = None
 
     # ── Section builder: toolbar ──────────────────────────────────────────────
     def _build_toolbar() -> None:
@@ -498,14 +521,19 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             settings_toolbar_button = ui.button(icon="settings").props("flat round color=white")
             settings_toolbar_button.tooltip(t("Settings"))
 
+    def _active_printer_is_virtual() -> bool:
+        """Return True when currently active printer profile is virtual/local-only."""
+        profile = service.get_active_printer_profile()
+        return bool(profile.get("is_virtual", False)) if isinstance(profile, dict) else False
+
     # ── Section builder: macro page layout ───────────────────────────────────
     def _build_macro_page() -> None:
         """Build the macro workspace page (macro list, viewer, statistics cards)."""
         nonlocal search_input, duplicates_button, new_button, active_filter_button, sort_radio
         nonlocal macro_count_label, prev_page_button, next_page_button, macro_list, viewer
         nonlocal total_macros_label, duplicate_macros_label, deleted_macros_label, distinct_files_label
-        nonlocal last_update_label, purge_deleted_button, status_label, off_printer_profile_label
-        nonlocal off_printer_cfg_list_button, backup_list, macro_page_container
+        nonlocal last_update_label, purge_deleted_button, status_label, standard_profile_label
+        nonlocal standard_cfg_list_button, backup_list, macro_page_container
 
         with ui.column().classes("w-full") as macro_page_container_ref:
             macro_page_container = macro_page_container_ref
@@ -558,12 +586,12 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                     ui.label(t("Status")).classes("text-md font-semibold mb-1")
                     status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
                     state.status_label = status_label
-                    off_printer_profile_label = ui.label("").classes("text-xs text-grey-5")
-                    off_printer_profile_label.set_visibility(off_printer_mode_enabled)
-                    state.off_printer_profile_label = off_printer_profile_label
+                    standard_profile_label = ui.label("").classes("text-xs text-grey-5")
+                    standard_profile_label.set_visibility(standard_mode_enabled)
+                    state.standard_profile_label = standard_profile_label
                     with ui.row().classes("items-center gap-2"):
-                        off_printer_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
-                        off_printer_cfg_list_button.set_visibility(off_printer_mode_enabled)
+                        standard_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
+                        standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
                     ui.separator().classes("my-2")
                     ui.label(t("Backups")).classes("text-md font-semibold mb-1")
                     backup_list = ui.list().props("separator").classes("w-full max-h-[46vh] overflow-y-auto")
@@ -599,7 +627,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             with ui.card().classes("w-full") as printer_editor_card_ref:
                 printer_editor_card = printer_editor_card_ref
                 printer_editor_title = ui.label(t("Printer connection management")).classes("text-lg font-semibold")
-                ui.label(t("Configure SSH settings as part of each printer profile for off-printer mode.")).classes("text-sm text-grey-5")
+                ui.label(t("Configure SSH settings as part of each printer profile for standard mode.")).classes("text-sm text-grey-5")
                 ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
                 with ui.row().classes("w-full gap-2"):
                     ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
@@ -644,7 +672,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         nonlocal file_operation_dialog, file_operation_title, file_operation_phase, file_operation_percent, file_operation_progress
         nonlocal printer_profile_dialog, printer_vendor_input, printer_model_input, printer_profile_error, save_printer_profile_button
         nonlocal app_settings_dialog, settings_version_history_input, settings_language_select, settings_theme_mode_select
-        nonlocal settings_repo_url_input, settings_manifest_input, settings_ref_input, settings_developer_toggle
+        nonlocal settings_repo_url_input, settings_ref_input, settings_developer_toggle
         nonlocal settings_error_label, settings_info_label, save_settings_button
         nonlocal macro_migration_prompt_dialog, macro_migration_prompt_message, macro_migration_prompt_error
         nonlocal confirm_macro_migration_button, decline_macro_migration_button
@@ -764,7 +792,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 .classes("w-full")
             )
             settings_repo_url_input = ui.input(label=t("Online update repository URL")).props("outlined dense").classes("w-full")
-            settings_manifest_input = ui.input(label=t("Online update manifest path")).props("outlined dense").classes("w-full")
             settings_ref_input = ui.input(label=t("Online update reference")).props("outlined dense").classes("w-full")
             settings_developer_toggle = ui.switch(t("Developer mode"), value=bool(vault_cfg.developer))
             settings_error_label = ui.label("").classes("text-sm text-negative mt-1")
@@ -785,13 +812,17 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     # ── Section builder: macro operation dialogs ─────────────────────────────
     def _build_macro_operation_dialogs() -> None:
         """Build macro operation dialogs: load order, restore, delete, export, import, create PR."""
-        nonlocal load_order_dialog, restore_dialog, delete_dialog, export_dialog, import_dialog, create_pr_dialog
+        nonlocal load_order_dialog, restore_dialog, delete_dialog, export_dialog, import_dialog, import_cfg_dialog, create_pr_dialog
+        nonlocal create_virtual_printer_dialog, virtual_printer_name_input, virtual_printer_vendor_input
+        nonlocal virtual_printer_model_input, create_virtual_printer_error_label
         nonlocal load_order_summary_label, load_order_text
-        nonlocal restore_error_label, delete_error_label, export_macro_list, export_error_label, import_error_label
-        nonlocal confirm_restore_button, confirm_delete_button, confirm_export_button, confirm_import_button
-        nonlocal confirm_create_pr_button, create_pr_progress_label, create_pr_progress_bar, create_pr_error_label
+        nonlocal restore_error_label, delete_error_label, export_macro_list, export_error_label, import_error_label, import_cfg_error_label
+        nonlocal confirm_restore_button, confirm_delete_button, confirm_export_button, confirm_import_button, confirm_import_cfg_button
+        nonlocal confirm_create_pr_button, confirm_create_virtual_printer_button
+        nonlocal create_pr_progress_label, create_pr_progress_bar, create_pr_error_label
         nonlocal export_macro_checkboxes
         nonlocal save_path_dialog, save_path_input, save_path_error_label
+        nonlocal printer_delete_dialog, printer_delete_dialog_title, printer_delete_error_label, confirm_printer_delete_button
 
         with ui.dialog() as load_order_dialog_ref, ui.card().classes(
             "w-[56rem] max-w-[98vw] h-[86vh] max-h-[94vh] flex flex-col overflow-hidden"
@@ -836,6 +867,20 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             state.delete_confirm_label = delete_confirm_label
             state.delete_error_label = delete_error_label
 
+        with ui.dialog() as printer_delete_dialog_ref, ui.card().classes("w-[30rem] max-w-[96vw]"):
+            printer_delete_dialog = printer_delete_dialog_ref
+            printer_delete_dialog_title = ui.label("").classes("text-lg font-semibold")
+            ui.label(t("This will delete all data associated with this printer, including all macro backups.")).classes("text-sm text-grey-5")
+            printer_delete_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", printer_delete_dialog_ref.close)
+                confirm_printer_delete_button = ui.button(t("Delete Printer")).props("color=negative no-caps")
+            state.printer_delete_dialog = printer_delete_dialog_ref
+            state.printer_delete_dialog_title = printer_delete_dialog_title
+            state.printer_delete_error_label = printer_delete_error_label
+            state.confirm_printer_delete_button = confirm_printer_delete_button
+            state.printer_delete_profile_id = 0
+
         with ui.dialog() as export_dialog_ref, ui.card().classes("w-[42rem] max-w-[98vw]"):
             export_dialog = export_dialog_ref
             ui.label(t("Export macros")).classes("text-lg font-semibold")
@@ -877,10 +922,26 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         state.import_uploader = import_file_input
         state.import_error_label = import_error_label
 
+        with ui.dialog() as import_cfg_dialog_ref, ui.card().classes("w-[38rem] max-w-[98vw]"):
+            import_cfg_dialog = import_cfg_dialog_ref
+            ui.label(t("Import macro.cfg")).classes("text-lg font-semibold")
+            ui.label(t("Upload one local .cfg file into the virtual printer workspace.")).classes("text-sm text-grey-5")
+            import_cfg_file_input = ui.upload(on_upload=_on_import_cfg_upload, auto_upload=True).props("accept=.cfg").classes("w-full mt-2")
+            import_cfg_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", import_cfg_dialog_ref.close)
+                confirm_import_cfg_button = ui.button(t("Import cfg")).props("color=primary no-caps")
+        state.import_cfg_dialog = import_cfg_dialog_ref
+        state.import_cfg_uploader = import_cfg_file_input
+        state.import_cfg_error_label = import_cfg_error_label
+
         with ui.dialog() as create_pr_dialog_ref, ui.card().classes("w-[46rem] max-w-[98vw]"):
             create_pr_dialog = create_pr_dialog_ref
             ui.label(t("Create Pull Request")).classes("text-lg font-semibold")
             ui.label(t("Publish active macros directly to GitHub and open a pull request.")).classes("text-sm text-grey-5")
+            ui.label(
+                t("Pull requests always write a printer-local manifest at [vendor]/[model]/manifest.json.")
+            ).classes("text-xs text-grey-5")
             pr_repo_url_input = ui.input(label=t("Repository URL")).props("outlined").classes("w-full mt-2")
             with ui.row().classes("w-full gap-2"):
                 pr_base_branch_input = ui.input(label=t("Base branch")).props("outlined").classes("w-full")
@@ -907,6 +968,21 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             state.pr_token_input = pr_token_input
             state.create_pr_error_label = create_pr_error_label
             state.confirm_create_pr_button = confirm_create_pr_button
+
+        with ui.dialog() as create_virtual_printer_dialog_ref, ui.card().classes("w-[32rem] max-w-[96vw]"):
+            create_virtual_printer_dialog = create_virtual_printer_dialog_ref
+            ui.label(t("Create Virtual Printer")).classes("text-lg font-semibold")
+            ui.label(
+                t("Create a local-only developer profile for a printer you do not physically own.")
+            ).classes("text-sm text-grey-5")
+            virtual_printer_name_input = ui.input(label=t("Profile name")).props("outlined").classes("w-full mt-2")
+            with ui.row().classes("w-full gap-2"):
+                virtual_printer_vendor_input = ui.input(label=t("Vendor")).props("outlined").classes("w-full")
+                virtual_printer_model_input = ui.input(label=t("Model")).props("outlined").classes("w-full")
+            create_virtual_printer_error_label = ui.label("").classes("text-sm text-negative mt-1")
+            with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                flat_dialog_button("Cancel", create_virtual_printer_dialog_ref.close)
+                confirm_create_virtual_printer_button = ui.button(t("Create Virtual Printer")).props("color=primary no-caps")
 
     # ── Section builder: remote dialogs ──────────────────────────────────────
     def _build_remote_dialogs() -> None:
@@ -1008,6 +1084,19 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         state.uploaded_import_name = str(getattr(uploaded_file, "name", "") or "")
         state.import_error_label.set_text("")
 
+    async def _on_import_cfg_upload(e) -> None:
+        """Capture uploaded cfg file contents for virtual-printer runtime import."""
+        uploaded_file = getattr(e, "file", None)
+        if uploaded_file is None:
+            state.uploaded_cfg_import_bytes = None
+            state.uploaded_cfg_import_name = ""
+            state.import_cfg_error_label.set_text(t("Please upload a .cfg file."))
+            return
+
+        state.uploaded_cfg_import_bytes = await uploaded_file.read()
+        state.uploaded_cfg_import_name = str(getattr(uploaded_file, "name", "") or "")
+        state.import_cfg_error_label.set_text("")
+
     # ── Build top toolbar ─────────────────────────────────────────────────────
     _build_toolbar()
 
@@ -1091,6 +1180,13 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         if state.reload_dynamic_macros_button is not None:
             if not is_macro:
                 state.reload_dynamic_macros_button.set_visibility(False)
+        # Hide macro-only developer menu items on start page
+        if developer_menu_import_cfg_item is not None:
+            developer_menu_import_cfg_item.set_visibility(is_macro)
+        if developer_menu_export_update_item is not None:
+            developer_menu_export_update_item.set_visibility(is_macro)
+        if developer_menu_create_pr_item is not None:
+            developer_menu_create_pr_item.set_visibility(is_macro)
         if state.restart_klipper_button is not None:
             if not is_macro:
                 state.restart_klipper_button.set_visibility(False)
@@ -1108,12 +1204,11 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         next_cfg = VaultConfig(
             version_history_size=int(vault_cfg.version_history_size),
             port=int(vault_cfg.port),
-            runtime_mode=str(vault_cfg.runtime_mode or "off_printer"),
+            runtime_mode=str(vault_cfg.runtime_mode or "standard"),
             ui_language=str(vault_cfg.ui_language or "en"),
             printer_vendor=str(vault_cfg.printer_vendor or ""),
             printer_model=str(vault_cfg.printer_model or ""),
             online_update_repo_url=str(vault_cfg.online_update_repo_url or "").strip(),
-            online_update_manifest_path=str(vault_cfg.online_update_manifest_path or "").strip(),
             online_update_ref=str(vault_cfg.online_update_ref or "").strip(),
             theme_mode=str(vault_cfg.theme_mode or "auto"),
             developer=bool(vault_cfg.developer),
@@ -1178,6 +1273,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             is_ready=is_ready,
             printer_is_printing=state.printer_is_printing,
             has_unsynced_local_changes=state.has_unsynced_local_changes,
+            is_virtual_printer=_active_printer_is_virtual(),
         )
         state.save_config_button.set_enabled(enabled)
 
@@ -1193,8 +1289,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
     def _remote_actions_available() -> bool:
         """Return True when backend actions are currently available."""
-        off_printer_ready = (not off_printer_mode_enabled) or state.off_printer_profile_ready
-        return off_printer_ready
+        standard_ready = (not standard_mode_enabled) or state.standard_profile_ready
+        return standard_ready
 
     def _show_remote_conflict_guidance(
         *,
@@ -1220,46 +1316,56 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         remote_conflict_dialog.open()
         return True
 
-    def _set_off_printer_profile_state(ready: bool, detail: str = "") -> None:
-        """Update off-printer profile status indicators."""
-        state.off_printer_profile_ready = ready
-        label = state.off_printer_profile_label
+    def _set_standard_profile_state(ready: bool, detail: str = "") -> None:
+        """Update standard profile status indicators."""
+        state.standard_profile_ready = ready
+        label = state.standard_profile_label
         if label is None:
             return
-        status_text, label_class = _off_printer_profile_status(ready, detail)
-        state.off_printer_profile_status_text = status_text
+        status_text, label_class = _standard_profile_status(ready, detail)
+        state.standard_profile_status_text = status_text
         label.classes(replace=label_class)
-        label.set_text(state.off_printer_profile_status_text)
+        label.set_text(state.standard_profile_status_text)
+        if standard_cfg_list_button is not None:
+            standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
         _refresh_save_config_button()
 
-    def refresh_off_printer_profile_state() -> None:
-        """Refresh off-printer profile readiness state from local profile storage."""
-        if not off_printer_mode_enabled:
+    def refresh_standard_profile_state() -> None:
+        """Refresh standard profile readiness state from local profile storage."""
+        if not standard_mode_enabled:
             return
-        was_ready = state.off_printer_profile_ready
+        was_ready = state.standard_profile_ready
+        active_printer = service.get_active_printer_profile()
+        if isinstance(active_printer, dict) and bool(active_printer.get("is_virtual", False)):
+            profile_name = str(active_printer.get("profile_name", "")).strip() or t("unnamed")
+            _set_standard_profile_state(True, t("{profile} (virtual local-only)", profile=profile_name))
+            if not was_ready and state.standard_profile_ready:
+                _maybe_run_deferred_startup_scan("virtual printer became ready")
+            return
+
         try:
             profile = service.get_active_ssh_profile()
         except Exception as exc:
-            _set_off_printer_profile_state(False, str(exc))
+            _set_standard_profile_state(False, str(exc))
             return
 
         if not isinstance(profile, dict) or not profile:
-            _set_off_printer_profile_state(False)
+            _set_standard_profile_state(False)
             return
 
         profile_name = str(profile.get("profile_name", "")).strip() or t("unnamed")
         auth_mode = str(profile.get("auth_mode", "")).strip().lower()
         has_secret = bool(profile.get("has_secret", False))
         if auth_mode in {"password", "key"} and not has_secret:
-            _set_off_printer_profile_state(False, t("{profile} (missing credentials)", profile=profile_name))
+            _set_standard_profile_state(False, t("{profile} (missing credentials)", profile=profile_name))
             return
 
-        _set_off_printer_profile_state(True, profile_name)
-        if state.printer_state == "unknown" and state.off_printer_profile_label is not None:
+        _set_standard_profile_state(True, profile_name)
+        if state.printer_state == "unknown" and state.standard_profile_label is not None:
             detail = str(state.printer_status_message or "").strip()
-            state.off_printer_profile_label.classes(replace="text-xs text-negative")
-            state.off_printer_profile_label.set_text(_printer_offline_status_text(detail))
-        if not was_ready and state.off_printer_profile_ready:
+            state.standard_profile_label.classes(replace="text-xs text-negative")
+            state.standard_profile_label.set_text(_printer_offline_status_text(detail))
+        if not was_ready and state.standard_profile_ready:
             _maybe_run_deferred_startup_scan("printer connection became ready")
 
     def _mark_reload_required(*, is_dynamic: bool = False) -> None:
@@ -1359,8 +1465,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             return
 
         refresh_printer_profile_selector()
-        if off_printer_mode_enabled:
-            refresh_off_printer_profile_state()
+        if standard_mode_enabled:
+            refresh_standard_profile_state()
         refresh_print_state()
         refresh_data()
         _set_view("macro")
@@ -1375,6 +1481,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def _printer_card_connection_text(profile: dict[str, object]) -> str:
         """Build a concise connection label for one printer profile card."""
         profile_name = str(profile.get("profile_name", "")).strip() or t("unnamed")
+        if bool(profile.get("is_virtual", False)):
+            return t("{profile} - virtual local-only", profile=profile_name)
         host = str(profile.get("ssh_host", "")).strip()
         port = _to_int(profile.get("ssh_port"), default=22)
         if host:
@@ -1467,25 +1575,47 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 vendor = str(raw.get("vendor", "")).strip() or t("unknown")
                 model = str(raw.get("model", "")).strip() or t("unknown")
                 active = bool(raw.get("is_active", False))
+                is_virtual = bool(raw.get("is_virtual", False))
                 status = state.printer_card_status.get(profile_id, {})
                 connected = bool(status.get("connected", False))
 
                 with ui.card().classes("w-[22rem] max-w-full"):
                     with ui.row().classes("w-full items-center justify-between"):
                         ui.label(profile_name).classes("text-base font-semibold")
-                        badge_text = t("Online") if connected else t("Offline")
-                        badge_class = "text-xs text-positive" if connected else "text-xs text-negative"
+                        if is_virtual:
+                            badge_text = t("Virtual")
+                            badge_class = "text-xs text-primary"
+                        else:
+                            badge_text = t("Online") if connected else t("Offline")
+                            badge_class = "text-xs text-positive" if connected else "text-xs text-negative"
                         ui.label(badge_text).classes(badge_class)
                     ui.label(t("{vendor} {model}", vendor=vendor, model=model)).classes("text-sm text-grey-4")
                     ui.label(_printer_card_connection_text(raw)).classes("text-xs text-grey-5")
                     if active:
                         ui.label(t("Active profile")).classes("text-xs text-primary")
                     with ui.row().classes("w-full justify-end gap-2 mt-2"):
-                        ui.button(
+                        edit_button = ui.button(
                             t("Edit"),
                             icon="edit",
                             on_click=lambda _event, pid=profile_id: _open_edit_printer_editor(pid),
                         ).props("flat dense no-caps")
+                        if is_virtual:
+                            edit_button.set_visibility(False)
+                        
+                        def make_delete_click_handler(pid: int):
+                            def on_delete_click():
+                                profile_name = str([p for p in profiles if p.get("id") == pid][:1][0].get("profile_name", "Unknown")) if profiles else "Unknown"
+                                state.printer_delete_profile_id = pid
+                                state.printer_delete_dialog_title.set_text(t("Delete printer '{name}'?", name=profile_name))
+                                state.printer_delete_error_label.set_text("")
+                                state.printer_delete_dialog.open()
+                            return on_delete_click
+                        
+                        ui.button(
+                            icon="delete",
+                            on_click=make_delete_click_handler(profile_id),
+                        ).props("flat dense no-caps").tooltip(t("Delete printer"))
+                        
                         ui.button(
                             t("Connect"),
                             icon="arrow_forward",
@@ -1525,11 +1655,15 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         settings_language_select.set_value(str(vault_cfg.ui_language or "en").strip().lower() or "en")
         settings_theme_mode_select.set_value(_normalized_theme_mode(vault_cfg.theme_mode))
         settings_repo_url_input.set_value(str(vault_cfg.online_update_repo_url or "").strip())
-        settings_manifest_input.set_value(str(vault_cfg.online_update_manifest_path or "").strip())
         settings_ref_input.set_value(str(vault_cfg.online_update_ref or "").strip())
         settings_developer_toggle.set_value(bool(vault_cfg.developer))
         settings_error_label.set_text("")
-        settings_info_label.set_text(t("UI language and theme changes apply immediately. Developer mode still requires app restart."))
+        settings_info_label.set_text(
+            t(
+                "UI language and theme changes apply immediately. Developer mode still requires app restart. "
+                "Create PR always uses [vendor]/[model]/manifest.json."
+            )
+        )
         app_settings_dialog.open()
 
     def save_app_settings_dialog() -> None:
@@ -1538,7 +1672,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         ui_language = str(settings_language_select.value or "").strip().lower()
         theme_mode = _normalized_theme_mode(settings_theme_mode_select.value)
         repo_url = str(settings_repo_url_input.value or "").strip()
-        manifest_path = str(settings_manifest_input.value or "").strip()
         update_ref = str(settings_ref_input.value or "").strip()
         developer_mode = bool(settings_developer_toggle.value)
 
@@ -1551,9 +1684,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         if theme_mode not in {"auto", "light", "dark"}:
             settings_error_label.set_text(t("Unsupported theme mode."))
             return
-        if not manifest_path:
-            settings_error_label.set_text(t("Online update manifest path is required."))
-            return
         if not update_ref:
             settings_error_label.set_text(t("Online update reference is required."))
             return
@@ -1564,12 +1694,11 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         new_cfg = VaultConfig(
             version_history_size=version_history_size,
             port=10090,
-            runtime_mode="off_printer",
+            runtime_mode="standard",
             ui_language=ui_language,
             printer_vendor=str(vault_cfg.printer_vendor or "").strip(),
             printer_model=str(vault_cfg.printer_model or "").strip(),
             online_update_repo_url=repo_url,
-            online_update_manifest_path=manifest_path,
             online_update_ref=update_ref,
             theme_mode=theme_mode,
             developer=developer_mode,
@@ -1585,7 +1714,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         vault_cfg.version_history_size = int(new_cfg.version_history_size)
         vault_cfg.ui_language = str(new_cfg.ui_language)
         vault_cfg.online_update_repo_url = str(new_cfg.online_update_repo_url)
-        vault_cfg.online_update_manifest_path = str(new_cfg.online_update_manifest_path)
         vault_cfg.online_update_ref = str(new_cfg.online_update_ref)
         vault_cfg.theme_mode = str(new_cfg.theme_mode)
         vault_cfg.developer = bool(new_cfg.developer)
@@ -2415,7 +2543,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
         state.restore_dialog.close()
         uploaded_after_restore = False
-        if off_printer_mode_enabled and state.off_printer_profile_ready:
+        if standard_mode_enabled and state.standard_profile_ready:
             try:
                 save_result = await state._run_with_file_operation_modal(
                     t("Uploading restored cfg files to printer"),
@@ -2453,7 +2581,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             _set_restore_status_from_result(result)
             _mark_local_changes_pending()
 
-        if not uploaded_after_restore and (not off_printer_mode_enabled or not state.off_printer_profile_ready):
+        if not uploaded_after_restore and (not standard_mode_enabled or not state.standard_profile_ready):
             _mark_local_changes_pending()
 
         _mark_reload_required(is_dynamic=False)
@@ -2614,9 +2742,9 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         """Validate index preconditions and show guidance when unavailable."""
         if state.is_indexing:
             return False
-        if off_printer_mode_enabled:
-            refresh_off_printer_profile_state()
-        if off_printer_mode_enabled and not state.off_printer_profile_ready:
+        if standard_mode_enabled:
+            refresh_standard_profile_state()
+        if standard_mode_enabled and not state.standard_profile_ready:
             message = t("Cannot scan macros: configure and activate a printer connection first.")
             state.status_label.set_text(message)
             ui.notify(message, type="warning")
@@ -2683,7 +2811,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         _prompt_for_missing_printer_identity()
 
     def _maybe_run_deferred_startup_scan(reason: str) -> None:
-        """Run one deferred startup scan once off-printer prerequisites are ready."""
+        """Run one deferred startup scan once standard prerequisites are ready."""
         if not _can_run_deferred_startup_scan():
             return
 
@@ -2698,7 +2826,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             return False
         if state.is_indexing or state.printer_is_printing:
             return False
-        if off_printer_mode_enabled and not state.off_printer_profile_ready:
+        if standard_mode_enabled and not state.standard_profile_ready:
             return False
         return True
 
@@ -2882,7 +3010,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=False)
 
-        if off_printer_mode_enabled and state.off_printer_profile_ready:
+        if standard_mode_enabled and state.standard_profile_ready:
             try:
                 save_result = await state._run_with_file_operation_modal(
                     t("Uploading migrated cfg files to printer"),
@@ -2985,6 +3113,14 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         temp_import_file.write_bytes(state.uploaded_import_bytes or b"")
         return temp_import_file
 
+    def _write_uploaded_cfg_import_tempfile() -> Path:
+        """Write uploaded cfg import bytes to a temporary .cfg file and return its path."""
+        temp_import_file = Path(tempfile.gettempdir()) / (
+            datetime.now().strftime("klippervault-import-cfg-%Y%m%d-%H%M%S") + ".cfg"
+        )
+        temp_import_file.write_bytes(state.uploaded_cfg_import_bytes or b"")
+        return temp_import_file
+
     def perform_export() -> None:
         """Export selected macros to a share file on disk."""
         source_vendor, source_model = _active_printer_identity()
@@ -3056,6 +3192,53 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
         refresh_data()
 
+    def open_import_cfg_dialog() -> None:
+        """Open cfg import dialog for virtual-printer local workspace imports."""
+        if not _active_printer_is_virtual():
+            state.status_label.set_text(t("Import macro.cfg is available only for virtual printers."))
+            return
+        state.uploaded_cfg_import_bytes = None
+        state.uploaded_cfg_import_name = ""
+        state.import_cfg_uploader.reset()
+        state.import_cfg_error_label.set_text("")
+        state.import_cfg_dialog.open()
+
+    def perform_import_cfg() -> None:
+        """Import one local cfg file into active virtual-printer runtime workspace."""
+        if not _active_printer_is_virtual():
+            state.import_cfg_error_label.set_text(t("Import macro.cfg is available only for virtual printers."))
+            return
+
+        if not state.uploaded_cfg_import_bytes:
+            state.import_cfg_error_label.set_text(t("Please upload a .cfg file."))
+            return
+
+        uploaded_name = Path(state.uploaded_cfg_import_name or "").name
+        target_name = uploaded_name if uploaded_name.lower().endswith(".cfg") else "macro.cfg"
+        temp_import_file = _write_uploaded_cfg_import_tempfile()
+
+        try:
+            result = service.import_cfg_file_to_runtime(
+                import_file=temp_import_file,
+                target_rel_path=target_name,
+            )
+        except Exception as exc:
+            state.import_cfg_error_label.set_text(t("Import cfg failed: {error}", error=exc))
+            state.status_label.set_text(t("Import cfg failed: {error}", error=exc))
+            return
+        finally:
+            temp_import_file.unlink(missing_ok=True)
+
+        state.import_cfg_dialog.close()
+        _mark_local_changes_pending()
+        state.status_label.set_text(
+            t(
+                "Imported cfg file {path} into local virtual workspace.",
+                path=str(result.get("imported_path", "")),
+            )
+        )
+        asyncio.create_task(perform_index("cfg import", sync_remote=False))
+
     def export_online_update_repo_zip() -> None:
         """Export active local macros as a ZIP for the online update repository."""
         if _printer_profile_missing():
@@ -3073,7 +3256,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 source_model=source_model,
                 repo_url=vault_cfg.online_update_repo_url,
                 repo_ref=vault_cfg.online_update_ref,
-                manifest_path=vault_cfg.online_update_manifest_path,
             )
         except Exception as exc:
             status_label.set_text(t("Update repository export failed: {error}", error=exc))
@@ -3141,6 +3323,64 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         state.confirm_create_pr_button.set_enabled(True)
         state.create_pr_dialog.open()
 
+    def open_create_virtual_printer_dialog() -> None:
+        """Open developer dialog to create and activate one virtual printer profile."""
+        active_profile = service.get_active_printer_profile()
+        default_vendor = str(active_profile.get("vendor", "")).strip() if isinstance(active_profile, dict) else ""
+        default_model = str(active_profile.get("model", "")).strip() if isinstance(active_profile, dict) else ""
+        default_name = (
+            t("Virtual {vendor} {model}", vendor=default_vendor or t("Printer"), model=default_model or t("Model"))
+            if (default_vendor or default_model)
+            else t("Virtual Printer")
+        )
+
+        virtual_printer_name_input.set_value(default_name)
+        virtual_printer_vendor_input.set_value(default_vendor)
+        virtual_printer_model_input.set_value(default_model)
+        create_virtual_printer_error_label.set_text("")
+        confirm_create_virtual_printer_button.set_enabled(True)
+        create_virtual_printer_dialog.open()
+
+    def perform_create_virtual_printer() -> None:
+        """Create and auto-activate a developer virtual printer profile."""
+        profile_name = str(virtual_printer_name_input.value or "").strip()
+        vendor = str(virtual_printer_vendor_input.value or "").strip()
+        model = str(virtual_printer_model_input.value or "").strip()
+
+        if not profile_name or not vendor or not model:
+            create_virtual_printer_error_label.set_text(t("Profile name, vendor, and model are required."))
+            return
+
+        confirm_create_virtual_printer_button.set_enabled(False)
+        try:
+            result = service.create_virtual_printer_profile(
+                profile_name=profile_name,
+                vendor=vendor,
+                model=model,
+                activate=True,
+            )
+        except Exception as exc:
+            create_virtual_printer_error_label.set_text(t("Failed to create virtual printer: {error}", error=exc))
+            confirm_create_virtual_printer_button.set_enabled(True)
+            return
+
+        if not bool(result.get("ok", False)):
+            create_virtual_printer_error_label.set_text(t("Failed to create virtual printer profile."))
+            confirm_create_virtual_printer_button.set_enabled(True)
+            return
+
+        create_virtual_printer_dialog.close()
+        refresh_printer_profile_selector()
+        refresh_standard_profile_state()
+        refresh_print_state()
+        refresh_printer_card_statuses()
+        refresh_data()
+        _refresh_reload_buttons()
+        _refresh_save_config_button()
+        message = t("Virtual printer profile created and activated.")
+        state.status_label.set_text(message)
+        _safe_notify(message, "positive")
+
     async def perform_create_pr() -> None:
         """Create a pull request on GitHub for current active macro artifacts."""
         source_vendor, source_model = _active_printer_identity()
@@ -3169,7 +3409,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 repo_url=str(inputs.get("repo_url", "")),
                 base_branch=str(inputs.get("base_branch", "")),
                 head_branch=str(inputs.get("head_branch", "")),
-                manifest_path=vault_cfg.online_update_manifest_path,
                 github_token=str(inputs.get("token", "")),
                 pull_request_title=str(inputs.get("title", "")),
                 pull_request_body=str(inputs.get("body", "")),
@@ -3293,7 +3532,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             result = await asyncio.to_thread(
                 service.check_online_updates,
                 repo_url=repo_url,
-                manifest_path=vault_cfg.online_update_manifest_path,
                 repo_ref=vault_cfg.online_update_ref,
                 source_vendor=source_vendor,
                 source_model=source_model,
@@ -3330,7 +3568,6 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             result = await asyncio.to_thread(
                 service.check_online_updates,
                 repo_url=repo_url,
-                manifest_path=vault_cfg.online_update_manifest_path,
                 repo_ref=vault_cfg.online_update_ref,
                 source_vendor=source_vendor,
                 source_model=source_model,
@@ -3489,10 +3726,13 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
     def _can_save_config_to_printer() -> bool:
         """Validate Save Config preconditions and set user-facing status on failure."""
-        if not off_printer_mode_enabled:
-            status_label.set_text(t("Save Config is only available in off-printer mode."))
+        if not standard_mode_enabled:
+            status_label.set_text(t("Save Config is only available in standard mode."))
             return False
-        if not state.off_printer_profile_ready:
+        if _active_printer_is_virtual():
+            status_label.set_text(t("Virtual printer profile is local-only. Remote Save Config upload is disabled."))
+            return False
+        if not state.standard_profile_ready:
             status_label.set_text(t("Cannot save config: configure and activate a printer connection first."))
             return False
         if state.printer_is_printing:
@@ -3554,6 +3794,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         create_backup_button.set_enabled(local_actions_enabled)
         confirm_export_button.set_enabled(local_actions_enabled)
         confirm_import_button.set_enabled(local_actions_enabled)
+        confirm_import_cfg_button.set_enabled(local_actions_enabled and _active_printer_is_virtual())
         confirm_create_pr_button.set_enabled(local_actions_enabled)
         confirm_online_update_button.set_enabled(local_actions_enabled and bool(state.pending_online_updates))
         confirm_restore_button.set_enabled(local_actions_enabled)
@@ -3564,9 +3805,9 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             local_actions_enabled and state.duplicate_wizard_index < len(state.duplicate_wizard_groups) - 1
         )
         duplicate_apply_button.set_enabled(local_actions_enabled)
-        if off_printer_mode_enabled:
+        if standard_mode_enabled:
             test_active_printer_button.set_enabled(True)
-            off_printer_cfg_list_button.set_enabled(state.off_printer_profile_ready)
+            standard_cfg_list_button.set_enabled(state.standard_profile_ready)
         state.viewer.set_editing_enabled(local_actions_enabled)
         _refresh_reload_buttons()
         _refresh_save_config_button()
@@ -3582,7 +3823,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             )
             return
 
-        if off_printer_mode_enabled and not state.off_printer_profile_ready:
+        if standard_mode_enabled and not state.standard_profile_ready:
             status_label.set_text(t("Ready (waiting for active printer connection)."))
         elif moonraker_state == "unknown":
             status_label.set_text(t("Ready (Moonraker status unknown)."))
@@ -3601,17 +3842,17 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
         _set_mutation_controls_enabled(local_actions_enabled)
 
-        if off_printer_mode_enabled and state.off_printer_profile_ready and state.off_printer_profile_label is not None:
+        if standard_mode_enabled and state.standard_profile_ready and state.standard_profile_label is not None:
             detail = str(moonraker_message or "").strip()
             if moonraker_state == "unknown":
                 offline_text = t("Printer offline")
                 if detail:
                     offline_text = t("Printer offline: {detail}", detail=detail)
-                state.off_printer_profile_label.classes(replace="text-xs text-negative")
-                state.off_printer_profile_label.set_text(offline_text)
+                state.standard_profile_label.classes(replace="text-xs text-negative")
+                state.standard_profile_label.set_text(offline_text)
             else:
-                state.off_printer_profile_label.classes(replace="text-xs text-positive")
-                state.off_printer_profile_label.set_text(state.off_printer_profile_status_text)
+                state.standard_profile_label.classes(replace="text-xs text-positive")
+                state.standard_profile_label.set_text(state.standard_profile_status_text)
 
         _set_print_state_status_text(locked=locked, moonraker_state=moonraker_state)
 
@@ -3630,12 +3871,12 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def refresh_print_state() -> None:
         """Poll Moonraker printer state and apply UI lock policy."""
         nonlocal _print_state_refresh_inflight
-        if off_printer_mode_enabled and not state.off_printer_profile_ready:
+        if standard_mode_enabled and not state.standard_profile_ready:
             state._set_printer_connecting_modal(False)
             set_print_lock(
                 locked=False,
                 moonraker_state="unknown",
-                moonraker_message=t("Off-printer mode active but no printer connection is ready."),
+                moonraker_message=t("Standard mode active but no printer connection is ready."),
             )
             return
 
@@ -3745,9 +3986,14 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             return True
         return False
 
-    def test_off_printer_profile_connection() -> None:
+    def test_standard_profile_connection() -> None:
         """Run active SSH profile connectivity test and report status."""
-        if not off_printer_mode_enabled:
+        if not standard_mode_enabled:
+            return
+        if _active_printer_is_virtual():
+            message = t("Virtual printer profile uses local-only mode and does not require a connection test.")
+            status_label.set_text(message)
+            ui.notify(message, type="info")
             return
         try:
             result = service.test_active_ssh_connection()
@@ -3763,7 +4009,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             message = t("SSH profile '{profile}' connected in {elapsed}ms.", profile=profile_name, elapsed=elapsed_ms)
             status_label.set_text(message)
             ui.notify(message, type="positive")
-            refresh_off_printer_profile_state()
+            refresh_standard_profile_state()
             return
 
         error_text = str(result.get("error", "")).strip() or t("unknown error")
@@ -3978,14 +4224,14 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def _refresh_after_ssh_profile_mutation(*, hide_editor: bool = False) -> None:
         """Refresh dependent UI state after SSH profile create/update/delete/activate."""
         refresh_printer_profile_selector()
-        refresh_off_printer_profile_state()
+        refresh_standard_profile_state()
         refresh_print_state()
         if hide_editor:
             _hide_printer_editor()
 
     def save_ssh_profile_from_dialog() -> None:
         """Persist one SSH profile and optional credentials from form values."""
-        if not off_printer_mode_enabled:
+        if not standard_mode_enabled:
             return
         ssh_profile_error_label.set_text("")
         ssh_profile_status_label.set_text("")
@@ -4080,10 +4326,10 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         refresh_ssh_profiles_dialog()
         _refresh_after_ssh_profile_mutation()
 
-    def open_off_printer_profile_dialog() -> None:
+    def open_standard_profile_dialog() -> None:
         """Focus printer management controls on the start page."""
         refresh_printer_profile_selector()
-        if off_printer_mode_enabled:
+        if standard_mode_enabled:
             refresh_ssh_profiles_dialog()
             _set_auth_mode_fields()
         refresh_printer_card_statuses()
@@ -4114,7 +4360,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
     def open_remote_cfg_list_dialog() -> None:
         """Load and display remote cfg file list for active SSH profile."""
-        if not off_printer_mode_enabled:
+        if not standard_mode_enabled:
             return
 
         remote_cfg_list_error.set_text("")
@@ -4192,7 +4438,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             refresh_create_pr_progress_ui=_refresh_create_pr_progress_ui,
             refresh_online_update_progress_ui=_refresh_online_update_progress_ui,
             check_config_changes=check_config_changes,
-            refresh_off_printer_profile_state=refresh_off_printer_profile_state,
+            refresh_standard_profile_state=refresh_standard_profile_state,
             refresh_printer_card_statuses=refresh_printer_card_statuses,
         )
 
@@ -4208,11 +4454,11 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         """Refresh startup profile and printer status state used by the start page."""
         refresh_printer_profile_selector()
         refresh_ssh_profiles_dialog()
-        if off_printer_mode_enabled and _printer_profile_missing():
+        if standard_mode_enabled and _printer_profile_missing():
             status_label.set_text(t("No printer configured. Complete the connection setup below."))
 
-        if off_printer_mode_enabled:
-            refresh_off_printer_profile_state()
+        if standard_mode_enabled:
+            refresh_standard_profile_state()
         refresh_print_state()
         refresh_printer_card_statuses()
 
@@ -4224,6 +4470,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def _setup_macro_action_menu_items() -> None:
         """Attach macro and developer menu actions."""
         nonlocal macro_migration_menu_item, macro_migration_menu_item_wrapper
+        nonlocal developer_menu_import_cfg_item, developer_menu_export_update_item, developer_menu_create_pr_item
         with macro_actions_menu:
             ui.menu_item(t("Backup"), on_click=open_backup_dialog)
             with ui.element("div") as macro_migration_menu_item_wrapper_ref:
@@ -4237,8 +4484,13 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
         if state.developer_menu is not None:
             with state.developer_menu:
-                ui.menu_item(t("Export Update Zip"), on_click=export_online_update_repo_zip)
-                ui.menu_item(t("Create Pull Request"), on_click=open_create_pr_dialog)
+                ui.menu_item(t("Create Virtual Printer"), on_click=open_create_virtual_printer_dialog)
+                developer_menu_import_cfg_item = ui.menu_item(t("Import macro.cfg"), on_click=open_import_cfg_dialog)
+                developer_menu_import_cfg_item.set_visibility(False)
+                developer_menu_export_update_item = ui.menu_item(t("Export Update Zip"), on_click=export_online_update_repo_zip)
+                developer_menu_export_update_item.set_visibility(False)
+                developer_menu_create_pr_item = ui.menu_item(t("Create Pull Request"), on_click=open_create_pr_dialog)
+                developer_menu_create_pr_item.set_visibility(False)
 
     def _setup_filter_and_duplicate_handlers() -> None:
         """Wire macro list filter, sort, and duplicate wizard controls."""
@@ -4262,8 +4514,9 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         """Wire printer profile and SSH editor controls."""
         refresh_printers_button.on_click(refresh_printer_profile_selector)
         add_printer_button.on_click(_open_add_printer_editor)
-        test_active_printer_button.on_click(test_off_printer_profile_connection)
-        off_printer_cfg_list_button.on_click(open_remote_cfg_list_dialog)
+        test_active_printer_button.on_click(test_standard_profile_connection)
+        standard_cfg_list_button.on_click(open_remote_cfg_list_dialog)
+        standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
         ssh_profile_select.on_value_change(_load_selected_ssh_profile)
         ssh_profile_auth_mode_select.on_value_change(_set_auth_mode_fields)
         hide_printer_editor_button.on_click(_hide_printer_editor)
@@ -4272,20 +4525,41 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         delete_ssh_profile_button.on_click(delete_selected_ssh_profile)
         activate_ssh_profile_button.on_click(activate_selected_ssh_profile)
         save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
-        back_to_printers_button.on_click(open_off_printer_profile_dialog)
+        back_to_printers_button.on_click(open_standard_profile_dialog)
 
     def _setup_operation_handlers() -> None:
         """Wire macro operations, toolbar actions, and pagination controls."""
+        def _delete_printer_profile():
+            profile_id = int(state.printer_delete_profile_id)
+            if profile_id <= 0:
+                return
+            try:
+                result = service.delete_printer_profile(profile_id)
+                if result.get("ok"):
+                    if state.printer_delete_dialog and not state.printer_delete_dialog.is_deleted:
+                        state.printer_delete_dialog.close()
+                    refresh_printer_profile_selector()
+                else:
+                    error_msg = str(result.get("error", "Unknown error"))
+                    if state.printer_delete_error_label and not state.printer_delete_error_label.is_deleted:
+                        state.printer_delete_error_label.set_text(error_msg)
+            except Exception as exc:
+                if state.printer_delete_error_label and not state.printer_delete_error_label.is_deleted:
+                    state.printer_delete_error_label.set_text(str(exc))
+        
         reload_dynamic_macros_button.on_click(reload_dynamic_macros)
         restart_klipper_button.on_click(restart_klipper)
         create_backup_button.on_click(perform_backup)
         confirm_export_button.on_click(perform_export)
         confirm_import_button.on_click(perform_import)
+        confirm_import_cfg_button.on_click(perform_import_cfg)
         confirm_create_pr_button.on_click(perform_create_pr)
+        confirm_create_virtual_printer_button.on_click(perform_create_virtual_printer)
         confirm_online_update_button.on_click(perform_online_update_import)
         purge_deleted_button.on_click(purge_deleted_macros)
         confirm_restore_button.on_click(perform_restore)
         confirm_delete_button.on_click(perform_delete_backup)
+        confirm_printer_delete_button.on_click(_delete_printer_profile)
         confirm_macro_delete_button.on_click(confirm_macro_delete)
         confirm_macro_migration_button.on_click(_perform_macro_migration)
         decline_macro_migration_button.on_click(_decline_macro_migration_prompt)

@@ -1,6 +1,6 @@
 # Linux Installation
 
-This guide covers source installation and running KlipperVault on Linux in remote-only off_printer mode.
+This guide covers source installation and running KlipperVault on Linux, including standard remote profiles and developer-mode virtual local-only profiles.
 
 ## Prerequisites
 

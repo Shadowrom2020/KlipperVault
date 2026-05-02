@@ -14,7 +14,6 @@ from klipper_vault_db import open_sqlite_connection
 _SETTINGS_TABLE = "vault_settings"
 _FIXED_WEB_UI_PORT = 10090
 _DEFAULT_ONLINE_UPDATE_REPO_URL = "https://github.com/Shadowrom2020/KlipperVault-Online-Updates"
-_DEFAULT_ONLINE_UPDATE_MANIFEST_PATH = "updates/manifest.json"
 _DEFAULT_ONLINE_UPDATE_REF = "main"
 _ALLOWED_THEME_MODES = {"auto", "light", "dark"}
 
@@ -22,12 +21,11 @@ _ALLOWED_THEME_MODES = {"auto", "light", "dark"}
 class VaultConfig:
     version_history_size: int = 5
     port: int = _FIXED_WEB_UI_PORT
-    runtime_mode: str = "off_printer"
+    runtime_mode: str = "standard"
     ui_language: str = "en"
     printer_vendor: str = ""
     printer_model: str = ""
     online_update_repo_url: str = _DEFAULT_ONLINE_UPDATE_REPO_URL
-    online_update_manifest_path: str = _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
     online_update_ref: str = _DEFAULT_ONLINE_UPDATE_REF
     theme_mode: str = "auto"
     developer: bool = False
@@ -79,16 +77,12 @@ def _normalized_config(config: VaultConfig) -> VaultConfig:
     version_history_size = max(int(config.version_history_size), 1)
     port = _FIXED_WEB_UI_PORT
     ui_language = str(config.ui_language or "en").strip().lower() or "en"
-    runtime_mode = "off_printer"
+    runtime_mode = "standard"
     printer_vendor = str(config.printer_vendor or "").strip()
     printer_model = str(config.printer_model or "").strip()
     online_update_repo_url = (
         str(config.online_update_repo_url or _DEFAULT_ONLINE_UPDATE_REPO_URL).strip()
         or _DEFAULT_ONLINE_UPDATE_REPO_URL
-    )
-    online_update_manifest_path = (
-        str(config.online_update_manifest_path or _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH).strip()
-        or _DEFAULT_ONLINE_UPDATE_MANIFEST_PATH
     )
     online_update_ref = (
         str(config.online_update_ref or _DEFAULT_ONLINE_UPDATE_REF).strip()
@@ -108,7 +102,6 @@ def _normalized_config(config: VaultConfig) -> VaultConfig:
         printer_vendor=printer_vendor,
         printer_model=printer_model,
         online_update_repo_url=online_update_repo_url,
-        online_update_manifest_path=online_update_manifest_path,
         online_update_ref=online_update_ref,
         theme_mode=theme_mode,
         developer=developer,
@@ -148,7 +141,6 @@ def _persist_config(conn, config: VaultConfig) -> None:
         "printer_vendor": normalized.printer_vendor,
         "printer_model": normalized.printer_model,
         "online_update_repo_url": normalized.online_update_repo_url,
-        "online_update_manifest_path": normalized.online_update_manifest_path,
         "online_update_ref": normalized.online_update_ref,
         "theme_mode": normalized.theme_mode,
         "developer": "true" if normalized.developer else "false",
@@ -192,19 +184,13 @@ def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
         lower=True,
         require_non_empty=True,
     )
-    runtime_mode = "off_printer"
+    runtime_mode = "standard"
     printer_vendor = _read_str(rows, "printer_vendor", default="")
     printer_model = _read_str(rows, "printer_model", default="")
     online_update_repo_url = _read_str(
         rows,
         "online_update_repo_url",
         default=_DEFAULT_ONLINE_UPDATE_REPO_URL,
-    )
-    online_update_manifest_path = _read_str(
-        rows,
-        "online_update_manifest_path",
-        default=_DEFAULT_ONLINE_UPDATE_MANIFEST_PATH,
-        require_non_empty=True,
     )
     online_update_ref = _read_str(
         rows,
@@ -231,7 +217,6 @@ def _config_from_rows(rows: dict[str, str]) -> VaultConfig:
             printer_vendor=printer_vendor,
             printer_model=printer_model,
             online_update_repo_url=online_update_repo_url,
-            online_update_manifest_path=online_update_manifest_path,
             online_update_ref=online_update_ref,
             theme_mode=theme_mode,
             developer=developer,

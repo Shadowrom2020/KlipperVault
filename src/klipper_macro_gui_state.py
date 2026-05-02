@@ -61,8 +61,8 @@ class UIState:
     has_unsynced_local_changes: bool = False
 
     # ─── Off-Printer State ───────────────────────────────────────────────────
-    off_printer_profile_ready: bool = True
-    off_printer_profile_status_text: str = ""
+    standard_profile_ready: bool = True
+    standard_profile_status_text: str = ""
     ssh_profile_option_ids: dict[str, int] = field(default_factory=dict)
     ssh_profiles_by_id: dict[int, dict[str, object]] = field(default_factory=dict)
     printer_profile_option_ids: dict[str, int] = field(default_factory=dict)
@@ -81,6 +81,8 @@ class UIState:
     # ─── Online Updates & Imports ────────────────────────────────────────────
     uploaded_import_bytes: bytes | None = None
     uploaded_import_name: str = ""
+    uploaded_cfg_import_bytes: bytes | None = None
+    uploaded_cfg_import_name: str = ""
     pending_online_updates: list[dict[str, object]] = field(default_factory=list)
     online_update_check_in_progress: bool = False
     online_update_progress_current: int = 0
@@ -106,7 +108,7 @@ class UIState:
 
     # Status/Connection labels
     status_label: ui.label | None = None
-    off_printer_profile_label: ui.label | None = None
+    standard_profile_label: ui.label | None = None
 
     # Main layout elements
     macro_list_container: ui.column | None = None
@@ -163,6 +165,10 @@ class UIState:
     import_error_label: ui.label | None = None
     import_preview_label: ui.label | None = None
     import_payload_preview: ui.code | None = None
+
+    import_cfg_dialog: ui.dialog | None = None
+    import_cfg_uploader: ui.upload | None = None
+    import_cfg_error_label: ui.label | None = None
 
     load_order_dialog: ui.dialog | None = None
     load_order_table: ui.aggrid | None = None

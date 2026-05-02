@@ -1161,6 +1161,7 @@ def index_macros(
     conn: sqlite3.Connection, records: List[MacroRecord], now_ts: int,
     printer_profile_id: int = 1,
     max_versions: int = _MAX_VERSIONS,
+    mark_missing_as_deleted: bool = True,
 ) -> tuple[int, int, int]:
     """Insert a new version only when parsed macro content truly changed.
 
@@ -1422,37 +1423,71 @@ def index_macros(
         """,
         (int(printer_profile_id),),
     ).fetchall()
+    if not mark_missing_as_deleted:
+        # Virtual printers are local-only workspaces and must never surface
+        # deleted macro states in the UI or stats.
+        conn.execute(
+            """
+            UPDATE macros
+            SET is_deleted = 0
+            WHERE printer_profile_id = ?
+            """,
+            (int(printer_profile_id),),
+        )
+
     for file_path, macro_name, max_version in latest_rows:
         identity = (str(file_path), str(macro_name))
         is_seen = identity in seen_identity_status
         row_loaded, row_dynamic = seen_identity_status.get(identity, (False, False))
         is_loaded = 1 if row_loaded else 0
         is_dynamic = 1 if row_dynamic else 0
-        conn.execute(
-            """
-            UPDATE macros
-            SET is_deleted = CASE
-                    WHEN ? = 1 THEN 0
-                    WHEN is_new = 1 AND TRIM(import_source) != '' THEN 0
-                    ELSE 1
-                END,
-                is_loaded = ?,
-                is_dynamic = ?,
-                is_new = CASE WHEN ? = 1 THEN 0 ELSE is_new END
-            WHERE file_path = ? AND macro_name = ? AND version = ?
-              AND printer_profile_id = ?
-            """,
-            (
-                1 if is_seen else 0,
-                is_loaded,
-                is_dynamic,
-                1 if is_seen else 0,
-                str(file_path),
-                str(macro_name),
-                int(max_version),
-                int(printer_profile_id),
-            ),
-        )
+        if mark_missing_as_deleted:
+            conn.execute(
+                """
+                UPDATE macros
+                SET is_deleted = CASE
+                        WHEN ? = 1 THEN 0
+                        WHEN is_new = 1 AND TRIM(import_source) != '' THEN 0
+                        ELSE 1
+                    END,
+                    is_loaded = ?,
+                    is_dynamic = ?,
+                    is_new = CASE WHEN ? = 1 THEN 0 ELSE is_new END
+                WHERE file_path = ? AND macro_name = ? AND version = ?
+                  AND printer_profile_id = ?
+                """,
+                (
+                    1 if is_seen else 0,
+                    is_loaded,
+                    is_dynamic,
+                    1 if is_seen else 0,
+                    str(file_path),
+                    str(macro_name),
+                    int(max_version),
+                    int(printer_profile_id),
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE macros
+                SET is_deleted = 0,
+                    is_loaded = ?,
+                    is_dynamic = ?,
+                    is_new = CASE WHEN ? = 1 THEN 0 ELSE is_new END
+                WHERE file_path = ? AND macro_name = ? AND version = ?
+                  AND printer_profile_id = ?
+                """,
+                (
+                    is_loaded,
+                    is_dynamic,
+                    1 if is_seen else 0,
+                    str(file_path),
+                    str(macro_name),
+                    int(max_version),
+                    int(printer_profile_id),
+                ),
+            )
 
     # Determine active runtime command mapping by cfg loading order.
     # A later [gcode_macro X] overrides command X. With rename_existing: Y,
@@ -1584,6 +1619,7 @@ def run_indexing_from_source(
     db_path: Path,
     max_versions: int = _MAX_VERSIONS,
     printer_profile_id: int = 1,
+    mark_missing_as_deleted: bool = True,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> Dict[str, object]:
     """Index cfg files from a generic config source into SQLite."""
@@ -1610,6 +1646,7 @@ def run_indexing_from_source(
             now_ts,
             printer_profile_id=int(printer_profile_id),
             max_versions=max_versions,
+            mark_missing_as_deleted=bool(mark_missing_as_deleted),
         )
         conn.commit()
 

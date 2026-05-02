@@ -91,13 +91,13 @@ gcode:
 
     with zipfile.ZipFile(out_zip, "r") as archive:
         members = set(archive.namelist())
-        assert "updates/manifest.json" in members
+        assert "voron/trident/manifest.json" in members
         assert "README.md" not in members
         assert "docs/manifest-spec.md" not in members
         assert "voron/trident/PRINT_END.json" in members
         assert "voron/trident/PRINT_START.json" in members
 
-        manifest = json.loads(archive.read("updates/manifest.json").decode("utf-8"))
+        manifest = json.loads(archive.read("voron/trident/manifest.json").decode("utf-8"))
         assert manifest["manifest_version"] == "1"
         assert len(manifest["macros"]) == 2
         for entry in manifest["macros"]:
@@ -123,8 +123,7 @@ gcode:
 
     repo_url = "https://github.com/example/online-repo"
     repo_ref = "main"
-    manifest_path = "updates/manifest.json"
-    manifest_url = "https://raw.githubusercontent.com/example/online-repo/main/updates/manifest.json"
+    manifest_url = "https://raw.githubusercontent.com/example/online-repo/main/voron/trident/manifest.json"
     remote_manifest = {
         "manifest_version": "1",
         "generated_at": 111,
@@ -158,16 +157,15 @@ gcode:
             source_model="Trident",
             repo_url=repo_url,
             repo_ref=repo_ref,
-            manifest_path=manifest_path,
             now_ts=1_775_560_000,
         )
 
     with zipfile.ZipFile(out_zip, "r") as archive:
-        manifest = json.loads(archive.read("updates/manifest.json").decode("utf-8"))
+        manifest = json.loads(archive.read("voron/trident/manifest.json").decode("utf-8"))
 
     assert manifest["extra_meta"] == {"keep": True}
     assert manifest["generated_at"] == 1_775_560_000
-    assert len(manifest["macros"]) == 2
+    assert len(manifest["macros"]) == 1
 
     voron_entry = next(
         entry
@@ -177,13 +175,7 @@ gcode:
     assert voron_entry["version"] != "old"
     assert voron_entry["checksum_sha256"] != "oldsum"
 
-    ratrig_entry = next(
-        entry
-        for entry in manifest["macros"]
-        if entry["vendor"] == "ratrig" and entry["model"] == "v-core-3"
-    )
-    assert ratrig_entry["version"] == "keep"
-    assert ratrig_entry["checksum_sha256"] == "keepsum"
+    assert all(entry["vendor"] == "voron" and entry["model"] == "trident" for entry in manifest["macros"])
 
 
 def test_build_artifacts_skips_unchanged_macros_in_files_to_write(tmp_path: Path) -> None:
@@ -225,6 +217,7 @@ def test_build_artifacts_skips_unchanged_macros_in_files_to_write(tmp_path: Path
         now_ts=1_775_560_000,
     )
 
+    assert result["manifest_path"] == "voron/trident/manifest.json"
     # File must not be written because content is identical.
     assert result["files_to_write"] == {}
     # generated_at must not be advanced because nothing changed.
@@ -268,6 +261,7 @@ def test_build_artifacts_includes_changed_macro_and_updates_generated_at(tmp_pat
         now_ts=1_775_560_000,
     )
 
+    assert result["manifest_path"] == "voron/trident/manifest.json"
     # File must be included because content changed.
     assert "voron/trident/PRINT_START.json" in _text_map(result["files_to_write"])
     # generated_at must be updated.
@@ -325,9 +319,53 @@ gcode:
         now_ts=1_775_560_000,
     )
 
+    assert result["manifest_path"] == "voron/trident/manifest.json"
     assert "voron/trident/PRINT_START.json" in _path_list(result["files_to_delete"])
     manifest = _manifest_dict(result["manifest"])
     manifest_entries = _manifest_entries(manifest["macros"])
     assert len(manifest_entries) == 1
     assert manifest_entries[0]["macro_name"] == "PRINT_END"
     assert manifest.get("generated_at") == 1_775_560_000
+
+
+def test_build_artifacts_keeps_only_target_printer_entries_in_manifest(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    db_path = tmp_path / "db" / "macros.db"
+
+    _write(config_dir / "printer.cfg", "[gcode_macro PRINT_START]\ngcode:\n  G28\n")
+    run_indexing(config_dir, db_path)
+
+    existing_manifest: dict = {
+        "manifest_version": "1",
+        "generated_at": 111,
+        "macros": [
+            {
+                "vendor": "voron",
+                "model": "trident",
+                "macro_name": "PRINT_START",
+                "path": "voron/trident/PRINT_START.json",
+                "version": "2025-01-01",
+                "checksum_sha256": "old-start",
+            },
+            {
+                "vendor": "ratrig",
+                "model": "v-core-3",
+                "macro_name": "PRINT_START",
+                "path": "ratrig/v-core-3/PRINT_START.json",
+                "version": "keep",
+                "checksum_sha256": "keep",
+            },
+        ],
+    }
+
+    result = build_online_update_repository_artifacts(
+        db_path=db_path,
+        source_vendor="Voron",
+        source_model="Trident",
+        existing_manifest=existing_manifest,
+        now_ts=1_775_560_000,
+    )
+
+    manifest = _manifest_dict(result["manifest"])
+    manifest_entries = _manifest_entries(manifest["macros"])
+    assert all(entry["vendor"] == "voron" and entry["model"] == "trident" for entry in manifest_entries)

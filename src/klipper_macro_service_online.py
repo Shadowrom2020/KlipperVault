@@ -26,6 +26,7 @@ from klipper_macro_online_update import (
     import_online_macro_updates,
 )
 from klipper_macro_online_repo_export import (
+    build_printer_manifest_path,
     build_online_update_repository_artifacts,
     export_online_update_repository_zip,
 )
@@ -150,7 +151,6 @@ class OnlineUpdateMixin:
     def _prepare_pr_artifacts(
         *,
         artifacts: dict[str, object],
-        manifest_path: str,
     ) -> tuple[dict[str, str], list[str], int]:
         """Normalize repository artifacts into commit-ready write/delete collections."""
         files_to_write_raw = artifacts.get("files_to_write", {})
@@ -173,7 +173,11 @@ class OnlineUpdateMixin:
         manifest_payload = artifacts.get("manifest", {})
         if not isinstance(manifest_payload, dict):
             raise RuntimeError("invalid manifest payload generated for pull request")
-        files_to_write[manifest_path.lstrip("/")] = json.dumps(manifest_payload, indent=2, ensure_ascii=False)
+
+        manifest_path = _as_text(artifacts.get("manifest_path", "")).lstrip("/")
+        if not manifest_path:
+            raise RuntimeError("invalid manifest path generated for pull request")
+        files_to_write[manifest_path] = json.dumps(manifest_payload, indent=2, ensure_ascii=False)
 
         macro_count = _as_int(artifacts.get("macro_count", 0))
         return files_to_write, files_to_delete, macro_count
@@ -299,10 +303,10 @@ class OnlineUpdateMixin:
         self,
         *,
         repo_url: str,
-        manifest_path: str,
         repo_ref: str,
         source_vendor: str,
         source_model: str,
+        manifest_path: str = "",
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict[str, object]:
         """Check GitHub manifest for online macro updates for one printer identity."""
@@ -377,7 +381,7 @@ class OnlineUpdateMixin:
         source_model: str,
         repo_url: str,
         repo_ref: str,
-        manifest_path: str,
+        manifest_path: str = "",
     ) -> dict[str, object]:
         """Export active local macros as a repository-ready online update zip."""
         return export_online_update_repository_zip(
@@ -403,17 +407,18 @@ class OnlineUpdateMixin:
         repo_url: str,
         base_branch: str,
         head_branch: str,
-        manifest_path: str,
         github_token: str,
         pull_request_title: str,
         pull_request_body: str,
+        manifest_path: str = "",
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict[str, object]:
         """Create a GitHub pull request with exported active macro artifacts."""
         clean_repo_url = self._require_non_empty(repo_url, "online update repository URL is required")
         clean_base = self._require_non_empty(base_branch, "base branch is required")
         clean_head = self._require_non_empty(head_branch, "head branch is required")
-        clean_manifest_path = str(manifest_path or "updates/manifest.json").strip() or "updates/manifest.json"
+        _ = manifest_path  # Deprecated: PR manifests are now always printer-local.
+        target_manifest_path = build_printer_manifest_path(source_vendor, source_model)
         clean_token = self._require_non_empty(github_token, "GitHub token is required")
         clean_title = self._require_non_empty(pull_request_title, "pull request title is required")
         clean_body = str(pull_request_body or "").strip()
@@ -443,7 +448,7 @@ class OnlineUpdateMixin:
             repo_url=clean_repo_url,
             token=clean_token,
             branch=clean_base,
-            file_path=clean_manifest_path,
+            file_path=target_manifest_path,
         )
         _report(2, 6)
 
@@ -451,14 +456,12 @@ class OnlineUpdateMixin:
             db_path=self._db_path,
             source_vendor=source_vendor,
             source_model=source_model,
-            manifest_path=clean_manifest_path,
             now_ts=int(time.time()),
             existing_manifest=remote_manifest,
         )
         _report(3, 6)
         files_to_write, files_to_delete, macro_count = self._prepare_pr_artifacts(
             artifacts=artifacts,
-            manifest_path=clean_manifest_path,
         )
 
         branch_result = create_branch(

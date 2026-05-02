@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Jürgen Herrmann
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""SSH/SFTP transport helpers for off-printer KlipperVault mode."""
+"""SSH/SFTP transport helpers for standard KlipperVault mode."""
 
 from __future__ import annotations
 

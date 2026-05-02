@@ -1,6 +1,6 @@
 # Docker Deployment
 
-KlipperVault supports Docker deployment in remote-only `off_printer` mode.
+KlipperVault supports Docker deployment for standard remote profiles and developer-mode virtual local-only profiles.
 
 Included files:
 

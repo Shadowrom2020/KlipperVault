@@ -16,7 +16,7 @@ _WINDOWS_INSTALLER_MARKER = ".klippervault_installed"
 
 def _runtime_mode() -> str:
     """Return fixed runtime mode (remote-only)."""
-    return "off_printer"
+    return "standard"
 
 
 def _is_frozen_runtime() -> bool:

@@ -22,7 +22,7 @@ No Python installation or virtualenv needed. Works across Windows 10+, macOS, an
 
 KlipperVault runs remotely on a PC/server, syncs Klipper cfg files over SSH/SFTP, indexes every `[gcode_macro ...]` section in SQLite, and presents the results in a NiceGUI interface.
 
-All printer interaction is remote-only via SSH/SFTP for config files and Moonraker HTTP API for printer state/actions.
+For regular printer profiles, interaction is remote via SSH/SFTP for cfg files and Moonraker HTTP API for printer state/actions. In developer mode, virtual printer profiles are available for local-only workflows that do not require a live printer connection.
 
 ## What's New
 
@@ -43,8 +43,11 @@ All printer interaction is remote-only via SSH/SFTP for config files and Moonrak
 
 - **Developer publishing menu**
   - Publishing tools are grouped in a top-level `Developer` menu:
+    - `Create Virtual Printer`
     - `Export Update Zip`
     - `Create Pull Request`
+    - `Import macro.cfg`
+  - On the printer selection page, only `Create Virtual Printer` is shown.
 
 ## Key Features
 
@@ -83,9 +86,16 @@ All printer interaction is remote-only via SSH/SFTP for config files and Moonrak
 
 - **Developer publishing tools**
   - Top-level `Developer` menu with:
+    - `Create Virtual Printer`
     - `Export Update Zip`
     - `Create Pull Request`
+    - `Import macro.cfg`
+  - On the printer selection page, only `Create Virtual Printer` is shown.
   - See [**Macro Developer Guide**](Docs/Macro_Developer.md) for setup instructions.
+
+- **Printer profile management**
+  - Printer cards on the selection page support connect and delete actions; edit is available for non-virtual profiles.
+  - Deleting a printer requires confirmation and removes all data associated with that printer profile from the database.
 
 Dynamic Macros project:
 - https://github.com/3DCoded/DynamicMacros
@@ -94,8 +104,8 @@ Dynamic Macros project:
 
 - Linux, macOS, or Windows 10+
 - Python 3 with `venv` support
-- SSH access to target host config directory
-- Moonraker URL for target host/profile
+- SSH access to target host config directory (real printer profiles)
+- Moonraker URL for target host/profile (real printer profiles)
 
 Primary dependency profile:
 
@@ -132,9 +142,10 @@ KlipperVault stores application settings in the SQLite database and exposes them
 - `port`: web UI port
 - `ui_language`: UI language (`en`, `de`, `fr`)
 - `online_update_repo_url`: optional GitHub URL for macro update repository
-- `online_update_manifest_path`: path to manifest file inside the update repository (default: `updates/manifest.json`)
 - `online_update_ref`: branch, tag, or commit SHA for update checks (default: `main`)
 - `developer`: enable developer features (default: `false`) — see [Macro Developer Guide](Docs/Macro_Developer.md)
+
+Online update workflows resolve manifest files automatically from the active printer identity at `[vendor]/[model]/manifest.json`.
 
 Port, UI language, and developer mode changes require app restart to take full effect.
 
@@ -225,7 +236,7 @@ Share/import flow:
 
 Online updates flow:
 
-1. Configure `online_update_repo_url` and optional `online_update_manifest_path`, `online_update_ref` in `Settings` (gear button).
+1. Configure `online_update_repo_url` and `online_update_ref` in `Settings` (gear button).
 2. Click `Check for updates` to fetch the manifest and compare local macros against remote versions.
 3. Review available updates in the dialog; select which ones to activate.
 4. Click `Import updates` to add new versions; activate selectively or defer.

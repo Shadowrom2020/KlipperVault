@@ -39,10 +39,9 @@ def test_online_update_check_and_import_cycle(tmp_path: Path) -> None:
     db_path = tmp_path / "db" / "macros.db"
     repo_url = "https://github.com/example/klipper-macros"
     repo_ref = "main"
-    manifest_path = "updates/manifest.json"
 
     manifest_url = (
-        "https://raw.githubusercontent.com/example/klipper-macros/main/updates/manifest.json"
+        "https://raw.githubusercontent.com/example/klipper-macros/main/voron/trident/manifest.json"
     )
     macro_url = (
         "https://raw.githubusercontent.com/example/klipper-macros/main/voron/trident/PRINT_START.json"
@@ -81,7 +80,6 @@ def test_online_update_check_and_import_cycle(tmp_path: Path) -> None:
         check_result = check_online_macro_updates(
             db_path,
             repo_url=repo_url,
-            manifest_path=manifest_path,
             repo_ref=repo_ref,
             source_vendor="voron",
             source_model="trident",
@@ -107,7 +105,6 @@ def test_online_update_check_and_import_cycle(tmp_path: Path) -> None:
         second_check = check_online_macro_updates(
             db_path,
             repo_url=repo_url,
-            manifest_path=manifest_path,
             repo_ref=repo_ref,
             source_vendor="voron",
             source_model="trident",
@@ -123,7 +120,6 @@ def test_online_update_restore_overwrites_existing_cfg_file(tmp_path: Path) -> N
     db_path = tmp_path / "db" / "macros.db"
     repo_url = "https://github.com/example/klipper-macros"
     repo_ref = "main"
-    manifest_path = "updates/manifest.json"
 
     (config_dir / "printer.cfg").parent.mkdir(parents=True, exist_ok=True)
     (config_dir / "printer.cfg").write_text(
@@ -136,7 +132,7 @@ def test_online_update_restore_overwrites_existing_cfg_file(tmp_path: Path) -> N
     run_indexing(config_dir, db_path)
 
     manifest_url = (
-        "https://raw.githubusercontent.com/example/klipper-macros/main/updates/manifest.json"
+        "https://raw.githubusercontent.com/example/klipper-macros/main/voron/trident/manifest.json"
     )
     macro_url = (
         "https://raw.githubusercontent.com/example/klipper-macros/main/voron/trident/PRINT_START.json"
@@ -173,7 +169,6 @@ def test_online_update_restore_overwrites_existing_cfg_file(tmp_path: Path) -> N
         check_result = check_online_macro_updates(
             db_path,
             repo_url=repo_url,
-            manifest_path=manifest_path,
             repo_ref=repo_ref,
             source_vendor="voron",
             source_model="trident",

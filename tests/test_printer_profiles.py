@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from klipper_vault_printer_profiles import (
+    create_printer_profile,
     ensure_default_printer_profile,
     get_active_printer_profile,
     list_printer_profiles,
@@ -19,6 +20,7 @@ def test_ensure_default_printer_profile_creates_active_profile(tmp_path: Path) -
     assert len(profiles) == 1
     assert profiles[0].id == profile_id
     assert profiles[0].is_active is True
+    assert profiles[0].is_virtual is False
 
 
 def test_set_active_printer_profile_switches_profiles(tmp_path: Path) -> None:
@@ -54,7 +56,7 @@ def test_set_active_printer_profile_switches_profiles(tmp_path: Path) -> None:
                 is_active, is_archived, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), strftime('%s','now'))
             """,
-            ("Second Printer", "", "", "off_printer", None, 0, 0),
+            ("Second Printer", "", "", "standard", None, 0, 0),
         )
         second_id = int(conn.execute("SELECT id FROM printer_profiles WHERE profile_name = ?", ("Second Printer",)).fetchone()[0])
         conn.commit()
@@ -64,3 +66,22 @@ def test_set_active_printer_profile_switches_profiles(tmp_path: Path) -> None:
     assert active is not None
     assert active.id == second_id
     assert active.id != first_id
+
+
+def test_create_virtual_printer_profile_persists_virtual_flag(tmp_path: Path) -> None:
+    db_path = tmp_path / "vault.db"
+    _ = ensure_default_printer_profile(db_path)
+
+    virtual_id = create_printer_profile(
+        db_path,
+        profile_name="Virtual Voron",
+        vendor="Voron",
+        model="Trident",
+        is_virtual=True,
+        is_active=True,
+    )
+
+    active = get_active_printer_profile(db_path)
+    assert active is not None
+    assert active.id == virtual_id
+    assert active.is_virtual is True

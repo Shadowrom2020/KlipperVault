@@ -433,7 +433,7 @@ id              INTEGER PRIMARY KEY
 profile_name    TEXT - "Default Printer", "Voron 2.4", etc.
 vendor          TEXT - printer brand
 model           TEXT - specific model
-connection_type TEXT - "off_printer", "local_ssh"
+connection_type TEXT - "standard", "local_ssh"
 ssh_profile_id  INTEGER - foreign key to ssh_host_profiles
 ssh_host        TEXT - override SSH host
 ssh_port        INTEGER - override SSH port
