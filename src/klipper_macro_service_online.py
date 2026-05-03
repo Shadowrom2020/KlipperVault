@@ -122,6 +122,57 @@ class ImportedUpdateItem(BaseModel):
         return _as_text(v)
 
 
+def _normalize_printer_identity(vendor: str, model: str) -> tuple[str, str]:
+    """Normalize printer identity values for compatibility checks."""
+    return _as_text(vendor).lower(), _as_text(model).lower()
+
+
+def _prepare_pr_artifacts(
+    *,
+    artifacts: dict[str, object],
+) -> tuple[dict[str, str], list[str], int]:
+    """Normalize repository artifacts into commit-ready write/delete collections."""
+    files_to_write_raw = artifacts.get("files_to_write", {})
+    if not isinstance(files_to_write_raw, dict):
+        raise RuntimeError("invalid export payload generated for pull request")
+    files_to_write: dict[str, str] = {
+        str(path): str(content)
+        for path, content in files_to_write_raw.items()
+    }
+
+    files_to_delete_raw = artifacts.get("files_to_delete", [])
+    if not isinstance(files_to_delete_raw, list):
+        raise RuntimeError("invalid delete payload generated for pull request")
+    files_to_delete = [
+        _as_text(path).lstrip("/")
+        for path in files_to_delete_raw
+        if _as_text(path)
+    ]
+
+    manifest_payload = artifacts.get("manifest", {})
+    if not isinstance(manifest_payload, dict):
+        raise RuntimeError("invalid manifest payload generated for pull request")
+
+    manifest_path = _as_text(artifacts.get("manifest_path", "")).lstrip("/")
+    if not manifest_path:
+        raise RuntimeError("invalid manifest path generated for pull request")
+    files_to_write[manifest_path] = json.dumps(manifest_payload, indent=2, ensure_ascii=False)
+
+    macro_count = _as_int(artifacts.get("macro_count", 0))
+    return files_to_write, files_to_delete, macro_count
+
+
+def _parse_imported_update_item(item: object) -> ImportedUpdateItem | None:
+    """Normalize one imported update item; return None for malformed entries."""
+    if not isinstance(item, dict):
+        return None
+
+    try:
+        return ImportedUpdateItem(**item)
+    except ValidationError:
+        return None
+
+
 class OnlineUpdateMixin:
     """Macro share file, online update, and GitHub PR operations."""
 
@@ -134,64 +185,8 @@ class OnlineUpdateMixin:
     def _resolve_runtime_config_dir(self) -> Path:
         raise NotImplementedError  # provided by MacroGuiService
 
-    @staticmethod
-    def _require_non_empty(value: str, error_message: str) -> str:
+    def _require_non_empty(self, value: str, error_message: str) -> str:
         raise NotImplementedError  # provided by MacroGuiService
-
-    # ------------------------------------------------------------------ #
-    # Shared static helpers                                               #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _normalize_printer_identity(vendor: str, model: str) -> tuple[str, str]:
-        """Normalize printer identity values for compatibility checks."""
-        return _as_text(vendor).lower(), _as_text(model).lower()
-
-    @staticmethod
-    def _prepare_pr_artifacts(
-        *,
-        artifacts: dict[str, object],
-    ) -> tuple[dict[str, str], list[str], int]:
-        """Normalize repository artifacts into commit-ready write/delete collections."""
-        files_to_write_raw = artifacts.get("files_to_write", {})
-        if not isinstance(files_to_write_raw, dict):
-            raise RuntimeError("invalid export payload generated for pull request")
-        files_to_write: dict[str, str] = {
-            str(path): str(content)
-            for path, content in files_to_write_raw.items()
-        }
-
-        files_to_delete_raw = artifacts.get("files_to_delete", [])
-        if not isinstance(files_to_delete_raw, list):
-            raise RuntimeError("invalid delete payload generated for pull request")
-        files_to_delete = [
-            _as_text(path).lstrip("/")
-            for path in files_to_delete_raw
-            if _as_text(path)
-        ]
-
-        manifest_payload = artifacts.get("manifest", {})
-        if not isinstance(manifest_payload, dict):
-            raise RuntimeError("invalid manifest payload generated for pull request")
-
-        manifest_path = _as_text(artifacts.get("manifest_path", "")).lstrip("/")
-        if not manifest_path:
-            raise RuntimeError("invalid manifest path generated for pull request")
-        files_to_write[manifest_path] = json.dumps(manifest_payload, indent=2, ensure_ascii=False)
-
-        macro_count = _as_int(artifacts.get("macro_count", 0))
-        return files_to_write, files_to_delete, macro_count
-
-    @staticmethod
-    def _parse_imported_update_item(item: object) -> ImportedUpdateItem | None:
-        """Normalize one imported update item; return None for malformed entries."""
-        if not isinstance(item, dict):
-            return None
-
-        try:
-            return ImportedUpdateItem(**item)
-        except ValidationError:
-            return None
 
     # ------------------------------------------------------------------ #
     # Macro share file import/export                                       #
@@ -276,8 +271,8 @@ class OnlineUpdateMixin:
 
         source_vendor = _as_text(result.get("source_vendor", ""))
         source_model = _as_text(result.get("source_model", ""))
-        src_vendor_norm, src_model_norm = self._normalize_printer_identity(source_vendor, source_model)
-        tgt_vendor_norm, tgt_model_norm = self._normalize_printer_identity(target_vendor, target_model)
+        src_vendor_norm, src_model_norm = _normalize_printer_identity(source_vendor, source_model)
+        tgt_vendor_norm, tgt_model_norm = _normalize_printer_identity(target_vendor, target_model)
         printer_matches = bool(
             src_vendor_norm
             and src_model_norm
@@ -346,7 +341,7 @@ class OnlineUpdateMixin:
         runtime_config_dir = self._resolve_runtime_config_dir()
 
         for item in imported_items:
-            parsed_item = self._parse_imported_update_item(item)
+            parsed_item = _parse_imported_update_item(item)
             if parsed_item is None or parsed_item.identity not in activate_set:
                 continue
 
@@ -460,7 +455,7 @@ class OnlineUpdateMixin:
             existing_manifest=remote_manifest,
         )
         _report(3, 6)
-        files_to_write, files_to_delete, macro_count = self._prepare_pr_artifacts(
+        files_to_write, files_to_delete, macro_count = _prepare_pr_artifacts(
             artifacts=artifacts,
         )
 

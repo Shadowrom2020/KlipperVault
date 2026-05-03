@@ -5,6 +5,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+
+_PROTECTED_CFG_FILENAME = "printer.cfg"
+
+
+def cfg_is_protected(file_path: str) -> bool:
+    """Return True when cfg path points to protected printer.cfg."""
+    return Path(to_text(file_path)).name.lower() == _PROTECTED_CFG_FILENAME
+
 
 def to_int(value: object, default: int = 0) -> int:
     """Convert dynamic values to int with a safe fallback."""

@@ -50,18 +50,11 @@ from klipper_vault_printer_profiles import (
 )
 from klipper_type_utils import to_int as _as_int
 from klipper_type_utils import to_text as _as_text
+from klipper_type_utils import cfg_is_protected as _cfg_is_protected
 
 from klipper_macro_service_profiles import PrinterProfileMixin
 from klipper_macro_service_backup import BackupRestoreMixin
 from klipper_macro_service_online import OnlineUpdateMixin
-
-
-_PROTECTED_CFG_FILENAME = "printer.cfg"
-
-
-def _cfg_is_protected(file_path: str) -> bool:
-    """Return True when cfg path points to protected printer.cfg."""
-    return Path(_as_text(file_path)).name.lower() == _PROTECTED_CFG_FILENAME
 
 
 class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin):
@@ -100,7 +93,7 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
     def _protected_file_block_message(file_path: str) -> str:
         """Build user-facing rationale for protected printer.cfg operations."""
         return (
-            f"Macros in {_PROTECTED_CFG_FILENAME} are read-only in KlipperVault. "
+            "Macros in printer.cfg are read-only in KlipperVault. "
             "This file may contain critical printer settings, so automated updates are blocked. "
             "Move the macro to a separate included .cfg file to enable updates."
         )

@@ -47,15 +47,10 @@ from klipper_vault_printer_profiles import (
 )
 from klipper_type_utils import to_int as _as_int
 from klipper_type_utils import to_text as _as_text
+from klipper_type_utils import cfg_is_protected as _cfg_is_protected
 
 
-_PROTECTED_CFG_FILENAME = "printer.cfg"
 _LOG = logging.getLogger(__name__)
-
-
-def _cfg_is_protected(file_path: str) -> bool:
-    """Return True when cfg path points to protected printer.cfg."""
-    return Path(_as_text(file_path)).name.lower() == _PROTECTED_CFG_FILENAME
 
 
 _FREEDI_CFG_FILENAME = "freedi.cfg"
@@ -225,6 +220,177 @@ class MoonrakerCommandResult(BaseModel):
         if self.notification:
             result["notification"] = self.notification
         return result
+
+
+def _normalize_standard_moonraker_url(moonraker_url: str, ssh_host: str) -> str:
+    """Rewrite localhost Moonraker URLs to the remote SSH host for standard mode."""
+    raw_url = _as_text(moonraker_url)
+    remote_host = _as_text(ssh_host)
+    if not raw_url:
+        return raw_url
+
+    parse_target = raw_url if "://" in raw_url else f"http://{raw_url}"
+    parsed = urlparse(parse_target)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return raw_url
+
+    current_host = _as_text(parsed.hostname).lower()
+    if current_host not in {"localhost", "127.0.0.1", "::1"} or not remote_host:
+        return parsed.geturl()
+
+    netloc_host = remote_host
+    if ":" in remote_host and not remote_host.startswith("["):
+        netloc_host = f"[{remote_host}]"
+
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+
+    netloc = f"{userinfo}{netloc_host}"
+    if parsed.port is not None:
+        netloc += f":{parsed.port}"
+    return parsed._replace(netloc=netloc).geturl()
+
+
+def _normalize_remote_root(remote_config_dir: str, username: str) -> PurePosixPath:
+    """Normalize remote config root and expand leading ~/ using profile username."""
+    raw_root = _as_text(remote_config_dir).strip()
+    user = _as_text(username).strip()
+    if raw_root == "~":
+        raw_root = f"/home/{user}" if user else "/"
+    elif raw_root.startswith("~/"):
+        raw_root = f"/home/{user}/{raw_root[2:]}" if user else f"/{raw_root[2:]}"
+    return PurePosixPath(raw_root or "/")
+
+
+def _profile_to_dict(profile: SshHostProfile) -> dict[str, object]:
+    """Convert profile model to UI-safe payload (without secrets)."""
+    return {
+        "id": profile.id,
+        "profile_name": profile.profile_name,
+        "host": profile.host,
+        "port": profile.port,
+        "username": profile.username,
+        "remote_config_dir": profile.remote_config_dir,
+        "moonraker_url": profile.moonraker_url,
+        "auth_mode": profile.auth_mode,
+        "credential_ref": profile.credential_ref,
+        "is_active": profile.is_active,
+    }
+
+
+def _printer_profile_to_ssh_payload(profile: dict[str, object]) -> dict[str, object]:
+    """Convert active printer profile payload into legacy SSH profile API shape."""
+    return {
+        "id": _as_int(profile.get("id"), default=0),
+        "profile_name": _as_text(profile.get("profile_name", "")),
+        "host": _as_text(profile.get("ssh_host", "")),
+        "port": _as_int(profile.get("ssh_port", 22), default=22),
+        "username": _as_text(profile.get("ssh_username", "")),
+        "remote_config_dir": _as_text(profile.get("ssh_remote_config_dir", "")),
+        "moonraker_url": _as_text(profile.get("ssh_moonraker_url", "")),
+        "auth_mode": _as_text(profile.get("ssh_auth_mode", "key")) or "key",
+        "credential_ref": _as_text(profile.get("ssh_credential_ref", "")),
+        "ssh_profile_id": profile.get("ssh_profile_id"),
+        "is_active": bool(profile.get("is_active", False)),
+    }
+
+
+def _normalize_credential_ref(profile_name: str, auth_mode: str) -> str:
+    """Build a stable credential reference for profile secrets."""
+    cleaned_name = "-".join(_as_text(profile_name).lower().split()) or "default"
+    cleaned_auth_mode = _as_text(auth_mode).lower() or "key"
+    return f"ssh:{cleaned_name}:{cleaned_auth_mode}"
+
+
+def _moonraker_url_from_base(base_url: str, path: str) -> str:
+    """Build and validate a Moonraker URL for one API path from a given base URL."""
+    parsed = urlparse(_as_text(base_url).strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Moonraker URL must use http/https.")
+    clean_path = path if path.startswith("/") else f"/{path}"
+    return f"{parsed.geturl().rstrip('/')}{clean_path}"
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.2, min=0.2, max=1.5),
+    retry=retry_if_exception_type(httpx.RequestError),
+)
+def _moonraker_get(
+    url: str,
+    *,
+    params: dict[str, str] | None,
+    timeout: float,
+) -> httpx.Response:
+    """Perform one Moonraker GET with bounded retry for transient transport errors."""
+    return httpx.get(url, params=params, timeout=timeout)
+
+
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.2, min=0.2, max=1.5),
+    retry=retry_if_exception_type(httpx.RequestError),
+)
+def _moonraker_post(
+    url: str,
+    *,
+    json_body: dict[str, str] | dict[str, object] | None,
+    timeout: float,
+) -> httpx.Response:
+    """Perform one Moonraker POST with bounded retry for transient transport errors."""
+    if json_body is None:
+        return httpx.post(url, timeout=timeout)
+    return httpx.post(url, json=json_body, timeout=timeout)
+
+
+def _decode_json_payload(response: httpx.Response) -> dict[str, object]:
+    """Decode JSON response payload with a safe fallback to empty dict."""
+    if not response.text:
+        return {}
+    try:
+        decoded = response.json()
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _error_message_from_response(response: httpx.Response, payload: dict[str, object]) -> str:
+    """Extract best-effort Moonraker error text from response payload/body."""
+    payload_error = payload.get("error")
+    if isinstance(payload_error, dict):
+        message = str(payload_error.get("message", "")).strip()
+        if message:
+            return message
+    body = response.text.strip()
+    if body:
+        return body
+    return (response.reason_phrase or "").strip()
+
+
+def _status_result_from_payload(payload: dict[str, object]) -> MoonrakerStatusResult:
+    """Normalize raw Moonraker status payload into typed status result."""
+    result_block = payload.get("result")
+    status_block = result_block.get("status") if isinstance(result_block, dict) else {}
+    print_stats = status_block.get("print_stats") if isinstance(status_block, dict) else {}
+    stats = print_stats if isinstance(print_stats, dict) else {}
+
+    state = str(stats.get("state", "unknown")).strip().lower()
+    message = str(stats.get("message", "")).strip()
+    is_printing = state == "printing"
+    is_busy = state not in {"standby", "ready", "complete", "cancelled"}
+    return MoonrakerStatusResult(
+        connected=True,
+        state=state,
+        message=message,
+        is_printing=is_printing,
+        is_busy=is_busy,
+    )
 
 
 class PrinterProfileMixin:
@@ -504,92 +670,8 @@ class PrinterProfileMixin:
             if not profile_ssh_host:
                 profile_ssh_host = _as_text(active_profile.host)
         if profile_moonraker_url:
-            normalized = self._normalize_standard_moonraker_url(profile_moonraker_url, profile_ssh_host)
+            normalized = _normalize_standard_moonraker_url(profile_moonraker_url, profile_ssh_host)
             self._moonraker_base_url = normalized.rstrip("/")
-
-    @staticmethod
-    def _normalize_standard_moonraker_url(moonraker_url: str, ssh_host: str) -> str:
-        """Rewrite localhost Moonraker URLs to the remote SSH host for standard mode."""
-        raw_url = _as_text(moonraker_url)
-        remote_host = _as_text(ssh_host)
-        if not raw_url:
-            return raw_url
-
-        parse_target = raw_url if "://" in raw_url else f"http://{raw_url}"
-        parsed = urlparse(parse_target)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return raw_url
-
-        current_host = _as_text(parsed.hostname).lower()
-        if current_host not in {"localhost", "127.0.0.1", "::1"} or not remote_host:
-            return parsed.geturl()
-
-        netloc_host = remote_host
-        if ":" in remote_host and not remote_host.startswith("["):
-            netloc_host = f"[{remote_host}]"
-
-        userinfo = ""
-        if parsed.username:
-            userinfo = parsed.username
-            if parsed.password:
-                userinfo += f":{parsed.password}"
-            userinfo += "@"
-
-        netloc = f"{userinfo}{netloc_host}"
-        if parsed.port is not None:
-            netloc += f":{parsed.port}"
-        return parsed._replace(netloc=netloc).geturl()
-
-    @staticmethod
-    def _normalize_remote_root(remote_config_dir: str, username: str) -> PurePosixPath:
-        """Normalize remote config root and expand leading ~/ using profile username."""
-        raw_root = _as_text(remote_config_dir).strip()
-        user = _as_text(username).strip()
-        if raw_root == "~":
-            raw_root = f"/home/{user}" if user else "/"
-        elif raw_root.startswith("~/"):
-            raw_root = f"/home/{user}/{raw_root[2:]}" if user else f"/{raw_root[2:]}"
-        return PurePosixPath(raw_root or "/")
-
-    @staticmethod
-    def _profile_to_dict(profile: SshHostProfile) -> dict[str, object]:
-        """Convert profile model to UI-safe payload (without secrets)."""
-        return {
-            "id": profile.id,
-            "profile_name": profile.profile_name,
-            "host": profile.host,
-            "port": profile.port,
-            "username": profile.username,
-            "remote_config_dir": profile.remote_config_dir,
-            "moonraker_url": profile.moonraker_url,
-            "auth_mode": profile.auth_mode,
-            "credential_ref": profile.credential_ref,
-            "is_active": profile.is_active,
-        }
-
-    @staticmethod
-    def _printer_profile_to_ssh_payload(profile: dict[str, object]) -> dict[str, object]:
-        """Convert active printer profile payload into legacy SSH profile API shape."""
-        return {
-            "id": _as_int(profile.get("id"), default=0),
-            "profile_name": _as_text(profile.get("profile_name", "")),
-            "host": _as_text(profile.get("ssh_host", "")),
-            "port": _as_int(profile.get("ssh_port", 22), default=22),
-            "username": _as_text(profile.get("ssh_username", "")),
-            "remote_config_dir": _as_text(profile.get("ssh_remote_config_dir", "")),
-            "moonraker_url": _as_text(profile.get("ssh_moonraker_url", "")),
-            "auth_mode": _as_text(profile.get("ssh_auth_mode", "key")) or "key",
-            "credential_ref": _as_text(profile.get("ssh_credential_ref", "")),
-            "ssh_profile_id": profile.get("ssh_profile_id"),
-            "is_active": bool(profile.get("is_active", False)),
-        }
-
-    @staticmethod
-    def _normalize_credential_ref(profile_name: str, auth_mode: str) -> str:
-        """Build a stable credential reference for profile secrets."""
-        cleaned_name = "-".join(_as_text(profile_name).lower().split()) or "default"
-        cleaned_auth_mode = _as_text(auth_mode).lower() or "key"
-        return f"ssh:{cleaned_name}:{cleaned_auth_mode}"
 
     # ------------------------------------------------------------------ #
     # SSH profiles                                                         #
@@ -603,7 +685,7 @@ class PrinterProfileMixin:
                 continue
             if not _as_text(printer_profile.get("ssh_host", "")):
                 continue
-            payload = self._printer_profile_to_ssh_payload(printer_profile)
+            payload = _printer_profile_to_ssh_payload(printer_profile)
             credential_ref = _as_text(payload.get("credential_ref", ""))
             backend = get_credential_backend(self._db_path, credential_ref) if credential_ref else None
             payload["secret_backend"] = backend or ""
@@ -615,7 +697,7 @@ class PrinterProfileMixin:
         """Return active standard connection settings from active printer profile."""
         active_printer = self.get_active_printer_profile()
         if isinstance(active_printer, dict) and active_printer:
-            payload = self._printer_profile_to_ssh_payload(active_printer)
+            payload = _printer_profile_to_ssh_payload(active_printer)
             payload["is_virtual"] = bool(active_printer.get("is_virtual", False))
             if _as_text(payload.get("host", "")):
                 credential_ref = _as_text(payload.get("credential_ref", ""))
@@ -631,7 +713,7 @@ class PrinterProfileMixin:
         profile = get_active_ssh_host_profile(self._db_path)
         if profile is None:
             return None
-        payload = self._profile_to_dict(profile)
+        payload = _profile_to_dict(profile)
         backend = get_credential_backend(self._db_path, profile.credential_ref) if profile.credential_ref else None
         payload["secret_backend"] = backend or ""
         payload["has_secret"] = bool(self._credential_store.get_secret(credential_ref=profile.credential_ref or ""))
@@ -657,12 +739,12 @@ class PrinterProfileMixin:
         username = self._require_non_empty(username, "username is required")
         remote_config_dir = self._require_non_empty(remote_config_dir, "remote_config_dir is required")
         moonraker_url = self._require_non_empty(moonraker_url, "moonraker_url is required")
-        moonraker_url = self._normalize_standard_moonraker_url(moonraker_url, host)
+        moonraker_url = _normalize_standard_moonraker_url(moonraker_url, host)
         auth_mode = (_as_text(auth_mode).lower() or "key")
         if auth_mode not in {"key", "password"}:
             raise ValueError("auth_mode must be 'key' or 'password'")
 
-        normalized_credential_ref = _as_text(credential_ref) or self._normalize_credential_ref(profile_name, auth_mode)
+        normalized_credential_ref = _as_text(credential_ref) or _normalize_credential_ref(profile_name, auth_mode)
         credential_backend_name = ""
         if secret_value is not None:
             credential_backend_name = self._credential_store.set_secret(
@@ -889,7 +971,7 @@ class PrinterProfileMixin:
 
     def _build_remote_cfg_path(self, remote_config_dir: str, username: str, file_path: str) -> str:
         """Resolve one relative cfg file path against remote config root."""
-        remote_root = self._normalize_remote_root(remote_config_dir, username)
+        remote_root = _normalize_remote_root(remote_config_dir, username)
         rel_path = _as_text(file_path).replace("\\", "/").lstrip("/")
         if not rel_path:
             raise ValueError("file_path is required")
@@ -1166,15 +1248,6 @@ class PrinterProfileMixin:
         clean_path = path if path.startswith("/") else f"/{path}"
         return f"{self._moonraker_base_url}{clean_path}"
 
-    @staticmethod
-    def _moonraker_url_from_base(base_url: str, path: str) -> str:
-        """Build and validate a Moonraker URL for one API path from a given base URL."""
-        parsed = urlparse(_as_text(base_url).strip())
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("Moonraker URL must use http/https.")
-        clean_path = path if path.startswith("/") else f"/{path}"
-        return f"{parsed.geturl().rstrip('/')}{clean_path}"
-
     def _moonraker_base_url_for_profile(self, profile_id: int) -> str:
         """Resolve Moonraker base URL for a specific printer profile id."""
         target_profile_id = int(profile_id)
@@ -1202,85 +1275,7 @@ class PrinterProfileMixin:
         if not moonraker_url:
             raise ValueError("Printer profile is missing Moonraker URL")
 
-        return self._normalize_standard_moonraker_url(moonraker_url, ssh_host).rstrip("/")
-
-    @staticmethod
-    @retry(
-        reraise=True,
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=0.2, min=0.2, max=1.5),
-        retry=retry_if_exception_type(httpx.RequestError),
-    )
-    def _moonraker_get(
-        url: str,
-        *,
-        params: dict[str, str] | None,
-        timeout: float,
-    ) -> httpx.Response:
-        """Perform one Moonraker GET with bounded retry for transient transport errors."""
-        return httpx.get(url, params=params, timeout=timeout)
-
-    @staticmethod
-    @retry(
-        reraise=True,
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=0.2, min=0.2, max=1.5),
-        retry=retry_if_exception_type(httpx.RequestError),
-    )
-    def _moonraker_post(
-        url: str,
-        *,
-        json_body: dict[str, str] | dict[str, object] | None,
-        timeout: float,
-    ) -> httpx.Response:
-        """Perform one Moonraker POST with bounded retry for transient transport errors."""
-        if json_body is None:
-            return httpx.post(url, timeout=timeout)
-        return httpx.post(url, json=json_body, timeout=timeout)
-
-    @staticmethod
-    def _decode_json_payload(response: httpx.Response) -> dict[str, object]:
-        """Decode JSON response payload with a safe fallback to empty dict."""
-        if not response.text:
-            return {}
-        try:
-            decoded = response.json()
-        except json.JSONDecodeError:
-            return {}
-        return decoded if isinstance(decoded, dict) else {}
-
-    @staticmethod
-    def _error_message_from_response(response: httpx.Response, payload: dict[str, object]) -> str:
-        """Extract best-effort Moonraker error text from response payload/body."""
-        payload_error = payload.get("error")
-        if isinstance(payload_error, dict):
-            message = str(payload_error.get("message", "")).strip()
-            if message:
-                return message
-        body = response.text.strip()
-        if body:
-            return body
-        return (response.reason_phrase or "").strip()
-
-    @staticmethod
-    def _status_result_from_payload(payload: dict[str, object]) -> MoonrakerStatusResult:
-        """Normalize raw Moonraker status payload into typed status result."""
-        result_block = payload.get("result")
-        status_block = result_block.get("status") if isinstance(result_block, dict) else {}
-        print_stats = status_block.get("print_stats") if isinstance(status_block, dict) else {}
-        stats = print_stats if isinstance(print_stats, dict) else {}
-
-        state = str(stats.get("state", "unknown")).strip().lower()
-        message = str(stats.get("message", "")).strip()
-        is_printing = state == "printing"
-        is_busy = state not in {"standby", "ready", "complete", "cancelled"}
-        return MoonrakerStatusResult(
-            connected=True,
-            state=state,
-            message=message,
-            is_printing=is_printing,
-            is_busy=is_busy,
-        )
+        return _normalize_standard_moonraker_url(moonraker_url, ssh_host).rstrip("/")
 
     def _moonraker_post_command(
         self,
@@ -1293,13 +1288,13 @@ class PrinterProfileMixin:
         """Execute one Moonraker POST command and normalize error handling."""
         url = self._moonraker_url(path)
         try:
-            response = self._moonraker_post(url, json_body=json_body, timeout=timeout)
+            response = _moonraker_post(url, json_body=json_body, timeout=timeout)
         except httpx.HTTPError as exc:
             raise RuntimeError(str(exc)) from exc
 
-        payload = self._decode_json_payload(response)
+        payload = _decode_json_payload(response)
         if response.status_code >= 400:
-            error_message = self._error_message_from_response(response, payload)
+            error_message = _error_message_from_response(response, payload)
             raise RuntimeError(error_message or f"{error_prefix} failed with status {response.status_code}")
 
         return MoonrakerCommandResult(
@@ -1322,8 +1317,8 @@ class PrinterProfileMixin:
 
         try:
             url = self._moonraker_url("/printer/objects/query")
-            response = self._moonraker_get(url, params={"print_stats": "state,message"}, timeout=timeout)
-            payload = self._decode_json_payload(response)
+            response = _moonraker_get(url, params={"print_stats": "state,message"}, timeout=timeout)
+            payload = _decode_json_payload(response)
         except (ValueError, httpx.HTTPError) as exc:
             return MoonrakerStatusResult(
                 connected=False,
@@ -1334,7 +1329,7 @@ class PrinterProfileMixin:
             ).as_dict()
 
         if response.status_code >= 400:
-            error_message = self._error_message_from_response(response, payload)
+            error_message = _error_message_from_response(response, payload)
             return MoonrakerStatusResult(
                 connected=False,
                 state="unknown",
@@ -1343,7 +1338,7 @@ class PrinterProfileMixin:
                 is_busy=False,
             ).as_dict()
 
-        return self._status_result_from_payload(payload).as_dict()
+        return _status_result_from_payload(payload).as_dict()
 
     def query_printer_status_for_profile(self, profile_id: int, timeout: float = 2.0) -> dict[str, object]:
         """Query Moonraker status for one printer profile without changing active state."""
@@ -1368,9 +1363,9 @@ class PrinterProfileMixin:
 
         try:
             base_url = self._moonraker_base_url_for_profile(profile_id)
-            url = self._moonraker_url_from_base(base_url, "/printer/objects/query")
-            response = self._moonraker_get(url, params={"print_stats": "state,message"}, timeout=timeout)
-            payload = self._decode_json_payload(response)
+            url = _moonraker_url_from_base(base_url, "/printer/objects/query")
+            response = _moonraker_get(url, params={"print_stats": "state,message"}, timeout=timeout)
+            payload = _decode_json_payload(response)
         except (ValueError, httpx.HTTPError) as exc:
             result = MoonrakerStatusResult(
                 connected=False,
@@ -1383,7 +1378,7 @@ class PrinterProfileMixin:
             return result
 
         if response.status_code >= 400:
-            error_message = self._error_message_from_response(response, payload)
+            error_message = _error_message_from_response(response, payload)
             result = MoonrakerStatusResult(
                 connected=False,
                 state="unknown",
@@ -1394,7 +1389,7 @@ class PrinterProfileMixin:
             result["profile_id"] = int(profile_id)
             return result
 
-        result = self._status_result_from_payload(payload).as_dict()
+        result = _status_result_from_payload(payload).as_dict()
         result["profile_id"] = int(profile_id)
         return result
 

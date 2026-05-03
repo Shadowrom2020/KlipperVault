@@ -121,6 +121,53 @@ class UIState:
     macro_page_container: ui.column | None = None
     printer_cards_container: ui.row | None = None
 
+    # Macro page controls
+    duplicates_button: ui.button | None = None
+    new_button: ui.button | None = None
+    active_filter_button: ui.button | None = None
+    sort_radio: object | None = None  # ui.radio
+    macro_count_label: ui.label | None = None
+    prev_page_button: ui.button | None = None
+    next_page_button: ui.button | None = None
+    total_macros_label: ui.label | None = None
+    duplicate_macros_label: ui.label | None = None
+    deleted_macros_label: ui.label | None = None
+    distinct_files_label: ui.label | None = None
+    last_update_label: ui.label | None = None
+    purge_deleted_button: ui.button | None = None
+    standard_cfg_list_button: ui.button | None = None
+    backup_list: object | None = None  # ui.list
+
+    # Start page controls
+    start_page_status_label: ui.label | None = None
+    refresh_printers_button: ui.button | None = None
+    add_printer_button: ui.button | None = None
+    test_active_printer_button: ui.button | None = None
+    printer_editor_card: object | None = None  # ui.card
+    printer_editor_title: ui.label | None = None
+    hide_printer_editor_button: ui.button | None = None
+    refresh_ssh_profiles_button: ui.button | None = None
+    new_ssh_profile_button: ui.button | None = None
+    delete_ssh_profile_button: ui.button | None = None
+    activate_ssh_profile_button: ui.button | None = None
+    save_ssh_profile_button: ui.button | None = None
+
+    # SSH profile inputs
+    ssh_profile_select: object | None = None  # ui.select
+    ssh_profile_name_input: ui.input | None = None
+    ssh_profile_host_input: ui.input | None = None
+    ssh_profile_port_input: object | None = None  # ui.number
+    ssh_profile_username_input: ui.input | None = None
+    ssh_profile_remote_dir_input: ui.input | None = None
+    ssh_profile_moonraker_url_input: ui.input | None = None
+    ssh_profile_auth_mode_select: object | None = None  # ui.select
+    ssh_profile_secret_input: ui.input | None = None
+    ssh_profile_secret_mode_label: ui.label | None = None
+    ssh_profile_secret_state_label: ui.label | None = None
+    ssh_profile_active_toggle: object | None = None  # ui.switch
+    ssh_profile_error_label: ui.label | None = None
+    ssh_profile_status_label: ui.label | None = None
+
     # Dialog references
     print_lock_dialog: ui.dialog | None = None
     print_lock_label: ui.label | None = None

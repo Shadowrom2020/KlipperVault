@@ -213,6 +213,9 @@ class MacroExplainerView:
                             "text-xs font-mono text-grey-5 shrink-0 mt-0.5"
                         )
                         with ui.column().classes("gap-1 flex-1"):
+                            ui.label(str(line.get("text", "")).strip()).classes(
+                                "text-sm font-mono text-blue-2 whitespace-pre-wrap"
+                            )
                             ui.label(str(line.get("summary", ""))).classes("text-sm font-medium")
                             ui.label(str(line.get("details", ""))).classes("text-sm text-grey-4")
                             with ui.row().classes("gap-2 items-center mt-0.5"):
@@ -220,9 +223,6 @@ class MacroExplainerView:
                                 ui.label(f"confidence: {confidence}").classes(_confidence_classes(confidence))
                                 for effect in _as_str_list(line.get("effects", [])):
                                     ui.label(effect.replace("_", " ")).classes(_effect_classes(effect))
-                            ui.label(str(line.get("text", ""))).classes(
-                                "text-xs font-mono text-blue-2 whitespace-pre-wrap"
-                            )
                             references = _as_dict_list(line.get("references", []))
                             if references:
                                 with ui.row().classes("gap-2 items-center mt-1"):

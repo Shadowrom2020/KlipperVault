@@ -26,6 +26,29 @@ from klipper_macro_gui_create_pr_flow import (
     set_create_pr_request_failure as _set_create_pr_request_failure,
     validate_create_pr_inputs as _validate_create_pr_inputs,
 )
+from klipper_macro_gui_helpers import (
+    _STATUS_BADGE_CLASSES,
+    apply_theme_mode as _apply_theme_mode,
+    default_keep_file as _default_keep_file,
+    default_pr_head_branch as _default_pr_head_branch,
+    dynamic_macro_file_paths as _dynamic_macro_file_paths,
+    file_operation_phase_text as _file_operation_phase_text,
+    format_moonraker_url_host as _format_moonraker_url_host,
+    is_dynamic_version_row as _is_dynamic_version_row,
+    is_remote_conflict_error as _is_remote_conflict_error,
+    normalize_touched_cfg_paths as _normalize_touched_cfg_paths,
+    normalized_theme_mode as _normalized_theme_mode,
+    paths_include_dynamic_macros as _paths_include_dynamic_macros,
+    printer_offline_status_text as _printer_offline_status_text,
+    progress_value_and_percent as _progress_value_and_percent,
+    reload_button_state as _reload_button_state,
+    safe_notify as _safe_notify,
+    save_config_button_enabled as _save_config_button_enabled,
+    standard_profile_status as _standard_profile_status,
+    status_badge_key as _status_badge_key,
+    to_optional_int as _to_optional_int,
+    translated_active_filter_state as _translated_active_filter_state,
+)
 from klipper_macro_gui_logic import (
     duplicate_names_for_macros,
     filter_macros,
@@ -43,223 +66,6 @@ from klipper_type_utils import to_int as _to_int
 from klipper_vault_config import VaultConfig, load_or_create as _load_vault_config, save as _save_vault_config
 from klipper_vault_paths import DEFAULT_CONFIG_DIR, DEFAULT_DB_PATH
 from klipper_vault_i18n import set_language, t
-
-_STATUS_BADGE_CLASSES: dict[str, str] = {
-    "deleted": "text-[10px] uppercase tracking-wide text-white bg-grey-6 rounded px-1.5 py-0.5",
-    "new": "text-[10px] uppercase tracking-wide text-white bg-purple-7 rounded px-1.5 py-0.5",
-    "not_loaded": "text-[10px] uppercase tracking-wide text-white bg-orange-7 rounded px-1.5 py-0.5",
-    "dynamic": "text-[10px] uppercase tracking-wide text-white bg-blue-7 rounded px-1.5 py-0.5",
-    "renamed": "text-[10px] uppercase tracking-wide text-white bg-blue-8 rounded px-1.5 py-0.5",
-    "active": "text-[10px] uppercase tracking-wide text-white bg-green-8 rounded px-1.5 py-0.5",
-    "inactive": "text-[10px] uppercase tracking-wide text-black bg-yellow-6 rounded px-1.5 py-0.5",
-}
-
-
-def _to_optional_int(value: object) -> int | None:
-    """Convert dynamic payload value to int or None when unavailable."""
-    if value is None:
-        return None
-    return _to_int(value)
-
-
-def _file_operation_phase_text(phase: str) -> str:
-    """Map backend phase keys to user-facing file-operation text."""
-    normalized = str(phase or "").strip().lower()
-    if normalized == "download":
-        return t("Downloading cfg files from printer...")
-    if normalized == "upload":
-        return t("Uploading changed cfg files to printer...")
-    if normalized == "parse":
-        return t("Parsing local cfg files...")
-    return t("Working on files...")
-
-
-def _translated_active_filter_state(active_filter: str) -> str:
-    """Return localized active-filter state label for button text."""
-    normalized = str(active_filter or "").strip().lower()
-    if normalized == "active":
-        return t("active")
-    if normalized == "inactive":
-        return t("inactive")
-    return t("all")
-
-
-def _status_badge_key(macro: dict[str, object]) -> str:
-    """Resolve macro row status key for consistent badge rendering."""
-    if macro.get("is_deleted", False):
-        return "deleted"
-    if macro.get("is_new", False):
-        return "new"
-    if not macro.get("is_loaded", True):
-        return "not_loaded"
-    if macro.get("is_active", False) and macro.get("is_dynamic", False):
-        return "dynamic"
-    if macro.get("is_active", False) and macro.get("renamed_from"):
-        return "renamed"
-    if macro.get("is_active", False):
-        return "active"
-    return "inactive"
-
-
-def _default_keep_file(entries: list[dict[str, object]]) -> str:
-    """Choose default keep target, preferring currently active entry."""
-    for entry in entries:
-        if entry.get("is_active", False):
-            return str(entry.get("file_path", ""))
-    return str(entries[0].get("file_path", "")) if entries else ""
-
-
-def _format_moonraker_url_host(host: str) -> str:
-    """Return a URL-safe host string for the Moonraker endpoint."""
-    normalized_host = str(host or "").strip() or "127.0.0.1"
-    if ":" in normalized_host and not normalized_host.startswith("["):
-        return f"[{normalized_host}]"
-    return normalized_host
-
-
-def _is_remote_conflict_error(error: Exception | str) -> bool:
-    """Return True when an error indicates stale remote cfg state."""
-    text = str(error or "").lower()
-    return "remote cfg conflict" in text
-
-
-def _is_dynamic_version_row(version_row: dict[str, object]) -> bool:
-    """Return True when selected macro version is sourced from dynamic configs."""
-    return bool(version_row.get("is_dynamic", False))
-
-
-def _default_pr_head_branch(source_vendor: str, source_model: str) -> str:
-    """Build a unique default branch name for PR publishing."""
-    vendor = str(source_vendor or "").lower().replace(" ", "-") or "printer"
-    model = str(source_model or "").lower().replace(" ", "-") or "model"
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return f"klippervault/{vendor}-{model}/{stamp}"
-
-
-def _dynamic_macro_file_paths(macros: list[dict[str, object]]) -> set[str]:
-    """Collect dynamic macro file paths from cached macro rows."""
-    return {
-        str(macro.get("file_path", ""))
-        for macro in macros
-        if bool(macro.get("is_dynamic", False))
-    }
-
-
-def _normalize_touched_cfg_paths(paths: list[str], config_dir: Path) -> set[str]:
-    """Normalize touched cfg paths to relative and basename match keys."""
-    normalized: set[str] = set()
-    for raw in paths:
-        path_str = str(raw or "").strip()
-        if not path_str:
-            continue
-        candidate = Path(path_str)
-        if candidate.is_absolute():
-            try:
-                path_str = str(candidate.resolve().relative_to(config_dir.resolve()))
-            except Exception:
-                path_str = str(candidate)
-        normalized.add(path_str)
-        normalized.add(str(Path(path_str).name))
-    return normalized
-
-
-def _paths_include_dynamic_macros(normalized_paths: set[str], dynamic_files: set[str]) -> bool:
-    """Return True when normalized touched paths include any dynamic macro file."""
-    for dynamic_file in dynamic_files:
-        if dynamic_file in normalized_paths:
-            return True
-        if Path(dynamic_file).name in normalized_paths:
-            return True
-    return False
-
-
-def _standard_profile_status(ready: bool, detail: str) -> tuple[str, str]:
-    """Return status text and label class for standard profile readiness."""
-    detail_text = str(detail or "").strip()
-    if ready:
-        status_text = t("Printer connection ready")
-        if detail_text:
-            status_text = t("Printer connection ready: {detail}", detail=detail_text)
-        return status_text, "text-xs text-positive"
-
-    status_text = t("No active printer connection configured")
-    if detail_text:
-        status_text = t("No active printer connection configured: {detail}", detail=detail_text)
-    return status_text, "text-xs text-negative"
-
-
-def _printer_offline_status_text(detail: str) -> str:
-    """Return printer-offline status text with optional detail."""
-    detail_text = str(detail or "").strip()
-    if detail_text:
-        return t("Printer offline: {detail}", detail=detail_text)
-    return t("Printer offline")
-
-
-def _progress_value_and_percent(current: int, total: int) -> tuple[float, int]:
-    """Normalize progress inputs into clamped value and rounded percent."""
-    display_total = max(int(total), 1)
-    progress_value = min(max(int(current) / display_total, 0.0), 1.0)
-    percent = int(round(progress_value * 100.0))
-    return progress_value, percent
-
-
-def _reload_button_state(
-    *,
-    printer_is_printing: bool,
-    printer_is_busy: bool,
-    restart_required: bool,
-    dynamic_reload_required: bool,
-) -> tuple[bool, bool]:
-    """Return visibility/enabled flags for restart and dynamic reload actions."""
-    is_allowed = (not printer_is_printing) and (not printer_is_busy)
-    show_restart = restart_required and is_allowed
-    # Dynamic macros can be reloaded while printing.
-    show_dynamic_reload = (not restart_required) and dynamic_reload_required
-    return show_restart, show_dynamic_reload
-
-
-def _save_config_button_enabled(
-    *,
-    is_ready: bool,
-    printer_is_printing: bool,
-    has_unsynced_local_changes: bool,
-    is_virtual_printer: bool,
-) -> bool:
-    """Return True when Save Config action should be enabled."""
-    if is_virtual_printer:
-        return False
-    can_upload_now = is_ready and (not printer_is_printing)
-    return can_upload_now and has_unsynced_local_changes
-
-
-def _normalized_theme_mode(value: object) -> str:
-    """Normalize a persisted theme mode value to one supported option."""
-    mode = str(value or "auto").strip().lower()
-    if mode in {"auto", "light", "dark"}:
-        return mode
-    return "auto"
-
-
-def _apply_theme_mode(dark_mode: ui.dark_mode, theme_mode: str) -> None:
-    """Apply one theme mode to the NiceGUI dark mode controller."""
-    normalized = _normalized_theme_mode(theme_mode)
-    if normalized == "light":
-        dark_mode.disable()
-        return
-    if normalized == "dark":
-        dark_mode.enable()
-        return
-    dark_mode.auto()
-
-
-def _safe_notify(message: str, notify_type: str = "info") -> None:
-    """Best-effort notify helper for callbacks that may outlive their UI slot."""
-    try:
-        ui.notify(message, type=notify_type)
-    except RuntimeError:
-        # NiceGUI can lose slot context when callbacks rerender/delete parent elements.
-        return
 
 
 def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> None:
@@ -302,10 +108,9 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     # These allow callbacks defined later to close over the same variables
     # that the builder functions assign. Python closures capture variables by
     # reference, so callbacks always see the post-builder values at call time.
-    start_page_container: ui.column | None = None
-    macro_page_container: ui.column | None = None
-    printer_editor_card: ui.card | None = None
-    printer_editor_title: ui.label | None = None
+    state.start_page_container: ui.column | None = None
+    state.printer_editor_card: ui.card | None = None
+    state.printer_editor_title: ui.label | None = None
     back_to_printers_button: ui.button | None = None
     macro_actions_button: ui.button | None = None
     macro_actions_menu: ui.menu | None = None
@@ -317,61 +122,16 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     save_config_button: ui.button | None = None
     index_button: ui.button | None = None
     settings_toolbar_button: ui.button | None = None
-    start_page_status_label: ui.label | None = None
-    refresh_printers_button: ui.button | None = None
-    add_printer_button: ui.button | None = None
-    test_active_printer_button: ui.button | None = None
+    state.start_page_status_label: ui.label | None = None
+    state.refresh_printers_button: ui.button | None = None
+    state.add_printer_button: ui.button | None = None
+    state.test_active_printer_button: ui.button | None = None
     backup_name_input: ui.input | None = None
     backup_error_label: ui.label | None = None
     create_backup_button: ui.button | None = None
     backup_view_title: ui.label | None = None
     backup_view_subtitle: ui.label | None = None
     backup_view_table: ui.table | None = None
-    # Macro page section variables
-    search_input: ui.input | None = None
-    duplicates_button: ui.button | None = None
-    new_button: ui.button | None = None
-    active_filter_button: ui.button | None = None
-    sort_radio: ui.radio | None = None
-    macro_count_label: ui.label | None = None
-    prev_page_button: ui.button | None = None
-    next_page_button: ui.button | None = None
-    macro_list: ui.list | None = None
-    viewer: MacroViewer | None = None
-    total_macros_label: ui.label | None = None
-    duplicate_macros_label: ui.label | None = None
-    deleted_macros_label: ui.label | None = None
-    distinct_files_label: ui.label | None = None
-    last_update_label: ui.label | None = None
-    purge_deleted_button: ui.button | None = None
-    status_label: ui.label | None = None
-    standard_profile_label: ui.label | None = None
-    standard_cfg_list_button: ui.button | None = None
-    backup_list: ui.list | None = None
-    # Start page section variables
-    printer_editor_card: ui.card | None = None
-    printer_editor_title: ui.label | None = None
-    ssh_profile_select: ui.select | None = None
-    ssh_profile_name_input: ui.input | None = None
-    ssh_profile_host_input: ui.input | None = None
-    ssh_profile_port_input: ui.number | None = None
-    ssh_profile_username_input: ui.input | None = None
-    ssh_profile_remote_dir_input: ui.input | None = None
-    ssh_profile_moonraker_url_input: ui.input | None = None
-    ssh_profile_auth_mode_select: ui.select | None = None
-    ssh_profile_secret_input: ui.input | None = None
-    ssh_profile_secret_mode_label: ui.label | None = None
-    ssh_profile_secret_state_label: ui.label | None = None
-    ssh_profile_active_toggle: ui.switch | None = None
-    ssh_profile_error_label: ui.label | None = None
-    ssh_profile_status_label: ui.label | None = None
-    refresh_ssh_profiles_button: ui.button | None = None
-    new_ssh_profile_button: ui.button | None = None
-    delete_ssh_profile_button: ui.button | None = None
-    activate_ssh_profile_button: ui.button | None = None
-    save_ssh_profile_button: ui.button | None = None
-    hide_printer_editor_button: ui.button | None = None
-    printer_cards_container: ui.row | None = None
     # Early dialog variables
     printer_connecting_dialog: ui.dialog | None = None
     printer_connecting_label: ui.label | None = None
@@ -529,26 +289,19 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     # ── Section builder: macro page layout ───────────────────────────────────
     def _build_macro_page() -> None:
         """Build the macro workspace page (macro list, viewer, statistics cards)."""
-        nonlocal search_input, duplicates_button, new_button, active_filter_button, sort_radio
-        nonlocal macro_count_label, prev_page_button, next_page_button, macro_list, viewer
-        nonlocal total_macros_label, duplicate_macros_label, deleted_macros_label, distinct_files_label
-        nonlocal last_update_label, purge_deleted_button, status_label, standard_profile_label
-        nonlocal standard_cfg_list_button, backup_list, macro_page_container
-
         with ui.column().classes("w-full") as macro_page_container_ref:
-            macro_page_container = macro_page_container_ref
             state.macro_page_container = macro_page_container_ref
             with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 xl:grid-cols-4 gap-4 p-4 xl:h-[calc(100vh-110px)]"):
                 with ui.card().classes("col-span-1 xl:h-full flex flex-col overflow-hidden min-h-[55vh] xl:min-h-0"):
                     ui.label(t("Indexed macros")).classes("text-lg font-semibold mb-2 shrink-0")
                     search_input = ui.input(placeholder=t("Search macros…")).props("clearable dense outlined").classes("w-full mb-1 shrink-0")
                     with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
-                        duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
-                        new_button = ui.button(t("Show new")).props("flat dense no-caps")
-                        active_filter_button = ui.button(t("Filter: {state}", state=t("all"))).props("flat dense no-caps")
+                        state.duplicates_button = ui.button(t("Show duplicates")).props("flat dense no-caps")
+                        state.new_button = ui.button(t("Show new")).props("flat dense no-caps")
+                        state.active_filter_button = ui.button(t("Filter: {state}", state=t("all"))).props("flat dense no-caps")
                     with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
                         ui.label(t("Sort:")).classes("text-xs text-grey-4")
-                        sort_radio = (
+                        state.sort_radio = (
                             ui.radio(
                                 options={"load_order": t("Load order"), "alpha_asc": "A → Z", "alpha_desc": "Z → A"},
                                 value="load_order",
@@ -556,113 +309,96 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                             .props("inline dense")
                             .classes("text-xs")
                         )
-                    macro_count_label = ui.label(t("Items: {visible}", visible=0)).classes("text-sm text-grey-4 shrink-0")
+                    state.macro_count_label = ui.label(t("Items: {visible}", visible=0)).classes("text-sm text-grey-4 shrink-0")
                     with ui.row().classes("items-center gap-2 mb-1 shrink-0"):
-                        prev_page_button = ui.button(t("Prev"))
-                        prev_page_button.props("flat dense no-caps")
-                        next_page_button = ui.button(t("Next"))
-                        next_page_button.props("flat dense no-caps")
-                    macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
+                        state.prev_page_button = ui.button(t("Prev"))
+                        state.prev_page_button.props("flat dense no-caps")
+                        state.next_page_button = ui.button(t("Next"))
+                        state.next_page_button.props("flat dense no-caps")
+                    state.macro_list = ui.list().props("separator").classes("w-full overflow-y-auto flex-1 min-h-0")
                     state.macro_search = search_input
-                    state.macro_list = macro_list
 
-                viewer = MacroViewer()
-                state.viewer = viewer
+                state.viewer = MacroViewer()
 
                 with ui.card().classes("col-span-1 md:col-span-3 xl:col-span-1 xl:h-full overflow-auto"):
                     ui.label(t("Stored macro statistics")).classes("text-lg font-semibold")
                     with ui.column().classes("gap-2 mt-2"):
-                        total_macros_label = ui.label(t("Total macros: {count}", count=0))
-                        duplicate_macros_label = ui.label(t("Duplicate macros: {count}", count=0))
-                        deleted_macros_label = ui.label(t("Deleted macros: {count}", count=0))
-                        distinct_files_label = ui.label(t("Config files: {count}", count=0))
-                        last_update_label = ui.label(t("Last update: never"))
-                        purge_deleted_button = ui.button(t("Remove all deleted macros")).props(
+                        state.total_macros_label = ui.label(t("Total macros: {count}", count=0))
+                        state.duplicate_macros_label = ui.label(t("Duplicate macros: {count}", count=0))
+                        state.deleted_macros_label = ui.label(t("Deleted macros: {count}", count=0))
+                        state.distinct_files_label = ui.label(t("Config files: {count}", count=0))
+                        state.last_update_label = ui.label(t("Last update: never"))
+                        state.purge_deleted_button = ui.button(t("Remove all deleted macros")).props(
                             "flat color=negative no-caps"
                         )
-                        purge_deleted_button.set_visibility(False)
+                        state.purge_deleted_button.set_visibility(False)
 
                     ui.separator().classes("my-2")
                     ui.label(t("Status")).classes("text-md font-semibold mb-1")
-                    status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
-                    state.status_label = status_label
-                    standard_profile_label = ui.label("").classes("text-xs text-grey-5")
-                    standard_profile_label.set_visibility(standard_mode_enabled)
-                    state.standard_profile_label = standard_profile_label
+                    state.status_label = ui.label(t("Ready")).classes("text-sm text-grey-4")
+                    state.standard_profile_label = ui.label("").classes("text-xs text-grey-5")
+                    state.standard_profile_label.set_visibility(standard_mode_enabled)
                     with ui.row().classes("items-center gap-2"):
-                        standard_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
-                        standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
+                        state.standard_cfg_list_button = ui.button(t("Show remote cfg files")).props("flat dense no-caps")
+                        state.standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
                     ui.separator().classes("my-2")
                     ui.label(t("Backups")).classes("text-md font-semibold mb-1")
-                    backup_list = ui.list().props("separator").classes("w-full max-h-[46vh] overflow-y-auto")
+                    state.backup_list = ui.list().props("separator").classes("w-full max-h-[46vh] overflow-y-auto")
 
     # ── Section builder: start page and printer editor ────────────────────────
     def _build_start_page() -> None:
         """Build the start page (printer selector and editor)."""
-        nonlocal start_page_container, printer_editor_card, printer_editor_title
-        nonlocal start_page_status_label, refresh_printers_button, add_printer_button, test_active_printer_button
-        nonlocal ssh_profile_select, ssh_profile_name_input, ssh_profile_host_input
-        nonlocal ssh_profile_port_input, ssh_profile_username_input, ssh_profile_remote_dir_input
-        nonlocal ssh_profile_moonraker_url_input, ssh_profile_auth_mode_select
-        nonlocal ssh_profile_secret_input, ssh_profile_secret_mode_label, ssh_profile_secret_state_label
-        nonlocal ssh_profile_active_toggle, ssh_profile_error_label, ssh_profile_status_label
-        nonlocal refresh_ssh_profiles_button, new_ssh_profile_button, delete_ssh_profile_button
-        nonlocal activate_ssh_profile_button, save_ssh_profile_button, hide_printer_editor_button
-        nonlocal printer_cards_container
-
         with ui.column().classes("w-full p-4 gap-4") as start_page_container_ref:
-            start_page_container = start_page_container_ref
             state.start_page_container = start_page_container_ref
             ui.label(t("Select printer")).classes("text-2xl font-semibold")
             ui.label(t("Choose a configured printer to open the macro workspace.")).classes("text-sm text-grey-5")
-            start_page_status_label = ui.label("").classes("text-sm text-grey-4")
+            state.start_page_status_label = ui.label("").classes("text-sm text-grey-4")
             with ui.row().classes("w-full gap-3 items-center"):
-                refresh_printers_button = ui.button(t("Refresh printers"), icon="refresh").props("flat no-caps")
-                add_printer_button = ui.button(t("Add printer"), icon="add").props("flat no-caps")
-                test_active_printer_button = ui.button(t("Test active connection"), icon="network_check").props("flat no-caps")
-            printer_cards_container = ui.row().classes("w-full gap-4 flex-wrap")
-            state.printer_cards_container = printer_cards_container
+                state.refresh_printers_button = ui.button(t("Refresh printers"), icon="refresh").props("flat no-caps")
+                state.add_printer_button = ui.button(t("Add printer"), icon="add").props("flat no-caps")
+                state.test_active_printer_button = ui.button(t("Test active connection"), icon="network_check").props("flat no-caps")
+            state.printer_cards_container = ui.row().classes("w-full gap-4 flex-wrap")
 
-        with start_page_container:
+        with state.start_page_container:
             with ui.card().classes("w-full") as printer_editor_card_ref:
-                printer_editor_card = printer_editor_card_ref
-                printer_editor_title = ui.label(t("Printer connection management")).classes("text-lg font-semibold")
+                state.printer_editor_card = printer_editor_card_ref
+                state.printer_editor_title = ui.label(t("Printer connection management")).classes("text-lg font-semibold")
                 ui.label(t("Configure SSH settings as part of each printer profile for standard mode.")).classes("text-sm text-grey-5")
-                ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
+                state.ssh_profile_select = ui.select(options=[], label=t("Saved profiles")).props("outlined dense").classes("w-full mt-2")
                 with ui.row().classes("w-full gap-2"):
-                    ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
-                    ssh_profile_host_input = ui.input(label=t("Host"), on_change=lambda e: _sync_moonraker_url_host(str(e.value or ""))).props("outlined dense").classes("flex-1")
+                    state.ssh_profile_name_input = ui.input(label=t("Profile name")).props("outlined dense").classes("flex-1")
+                    state.ssh_profile_host_input = ui.input(label=t("Host"), on_change=lambda e: _sync_moonraker_url_host(str(e.value or ""))).props("outlined dense").classes("flex-1")
                 with ui.row().classes("w-full gap-2"):
-                    ssh_profile_port_input = ui.number(label=t("Port"), value=22).props("outlined dense").classes("w-32")
-                    ssh_profile_username_input = ui.input(label=t("Username")).props("outlined dense").classes("flex-1")
-                ssh_profile_remote_dir_input = ui.input(label=t("Remote config directory"), value="~/printer_data/config").props(
+                    state.ssh_profile_port_input = ui.number(label=t("Port"), value=22).props("outlined dense").classes("w-32")
+                    state.ssh_profile_username_input = ui.input(label=t("Username")).props("outlined dense").classes("flex-1")
+                state.ssh_profile_remote_dir_input = ui.input(label=t("Remote config directory"), value="~/printer_data/config").props(
                     "outlined dense"
                 ).classes("w-full")
-                ssh_profile_moonraker_url_input = ui.input(
+                state.ssh_profile_moonraker_url_input = ui.input(
                     label=t("Moonraker URL"), value="http://127.0.0.1:7125"
                 ).props("outlined dense").classes("w-full")
-                ssh_profile_auth_mode_select = ui.select(
+                state.ssh_profile_auth_mode_select = ui.select(
                     options={"key": t("SSH key"), "password": t("Password")},
-                    value="key",
+                    value="password",
                     label=t("Authentication mode"),
                 ).props("outlined dense").classes("w-full")
-                ssh_profile_secret_input = ui.input(label=t("SSH secret")).props("outlined dense type=text").classes(
+                state.ssh_profile_secret_input = ui.input(label=t("SSH password/secret")).props("outlined dense type=text").classes(
                     "w-full"
                 )
-                ssh_profile_secret_mode_label = ui.label("").classes("text-xs text-grey-5")
-                ssh_profile_secret_state_label = ui.label("").classes("text-xs text-grey-5")
-                ssh_profile_active_toggle = ui.switch(t("Set as active profile"), value=True)
-                ssh_profile_error_label = ui.label("").classes("text-sm text-negative mt-1")
-                ssh_profile_status_label = ui.label("").classes("text-sm text-positive mt-1")
+                state.ssh_profile_secret_mode_label = ui.label("").classes("text-xs text-grey-5")
+                state.ssh_profile_secret_state_label = ui.label("").classes("text-xs text-grey-5")
+                state.ssh_profile_active_toggle = ui.switch(t("Set as active profile"), value=True)
+                state.ssh_profile_error_label = ui.label("").classes("text-sm text-negative mt-1")
+                state.ssh_profile_status_label = ui.label("").classes("text-sm text-positive mt-1")
                 with ui.row().classes("w-full justify-between mt-3"):
                     with ui.row().classes("gap-2"):
-                        hide_printer_editor_button = ui.button(t("Close editor")).props("flat no-caps")
-                        refresh_ssh_profiles_button = ui.button(t("Refresh")).props("flat no-caps")
-                        new_ssh_profile_button = ui.button(t("Add printer")).props("flat no-caps")
+                        state.hide_printer_editor_button = ui.button(t("Close editor")).props("flat no-caps")
+                        state.refresh_ssh_profiles_button = ui.button(t("Refresh")).props("flat no-caps")
+                        state.new_ssh_profile_button = ui.button(t("Add printer")).props("flat no-caps")
                     with ui.row().classes("gap-2"):
-                        delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
-                        activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")
-                        save_ssh_profile_button = ui.button(t("Save profile")).props("color=primary no-caps")
+                        state.delete_ssh_profile_button = ui.button(t("Delete selected")).props("flat color=negative no-caps")
+                        state.activate_ssh_profile_button = ui.button(t("Activate selected")).props("flat no-caps")
+                        state.save_ssh_profile_button = ui.button(t("Save profile")).props("color=primary no-caps")
             printer_editor_card_ref.set_visibility(False)
 
     # ── Section builder: early dialogs ────────────────────────────────────────
@@ -1140,7 +876,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             return
         state.save_path_dialog.close()
         state._save_path_pending_src = None
-        status_label.set_text(t("File saved to {path}.", path=str(dest)))
+        state.status_label.set_text(t("File saved to {path}.", path=str(dest)))
 
     # ── Build macro operation dialogs ─────────────────────────────────────────
     _build_macro_operation_dialogs()
@@ -1161,7 +897,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             return False
         if state.macro_list is None or state.macro_list.is_deleted:
             return False
-        if backup_list is None or backup_list.is_deleted:
+        if state.backup_list is None or state.backup_list.is_deleted:
             return False
         return True
 
@@ -1170,10 +906,10 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         normalized = "macro" if str(view).strip().lower() == "macro" else "start"
         state.current_view = normalized
         is_macro = normalized == "macro"
-        if start_page_container is not None:
-            start_page_container.set_visibility(not is_macro)
-        if macro_page_container is not None:
-            macro_page_container.set_visibility(is_macro)
+        if state.start_page_container is not None:
+            state.start_page_container.set_visibility(not is_macro)
+        if state.macro_page_container is not None:
+            state.macro_page_container.set_visibility(is_macro)
         back_to_printers_button.set_visibility(is_macro)
         if state.macro_actions_button is not None:
             state.macro_actions_button.set_visibility(is_macro)
@@ -1326,8 +1062,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         state.standard_profile_status_text = status_text
         label.classes(replace=label_class)
         label.set_text(state.standard_profile_status_text)
-        if standard_cfg_list_button is not None:
-            standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
+        if state.standard_cfg_list_button is not None:
+            state.standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
         _refresh_save_config_button()
 
     def refresh_standard_profile_state() -> None:
@@ -1416,7 +1152,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         try:
             profiles = service.list_printer_profiles()
         except Exception as exc:
-            status_label.set_text(t("Failed to load printer profiles: {error}", error=exc))
+            state.status_label.set_text(t("Failed to load printer profiles: {error}", error=exc))
             return
 
         has_non_default_profile = any(
@@ -1455,12 +1191,12 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             result = service.activate_printer_profile(profile_id)
         except Exception as exc:
             message = t("Failed to activate printer profile: {error}", error=exc)
-            status_label.set_text(message)
+            state.status_label.set_text(message)
             _safe_notify(message, "negative")
             return
         if not bool(result.get("ok", False)):
             message = t("Failed to activate printer profile.")
-            status_label.set_text(message)
+            state.status_label.set_text(message)
             _safe_notify(message, "warning")
             return
 
@@ -1475,7 +1211,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         _open_macro_migration_prompt_if_needed("workspace_open")
         _maybe_run_deferred_startup_scan("printer profile selected")
         message = t("Active printer profile updated.")
-        status_label.set_text(message)
+        state.status_label.set_text(message)
         _safe_notify(message, "positive")
 
     def _printer_card_connection_text(profile: dict[str, object]) -> str:
@@ -1491,15 +1227,15 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
     def _show_printer_editor(title_text: str) -> None:
         """Reveal the printer editor card with a contextual title."""
-        if printer_editor_title is not None:
-            printer_editor_title.set_text(title_text)
-        if printer_editor_card is not None:
-            printer_editor_card.set_visibility(True)
+        if state.printer_editor_title is not None:
+            state.printer_editor_title.set_text(title_text)
+        if state.printer_editor_card is not None:
+            state.printer_editor_card.set_visibility(True)
 
     def _hide_printer_editor() -> None:
         """Hide the printer editor card until explicitly requested."""
-        if printer_editor_card is not None:
-            printer_editor_card.set_visibility(False)
+        if state.printer_editor_card is not None:
+            state.printer_editor_card.set_visibility(False)
 
     def _open_add_printer_editor() -> None:
         """Open editor in add-printer mode."""
@@ -1520,22 +1256,22 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 break
 
         if selected_option:
-            ssh_profile_select.set_value(selected_option)
+            state.ssh_profile_select.set_value(selected_option)
             _load_selected_ssh_profile()
         else:
             reset_ssh_profile_form_for_new()
             for profile in service.list_printer_profiles():
                 if _to_int(profile.get("id"), default=0) != int(profile_id):
                     continue
-                ssh_profile_name_input.set_value(str(profile.get("profile_name", "") or ""))
-                ssh_profile_host_input.set_value(str(profile.get("ssh_host", "") or ""))
-                ssh_profile_port_input.set_value(_to_int(profile.get("ssh_port"), default=22))
-                ssh_profile_username_input.set_value(str(profile.get("ssh_username", "") or ""))
-                ssh_profile_remote_dir_input.set_value(str(profile.get("ssh_remote_config_dir", "") or ""))
-                ssh_profile_moonraker_url_input.set_value(str(profile.get("ssh_moonraker_url", "") or ""))
+                state.ssh_profile_name_input.set_value(str(profile.get("profile_name", "") or ""))
+                state.ssh_profile_host_input.set_value(str(profile.get("ssh_host", "") or ""))
+                state.ssh_profile_port_input.set_value(_to_int(profile.get("ssh_port"), default=22))
+                state.ssh_profile_username_input.set_value(str(profile.get("ssh_username", "") or ""))
+                state.ssh_profile_remote_dir_input.set_value(str(profile.get("ssh_remote_config_dir", "") or ""))
+                state.ssh_profile_moonraker_url_input.set_value(str(profile.get("ssh_moonraker_url", "") or ""))
                 auth_mode = str(profile.get("ssh_auth_mode", "key") or "key").strip().lower()
-                ssh_profile_auth_mode_select.set_value(auth_mode if auth_mode in {"key", "password"} else "key")
-                ssh_profile_active_toggle.set_value(bool(profile.get("is_active", False)))
+                state.ssh_profile_auth_mode_select.set_value(auth_mode if auth_mode in {"key", "password"} else "key")
+                state.ssh_profile_active_toggle.set_value(bool(profile.get("is_active", False)))
                 _set_auth_mode_fields()
                 break
 
@@ -1549,8 +1285,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         try:
             profiles = service.list_printer_profiles()
         except Exception as exc:
-            if not start_page_status_label.is_deleted:
-                start_page_status_label.set_text(t("Failed to load printer profiles: {error}", error=exc))
+            if not state.start_page_status_label.is_deleted:
+                state.start_page_status_label.set_text(t("Failed to load printer profiles: {error}", error=exc))
             return
 
         has_non_default_profile = any(
@@ -1623,11 +1359,11 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                         ).props("flat dense no-caps")
                 card_count += 1
 
-        if not start_page_status_label.is_deleted:
+        if not state.start_page_status_label.is_deleted:
             if card_count <= 0:
-                start_page_status_label.set_text(t("No printer profiles found. Configure one below."))
+                state.start_page_status_label.set_text(t("No printer profiles found. Configure one below."))
             else:
-                start_page_status_label.set_text(t("Configured printers: {count}", count=card_count))
+                state.start_page_status_label.set_text(t("Configured printers: {count}", count=card_count))
 
     render_printer_cards = _render_printer_cards_impl
 
@@ -1827,30 +1563,30 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def remove_deleted_macro_from_db(file_path: str, macro_name: str) -> None:
         """Permanently remove selected deleted macro from SQLite history."""
         if not file_path or not macro_name:
-            status_label.set_text(t("Cannot remove deleted macro: missing identity."))
+            state.status_label.set_text(t("Cannot remove deleted macro: missing identity."))
             return
 
         try:
             result = service.remove_deleted(file_path, macro_name)
         except Exception as exc:
-            status_label.set_text(t("Failed to remove deleted macro: {error}", error=exc))
+            state.status_label.set_text(t("Failed to remove deleted macro: {error}", error=exc))
             return
 
         reason = str(result.get("reason", ""))
         removed = _to_int(result.get("removed", 0))
         if removed > 0:
-            status_label.set_text(t(
+            state.status_label.set_text(t(
                 "Removed deleted macro '{macro_name}' from {file_path} ({removed} row(s)).",
                 macro_name=macro_name,
                 file_path=file_path,
                 removed=removed,
             ))
         elif reason == "not_deleted":
-            status_label.set_text(t("Selected macro is not marked deleted; nothing removed."))
+            state.status_label.set_text(t("Selected macro is not marked deleted; nothing removed."))
         elif reason == "not_found":
-            status_label.set_text(t("Macro not found in database."))
+            state.status_label.set_text(t("Macro not found in database."))
         else:
-            status_label.set_text(t("No rows removed."))
+            state.status_label.set_text(t("No rows removed."))
 
         refresh_data()
 
@@ -2018,7 +1754,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         state.macro_delete_dialog.open()
 
     def confirm_macro_delete() -> None:
-        """Execute confirmed macro deletion from the viewer dialog."""
+        """Execute confirmed macro deletion from the state.viewer dialog."""
         if state.macro_delete_target is None:
             state.macro_delete_error_label.set_text(t("Selected entry data is not available."))
             return
@@ -2042,15 +1778,15 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
     def update_duplicates_button_label() -> None:
         """Sync duplicates filter button text with current filter state."""
-        duplicates_button.set_text(t("Show all macros") if state.show_duplicates_only else t("Show duplicates"))
+        state.duplicates_button.set_text(t("Show all macros") if state.show_duplicates_only else t("Show duplicates"))
 
     def update_new_button_label() -> None:
         """Sync new-macros filter button text with current filter state."""
-        new_button.set_text(t("Show all macros") if state.show_new_only else t("Show new"))
+        state.new_button.set_text(t("Show all macros") if state.show_new_only else t("Show new"))
 
     def update_active_filter_button_label() -> None:
         """Sync active/inactive cycle button text with current filter state."""
-        active_filter_button.set_text(t("Filter: {state}", state=_translated_active_filter_state(state.active_filter)))
+        state.active_filter_button.set_text(t("Filter: {state}", state=_translated_active_filter_state(state.active_filter)))
 
     def render_status_badge(status_key: str) -> None:
         """Render a status badge with centralized label/class mapping."""
@@ -2338,15 +2074,15 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             )
         query = state.search_query.strip().lower()
         filter_active = bool(query) or state.show_duplicates_only or state.show_new_only or state.active_filter != "all"
-        macro_count_label.set_text(
+        state.macro_count_label.set_text(
             t("Items: {visible} / {total}", visible=len(visible_macros), total=state.total_macro_rows)
             if filter_active
             else t("Items: {visible}", visible=len(visible_macros))
         )
 
         total_pages = max(1, (max(state.total_macro_rows, 1) + state.list_page_size - 1) // state.list_page_size)
-        prev_page_button.set_enabled(state.list_page_index > 0)
-        next_page_button.set_enabled((state.list_page_index + 1) < total_pages)
+        state.prev_page_button.set_enabled(state.list_page_index > 0)
+        state.next_page_button.set_enabled((state.list_page_index + 1) < total_pages)
 
         if not visible_macros:
             with state.macro_list:
@@ -2424,10 +2160,10 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         """Render right-panel backup entries and attach action handlers."""
         if not _ui_still_available():
             return
-        backup_list.clear()
+        state.backup_list.clear()
         backups = service.list_backups()
         if not backups:
-            with backup_list:
+            with state.backup_list:
                 ui.item(t("No backups created yet."))
             return
 
@@ -2494,7 +2230,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             )
             state.delete_dialog.open()
 
-        with backup_list:
+        with state.backup_list:
             for backup in backups:
                 with ui.row().classes("w-full items-center gap-2 no-wrap"):
                     ui.label(str(backup.get("backup_name", "-")).strip() or "-").classes(
@@ -2706,12 +2442,12 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         state._cached_versions_key = None
         state._cached_versions = []
         state.duplicate_warning_button.set_visibility((duplicate_macros > 0) and state.current_view == "macro")
-        total_macros_label.set_text(t("Total macros: {count}", count=stats["total_macros"]))
-        duplicate_macros_label.set_text(t("Duplicate macros: {count}", count=duplicate_macros))
-        deleted_macros_label.set_text(t("Deleted macros: {count}", count=deleted_macros))
-        purge_deleted_button.set_visibility(deleted_macros > 0)
-        distinct_files_label.set_text(t("Config files: {count}", count=stats["distinct_cfg_files"]))
-        last_update_label.set_text(t("Last update: {value}", value=_format_ts(_to_optional_int(stats.get("latest_update_ts")))))
+        state.total_macros_label.set_text(t("Total macros: {count}", count=stats["total_macros"]))
+        state.duplicate_macros_label.set_text(t("Duplicate macros: {count}", count=duplicate_macros))
+        state.deleted_macros_label.set_text(t("Deleted macros: {count}", count=deleted_macros))
+        state.purge_deleted_button.set_visibility(deleted_macros > 0)
+        state.distinct_files_label.set_text(t("Config files: {count}", count=stats["distinct_cfg_files"]))
+        state.last_update_label.set_text(t("Last update: {value}", value=_format_ts(_to_optional_int(stats.get("latest_update_ts")))))
         _refresh_macro_migration_action_visibility()
 
     async def perform_index(trigger: str, *, sync_remote: bool = True) -> None:
@@ -2875,7 +2611,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 lambda: service.load_cfg_loading_overview(),
             )
         except Exception as exc:
-            status_label.set_text(t("Failed to load cfg parsing overview: {error}", error=exc))
+            state.status_label.set_text(t("Failed to load cfg parsing overview: {error}", error=exc))
             return
 
         file_rows = _dict_rows(overview.get("klipper_order", []))
@@ -2900,7 +2636,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def _set_backup_created_status(result: dict[str, object]) -> None:
         """Set backup-created status text from create-backup result payload."""
         created_label = _format_ts(_to_int(result.get("created_at", 0)))
-        status_label.set_text(
+        state.status_label.set_text(
             t(
                 "Backup '{backup_name}' created at {created_at} with {macro_count} macro(s) from {cfg_file_count} cfg file(s).",
                 backup_name=result["backup_name"],
@@ -2914,7 +2650,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         """Create named backup snapshot and update status/list output."""
         if state.printer_is_printing:
             backup_error_label.set_text(t("Blocked while printer is printing."))
-            status_label.set_text(t("Blocked: printer is currently printing. Backup is disabled."))
+            state.status_label.set_text(t("Blocked: printer is currently printing. Backup is disabled."))
             return
         name = _validate_backup_name_input()
         if name is None:
@@ -2931,7 +2667,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             )
         except Exception as exc:
             backup_error_label.set_text(t("Backup failed: {error}", error=exc))
-            status_label.set_text(t("Backup failed: {error}", error=exc))
+            state.status_label.set_text(t("Backup failed: {error}", error=exc))
             return
 
         state.backup_dialog.close()
@@ -3142,13 +2878,13 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             )
         except Exception as exc:
             export_error_label.set_text(t("Export failed: {error}", error=exc))
-            status_label.set_text(t("Export failed: {error}", error=exc))
+            state.status_label.set_text(t("Export failed: {error}", error=exc))
             return
 
         state.export_dialog.close()
         exported_path = Path(str(result.get("file_path", "")))
         _deliver_exported_file(exported_path)
-        status_label.set_text(
+        state.status_label.set_text(
             t(
                 "Exported {count} macro(s) to {path}.",
                 count=result.get("macro_count", 0),
@@ -3242,7 +2978,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def export_online_update_repo_zip() -> None:
         """Export active local macros as a ZIP for the online update repository."""
         if _printer_profile_missing():
-            status_label.set_text(t("Set printer vendor/model before exporting update repository zip."))
+            state.status_label.set_text(t("Set printer vendor/model before exporting update repository zip."))
             return
         source_vendor, source_model = _active_printer_identity()
 
@@ -3258,12 +2994,12 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 repo_ref=vault_cfg.online_update_ref,
             )
         except Exception as exc:
-            status_label.set_text(t("Update repository export failed: {error}", error=exc))
+            state.status_label.set_text(t("Update repository export failed: {error}", error=exc))
             return
 
         exported_path = Path(str(result.get("file_path", "")))
         _deliver_exported_file(exported_path)
-        status_label.set_text(
+        state.status_label.set_text(
             t(
                 "Exported {count} active macro(s) as update repository ZIP: {path}",
                 count=result.get("macro_count", 0),
@@ -3614,18 +3350,18 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             )
         except Exception as exc:
             online_update_error_label.set_text(t("Import updates failed: {error}", error=exc))
-            status_label.set_text(t("Import updates failed: {error}", error=exc))
+            state.status_label.set_text(t("Import updates failed: {error}", error=exc))
             return
 
         imported = _to_int(result.get("imported", 0))
         activated = _to_int(result.get("activated", 0))
         if imported <= 0:
             online_update_error_label.set_text(t("No online updates were imported."))
-            status_label.set_text(t("No online updates were imported."))
+            state.status_label.set_text(t("No online updates were imported."))
             return
 
         online_update_dialog.close()
-        status_label.set_text(
+        state.status_label.set_text(
             t(
                 "Imported {imported} online update(s); activated {activated}.",
                 imported=imported,
@@ -3646,19 +3382,19 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def purge_deleted_macros() -> None:
         """Remove all deleted macro histories from SQLite in one action."""
         if state.printer_is_printing:
-            status_label.set_text(t("Blocked: printer is currently printing. Purge is disabled."))
+            state.status_label.set_text(t("Blocked: printer is currently printing. Purge is disabled."))
             return
         try:
             result = service.purge_all_deleted()
         except Exception as exc:
-            status_label.set_text(t("Failed to purge deleted macros: {error}", error=exc))
+            state.status_label.set_text(t("Failed to purge deleted macros: {error}", error=exc))
             return
 
         removed = _to_int(result.get("removed", 0))
         if removed > 0:
-            status_label.set_text(t("Purged {removed} deleted macro row(s) from database.", removed=removed))
+            state.status_label.set_text(t("Purged {removed} deleted macro row(s) from database.", removed=removed))
         else:
-            status_label.set_text(t("No deleted macros to purge."))
+            state.status_label.set_text(t("No deleted macros to purge."))
         refresh_data()
 
     def run_index() -> None:
@@ -3675,20 +3411,20 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         try:
             command()
         except Exception as exc:
-            status_label.set_text(t(failure_template, error=exc))
+            state.status_label.set_text(t(failure_template, error=exc))
             return False
 
         _clear_restart_required()
-        status_label.set_text(t(success_message))
+        state.status_label.set_text(t(success_message))
         return True
 
     def restart_klipper() -> None:
         """Request Klipper restart when macro changes are pending and printer is idle."""
         if not state.restart_required:
-            status_label.set_text(t("No pending macro changes require a Klipper restart."))
+            state.status_label.set_text(t("No pending macro changes require a Klipper restart."))
             return
         if state.printer_is_printing or state.printer_is_busy:
-            status_label.set_text(t("Blocked: printer is busy or printing. Klipper restart is disabled."))
+            state.status_label.set_text(t("Blocked: printer is busy or printing. Klipper restart is disabled."))
             return
 
         asyncio.create_task(_restart_klipper_async())
@@ -3696,23 +3432,23 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     async def _restart_klipper_async() -> None:
         """Run Klipper restart off the event loop to keep the UI responsive."""
         nonlocal _klipper_restart_grace_until
-        status_label.set_text(t("Klipper restart requested…"))
+        state.status_label.set_text(t("Klipper restart requested…"))
         try:
             await asyncio.to_thread(service.restart_klipper, 5.0)
         except Exception as exc:
-            status_label.set_text(t("Failed to restart Klipper: {error}", error=exc))
+            state.status_label.set_text(t("Failed to restart Klipper: {error}", error=exc))
             return
 
         # Grant a grace period so the status poller doesn't immediately show
         # the reconnecting modal while Klipper is coming back up.
         _klipper_restart_grace_until = time.monotonic() + 60.0
         _clear_restart_required()
-        status_label.set_text(t("Klipper restart requested. The restart button will reappear after another macro change."))
+        state.status_label.set_text(t("Klipper restart requested. The restart button will reappear after another macro change."))
 
     def reload_dynamic_macros() -> None:
         """Request dynamic macro reload when pending dynamic macro changes exist."""
         if not state.dynamic_reload_required:
-            status_label.set_text(t("No pending dynamic macro changes require a dynamic macro reload."))
+            state.status_label.set_text(t("No pending dynamic macro changes require a dynamic macro reload."))
             return
 
         _run_printer_runtime_command(
@@ -3727,20 +3463,20 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def _can_save_config_to_printer() -> bool:
         """Validate Save Config preconditions and set user-facing status on failure."""
         if not standard_mode_enabled:
-            status_label.set_text(t("Save Config is only available in standard mode."))
+            state.status_label.set_text(t("Save Config is only available in standard mode."))
             return False
         if _active_printer_is_virtual():
-            status_label.set_text(t("Virtual printer profile is local-only. Remote Save Config upload is disabled."))
+            state.status_label.set_text(t("Virtual printer profile is local-only. Remote Save Config upload is disabled."))
             return False
         if not state.standard_profile_ready:
-            status_label.set_text(t("Cannot save config: configure and activate a printer connection first."))
+            state.status_label.set_text(t("Cannot save config: configure and activate a printer connection first."))
             return False
         if state.printer_is_printing:
-            status_label.set_text(t("Blocked: printer is currently printing. Save Config is disabled."))
+            state.status_label.set_text(t("Blocked: printer is currently printing. Save Config is disabled."))
             _refresh_save_config_button()
             return False
         if not state.has_unsynced_local_changes:
-            status_label.set_text(t("No local config changes pending upload."))
+            state.status_label.set_text(t("No local config changes pending upload."))
             _refresh_save_config_button()
             return False
         return True
@@ -3750,7 +3486,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         uploaded = _to_int(result.get("uploaded_files", 0), default=0)
         removed = _to_int(result.get("removed_remote_files", 0), default=0)
         blocked = _to_int(result.get("blocked_files", 0), default=0)
-        status_label.set_text(
+        state.status_label.set_text(
             t(
                 "Save Config complete: {uploaded} uploaded, {removed} removed, {blocked} blocked.",
                 uploaded=uploaded,
@@ -3770,7 +3506,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 lambda: service.save_config_to_remote(progress_callback=state._set_file_operation_progress),
             )
         except Exception as exc:
-            status_label.set_text(t("Save Config failed: {error}", error=exc))
+            state.status_label.set_text(t("Save Config failed: {error}", error=exc))
             return
 
         _set_save_config_success_status(result)
@@ -3790,7 +3526,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         index_button.set_enabled(local_actions_enabled)
         macro_actions_button.set_enabled(local_actions_enabled)
         duplicate_warning_button.set_enabled(local_actions_enabled)
-        purge_deleted_button.set_enabled(local_actions_enabled and state.deleted_macro_count > 0)
+        state.purge_deleted_button.set_enabled(local_actions_enabled and state.deleted_macro_count > 0)
         create_backup_button.set_enabled(local_actions_enabled)
         confirm_export_button.set_enabled(local_actions_enabled)
         confirm_import_button.set_enabled(local_actions_enabled)
@@ -3806,8 +3542,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         )
         duplicate_apply_button.set_enabled(local_actions_enabled)
         if standard_mode_enabled:
-            test_active_printer_button.set_enabled(True)
-            standard_cfg_list_button.set_enabled(state.standard_profile_ready)
+            state.test_active_printer_button.set_enabled(True)
+            state.standard_cfg_list_button.set_enabled(state.standard_profile_ready)
         state.viewer.set_editing_enabled(local_actions_enabled)
         _refresh_reload_buttons()
         _refresh_save_config_button()
@@ -3815,7 +3551,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def _set_print_state_status_text(*, locked: bool, moonraker_state: str) -> None:
         """Set status label text based on print lock and Moonraker state."""
         if locked:
-            status_label.set_text(
+            state.status_label.set_text(
                 t(
                     "Printing in progress ({state}). Local edits are allowed; Save Config upload is disabled.",
                     state=moonraker_state,
@@ -3824,11 +3560,11 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             return
 
         if standard_mode_enabled and not state.standard_profile_ready:
-            status_label.set_text(t("Ready (waiting for active printer connection)."))
+            state.status_label.set_text(t("Ready (waiting for active printer connection)."))
         elif moonraker_state == "unknown":
-            status_label.set_text(t("Ready (Moonraker status unknown)."))
+            state.status_label.set_text(t("Ready (Moonraker status unknown)."))
         else:
-            status_label.set_text(t("Ready (printer state: {state}).", state=moonraker_state))
+            state.status_label.set_text(t("Ready (printer state: {state}).", state=moonraker_state))
         _maybe_run_deferred_startup_scan("printer became idle")
 
     def set_print_lock(locked: bool, moonraker_state: str, moonraker_message: str) -> None:
@@ -3966,8 +3702,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                     await _update_single_printer_card_status(raw)
             except Exception as exc:
                 # Keep best-effort polling isolated from the main UI flow.
-                if not start_page_status_label.is_deleted:
-                    start_page_status_label.set_text(t("Printer status refresh failed: {error}", error=exc))
+                if not state.start_page_status_label.is_deleted:
+                    state.start_page_status_label.set_text(t("Printer status refresh failed: {error}", error=exc))
             finally:
                 _printer_card_status_refresh_inflight = False
                 if state.printer_cards_container is not None and not state.printer_cards_container.is_deleted:
@@ -3992,14 +3728,14 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             return
         if _active_printer_is_virtual():
             message = t("Virtual printer profile uses local-only mode and does not require a connection test.")
-            status_label.set_text(message)
+            state.status_label.set_text(message)
             ui.notify(message, type="info")
             return
         try:
             result = service.test_active_ssh_connection()
         except Exception as exc:
             message = t("SSH profile test failed: {error}", error=exc)
-            status_label.set_text(message)
+            state.status_label.set_text(message)
             ui.notify(message, type="negative")
             return
 
@@ -4007,40 +3743,40 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             elapsed_ms = _to_int(result.get("elapsed_ms", 0), default=0)
             profile_name = str(result.get("profile_name", "")).strip() or t("unnamed")
             message = t("SSH profile '{profile}' connected in {elapsed}ms.", profile=profile_name, elapsed=elapsed_ms)
-            status_label.set_text(message)
+            state.status_label.set_text(message)
             ui.notify(message, type="positive")
             refresh_standard_profile_state()
             return
 
         error_text = str(result.get("error", "")).strip() or t("unknown error")
         message = t("SSH profile test failed: {error}", error=error_text)
-        status_label.set_text(message)
+        state.status_label.set_text(message)
         ui.notify(message, type="warning")
 
     def _set_auth_mode_fields() -> None:
         """Update secret input label for currently selected auth mode."""
-        auth_mode = str(ssh_profile_auth_mode_select.value or "key").strip().lower()
+        auth_mode = str(state.ssh_profile_auth_mode_select.value or "key").strip().lower()
         if auth_mode == "password":
-            ssh_profile_secret_input.props("type=password")
-            ssh_profile_secret_mode_label.set_text(t("Secret input expects SSH password."))
-            ssh_profile_secret_input.update()
+            state.ssh_profile_secret_input.props("type=password")
+            state.ssh_profile_secret_mode_label.set_text(t("Secret input expects SSH password."))
+            state.ssh_profile_secret_input.update()
             return
-        ssh_profile_secret_input.props("type=text")
-        ssh_profile_secret_mode_label.set_text(t("Secret input expects SSH key path."))
-        ssh_profile_secret_input.update()
+        state.ssh_profile_secret_input.props("type=text")
+        state.ssh_profile_secret_mode_label.set_text(t("Secret input expects SSH key path."))
+        state.ssh_profile_secret_input.update()
 
     def _refresh_ssh_profile_action_buttons() -> None:
         """Enable profile actions only when a saved profile is selected."""
-        selected_option = str(ssh_profile_select.value or "").strip()
+        selected_option = str(state.ssh_profile_select.value or "").strip()
         has_selection = selected_option in state.ssh_profile_option_ids
-        delete_ssh_profile_button.set_enabled(has_selection)
-        activate_ssh_profile_button.set_enabled(has_selection)
+        state.delete_ssh_profile_button.set_enabled(has_selection)
+        state.activate_ssh_profile_button.set_enabled(has_selection)
 
     def _set_selected_profile_secret_state(profile: dict[str, object] | None) -> None:
         """Show whether selected profile currently has stored credentials."""
         if not isinstance(profile, dict) or not profile:
-            ssh_profile_secret_state_label.set_text(t("Secret status: set credentials when saving profile."))
-            ssh_profile_secret_state_label.classes(replace="text-xs text-grey-5")
+            state.ssh_profile_secret_state_label.set_text(t("Secret status: set credentials when saving profile."))
+            state.ssh_profile_secret_state_label.classes(replace="text-xs text-grey-5")
             return
 
         auth_mode = str(profile.get("auth_mode", "key")).strip().lower() or "key"
@@ -4048,37 +3784,37 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         backend = str(profile.get("secret_backend", "")).strip()
         backend_suffix = f" ({backend})" if backend else ""
         if has_secret:
-            ssh_profile_secret_state_label.set_text(t("Secret status: configured") + backend_suffix)
-            ssh_profile_secret_state_label.classes(replace="text-xs text-positive")
+            state.ssh_profile_secret_state_label.set_text(t("Secret status: configured") + backend_suffix)
+            state.ssh_profile_secret_state_label.classes(replace="text-xs text-positive")
             return
 
         secret_type_label = t("password") if auth_mode == "password" else t("key path")
-        ssh_profile_secret_state_label.set_text(
+        state.ssh_profile_secret_state_label.set_text(
             t("Secret status: missing {secret_type}; enter and save.", secret_type=secret_type_label)
         )
-        ssh_profile_secret_state_label.classes(replace="text-xs text-warning")
+        state.ssh_profile_secret_state_label.classes(replace="text-xs text-warning")
 
     def reset_ssh_profile_form_for_new() -> None:
         """Reset dialog fields for creating a fresh SSH profile."""
-        ssh_profile_select.set_value("")
-        ssh_profile_name_input.set_value("")
-        ssh_profile_host_input.set_value("")
-        ssh_profile_port_input.set_value(22)
-        ssh_profile_username_input.set_value("")
-        ssh_profile_remote_dir_input.set_value("~/printer_data/config")
-        ssh_profile_moonraker_url_input.set_value("http://127.0.0.1:7125")
-        ssh_profile_auth_mode_select.set_value("key")
-        ssh_profile_secret_input.set_value("")
-        ssh_profile_active_toggle.set_value(True)
-        ssh_profile_error_label.set_text("")
-        ssh_profile_status_label.set_text(t("Enter details to create a new SSH profile."))
+        state.ssh_profile_select.set_value("")
+        state.ssh_profile_name_input.set_value("")
+        state.ssh_profile_host_input.set_value("")
+        state.ssh_profile_port_input.set_value(22)
+        state.ssh_profile_username_input.set_value("")
+        state.ssh_profile_remote_dir_input.set_value("~/printer_data/config")
+        state.ssh_profile_moonraker_url_input.set_value("http://127.0.0.1:7125")
+        state.ssh_profile_auth_mode_select.set_value("password")
+        state.ssh_profile_secret_input.set_value("")
+        state.ssh_profile_active_toggle.set_value(True)
+        state.ssh_profile_error_label.set_text("")
+        state.ssh_profile_status_label.set_text(t("Enter details to create a new SSH profile."))
         _set_selected_profile_secret_state(None)
         _set_auth_mode_fields()
         _refresh_ssh_profile_action_buttons()
 
     def _sync_moonraker_url_host(host: str) -> None:
         """Keep the Moonraker URL host aligned with the current SSH host field."""
-        raw_url = str(ssh_profile_moonraker_url_input.value or "").strip()
+        raw_url = str(state.ssh_profile_moonraker_url_input.value or "").strip()
         if not raw_url:
             return
 
@@ -4099,40 +3835,40 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             userinfo += "@"
 
         rewritten_url = parsed_url._replace(netloc=f"{userinfo}{_format_moonraker_url_host(host)}{port_suffix}")
-        ssh_profile_moonraker_url_input.set_value(urlunparse(rewritten_url))
+        state.ssh_profile_moonraker_url_input.set_value(urlunparse(rewritten_url))
 
     def _load_selected_ssh_profile() -> None:
         """Populate profile form from the selected saved profile."""
-        selected_option = str(ssh_profile_select.value or "").strip()
+        selected_option = str(state.ssh_profile_select.value or "").strip()
         selected_id = state.ssh_profile_option_ids.get(selected_option, 0)
         profile = state.ssh_profiles_by_id.get(int(selected_id), {}) if selected_id > 0 else {}
         if not profile:
             _refresh_ssh_profile_action_buttons()
             return
 
-        ssh_profile_name_input.set_value(str(profile.get("profile_name", "")))
-        ssh_profile_host_input.set_value(str(profile.get("host", "")))
-        ssh_profile_port_input.set_value(_to_int(profile.get("port"), default=22))
-        ssh_profile_username_input.set_value(str(profile.get("username", "")))
-        ssh_profile_remote_dir_input.set_value(str(profile.get("remote_config_dir", "")))
-        ssh_profile_moonraker_url_input.set_value(str(profile.get("moonraker_url", "")))
+        state.ssh_profile_name_input.set_value(str(profile.get("profile_name", "")))
+        state.ssh_profile_host_input.set_value(str(profile.get("host", "")))
+        state.ssh_profile_port_input.set_value(_to_int(profile.get("port"), default=22))
+        state.ssh_profile_username_input.set_value(str(profile.get("username", "")))
+        state.ssh_profile_remote_dir_input.set_value(str(profile.get("remote_config_dir", "")))
+        state.ssh_profile_moonraker_url_input.set_value(str(profile.get("moonraker_url", "")))
         auth_mode = str(profile.get("auth_mode", "key")).strip().lower() or "key"
         if auth_mode not in {"key", "password"}:
             auth_mode = "key"
-        ssh_profile_auth_mode_select.set_value(auth_mode)
+        state.ssh_profile_auth_mode_select.set_value(auth_mode)
         _set_auth_mode_fields()
-        ssh_profile_active_toggle.set_value(bool(profile.get("is_active", False)))
+        state.ssh_profile_active_toggle.set_value(bool(profile.get("is_active", False)))
         _set_selected_profile_secret_state(profile)
         _refresh_ssh_profile_action_buttons()
 
     def refresh_ssh_profiles_dialog() -> None:
         """Refresh saved SSH profiles and sync dialog controls."""
-        ssh_profile_error_label.set_text("")
-        ssh_profile_status_label.set_text("")
+        state.ssh_profile_error_label.set_text("")
+        state.ssh_profile_status_label.set_text("")
         try:
             profiles = service.list_ssh_profiles()
         except Exception as exc:
-            ssh_profile_error_label.set_text(t("Failed to load SSH profiles: {error}", error=exc))
+            state.ssh_profile_error_label.set_text(t("Failed to load SSH profiles: {error}", error=exc))
             return
 
         state.ssh_profile_option_ids.clear()
@@ -4159,7 +3895,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
         if not selected_value and options:
             selected_value = options[0]
-        ssh_profile_select.set_options(options, value=selected_value)
+        state.ssh_profile_select.set_options(options, value=selected_value)
         if selected_value:
             _load_selected_ssh_profile()
         else:
@@ -4168,7 +3904,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
 
     def _selected_ssh_profile_context() -> tuple[int, dict[str, object], bool]:
         """Resolve selected SSH profile id, payload, and existing-secret status."""
-        selected_option = str(ssh_profile_select.value or "").strip()
+        selected_option = str(state.ssh_profile_select.value or "").strip()
         selected_id = state.ssh_profile_option_ids.get(selected_option, 0)
         selected_profile = state.ssh_profiles_by_id.get(int(selected_id), {}) if selected_id > 0 else {}
         selected_has_secret = bool(selected_profile.get("has_secret", False)) if isinstance(selected_profile, dict) else False
@@ -4177,15 +3913,15 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
     def _read_ssh_profile_form_values() -> dict[str, object]:
         """Read normalized SSH profile form values from dialog controls."""
         return {
-            "profile_name": str(ssh_profile_name_input.value or "").strip(),
-            "host": str(ssh_profile_host_input.value or "").strip(),
-            "username": str(ssh_profile_username_input.value or "").strip(),
-            "remote_config_dir": str(ssh_profile_remote_dir_input.value or "").strip(),
-            "moonraker_url": str(ssh_profile_moonraker_url_input.value or "").strip(),
-            "auth_mode": str(ssh_profile_auth_mode_select.value or "key").strip().lower() or "key",
-            "port": _to_int(ssh_profile_port_input.value, default=22),
-            "secret_value": str(ssh_profile_secret_input.value or "").strip(),
-            "is_active": bool(ssh_profile_active_toggle.value),
+            "profile_name": str(state.ssh_profile_name_input.value or "").strip(),
+            "host": str(state.ssh_profile_host_input.value or "").strip(),
+            "username": str(state.ssh_profile_username_input.value or "").strip(),
+            "remote_config_dir": str(state.ssh_profile_remote_dir_input.value or "").strip(),
+            "moonraker_url": str(state.ssh_profile_moonraker_url_input.value or "").strip(),
+            "auth_mode": str(state.ssh_profile_auth_mode_select.value or "key").strip().lower() or "key",
+            "port": _to_int(state.ssh_profile_port_input.value, default=22),
+            "secret_value": str(state.ssh_profile_secret_input.value or "").strip(),
+            "is_active": bool(state.ssh_profile_active_toggle.value),
         }
 
     def _validate_ssh_profile_form_values(values: dict[str, object], *, selected_has_secret: bool) -> str | None:
@@ -4233,14 +3969,14 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         """Persist one SSH profile and optional credentials from form values."""
         if not standard_mode_enabled:
             return
-        ssh_profile_error_label.set_text("")
-        ssh_profile_status_label.set_text("")
+        state.ssh_profile_error_label.set_text("")
+        state.ssh_profile_status_label.set_text("")
 
         _, _, selected_has_secret = _selected_ssh_profile_context()
         values = _read_ssh_profile_form_values()
         validation_error = _validate_ssh_profile_form_values(values, selected_has_secret=selected_has_secret)
         if validation_error:
-            ssh_profile_error_label.set_text(validation_error)
+            state.ssh_profile_error_label.set_text(validation_error)
             return
 
         try:
@@ -4256,21 +3992,21 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 secret_value=str(values.get("secret_value", "")) or None,
             )
         except Exception as exc:
-            ssh_profile_error_label.set_text(t("Failed to save SSH profile: {error}", error=exc))
+            state.ssh_profile_error_label.set_text(t("Failed to save SSH profile: {error}", error=exc))
             return
 
         profile_id = _to_int(result.get("profile_id"), default=0)
         backend = str(result.get("secret_backend", "")).strip()
         backend_text = backend if backend else t("unchanged")
-        ssh_profile_status_label.set_text(
+        state.ssh_profile_status_label.set_text(
             t("Profile saved. Secret backend: {backend}", backend=backend_text)
         )
-        ssh_profile_secret_input.set_value("")
+        state.ssh_profile_secret_input.set_value("")
         refresh_ssh_profiles_dialog()
         if profile_id > 0:
             for option_label, option_profile_id in state.ssh_profile_option_ids.items():
                 if option_profile_id == profile_id:
-                    ssh_profile_select.set_value(option_label)
+                    state.ssh_profile_select.set_value(option_label)
                     break
         _load_selected_ssh_profile()
         _refresh_after_ssh_profile_mutation(hide_editor=True)
@@ -4279,18 +4015,18 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         """Activate the profile selected in the management dialog."""
         selected_id, selected_profile, _ = _selected_ssh_profile_context()
         if selected_id <= 0:
-            ssh_profile_error_label.set_text(t("Select a profile to activate."))
+            state.ssh_profile_error_label.set_text(t("Select a profile to activate."))
             return
 
-        ssh_profile_error_label.set_text("")
-        ssh_profile_status_label.set_text("")
+        state.ssh_profile_error_label.set_text("")
+        state.ssh_profile_status_label.set_text("")
         try:
             result = service.activate_ssh_profile(selected_id)
         except Exception as exc:
-            ssh_profile_error_label.set_text(t("Failed to activate SSH profile: {error}", error=exc))
+            state.ssh_profile_error_label.set_text(t("Failed to activate SSH profile: {error}", error=exc))
             return
         if not bool(result.get("ok", False)):
-            ssh_profile_error_label.set_text(t("Failed to activate SSH profile."))
+            state.ssh_profile_error_label.set_text(t("Failed to activate SSH profile."))
             return
 
         profile_name = str(selected_profile.get("profile_name", "")).strip()
@@ -4300,7 +4036,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             activate=True,
         )
 
-        ssh_profile_status_label.set_text(t("Active SSH profile updated."))
+        state.ssh_profile_status_label.set_text(t("Active SSH profile updated."))
         refresh_ssh_profiles_dialog()
         _refresh_after_ssh_profile_mutation()
 
@@ -4308,21 +4044,21 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         """Delete selected profile from profile storage."""
         selected_id, _, _ = _selected_ssh_profile_context()
         if selected_id <= 0:
-            ssh_profile_error_label.set_text(t("Select a profile to delete."))
+            state.ssh_profile_error_label.set_text(t("Select a profile to delete."))
             return
 
-        ssh_profile_error_label.set_text("")
-        ssh_profile_status_label.set_text("")
+        state.ssh_profile_error_label.set_text("")
+        state.ssh_profile_status_label.set_text("")
         try:
             result = service.delete_ssh_profile(selected_id)
         except Exception as exc:
-            ssh_profile_error_label.set_text(t("Failed to delete SSH profile: {error}", error=exc))
+            state.ssh_profile_error_label.set_text(t("Failed to delete SSH profile: {error}", error=exc))
             return
         if not bool(result.get("ok", False)):
-            ssh_profile_error_label.set_text(t("Failed to delete SSH profile."))
+            state.ssh_profile_error_label.set_text(t("Failed to delete SSH profile."))
             return
 
-        ssh_profile_status_label.set_text(t("SSH profile deleted."))
+        state.ssh_profile_status_label.set_text(t("SSH profile deleted."))
         refresh_ssh_profiles_dialog()
         _refresh_after_ssh_profile_mutation()
 
@@ -4455,7 +4191,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         refresh_printer_profile_selector()
         refresh_ssh_profiles_dialog()
         if standard_mode_enabled and _printer_profile_missing():
-            status_label.set_text(t("No printer configured. Complete the connection setup below."))
+            state.status_label.set_text(t("No printer configured. Complete the connection setup below."))
 
         if standard_mode_enabled:
             refresh_standard_profile_state()
@@ -4497,34 +4233,34 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         update_duplicates_button_label()
         update_new_button_label()
         update_active_filter_button_label()
-        sort_radio.on_value_change(on_sort_change)
+        state.sort_radio.on_value_change(on_sort_change)
         duplicate_keep_select.on_value_change(_on_duplicate_keep_change)
         duplicate_compare_with_select.on_value_change(_on_duplicate_compare_with_change)
         duplicate_compare_button.on_click(open_duplicate_pair_compare)
         duplicate_prev_button.on_click(duplicate_wizard_previous)
         duplicate_next_button.on_click(duplicate_wizard_next)
         duplicate_apply_button.on_click(apply_duplicate_resolution)
-        duplicates_button.on_click(toggle_duplicates_filter)
-        new_button.on_click(toggle_new_filter)
-        active_filter_button.on_click(cycle_active_filter)
+        state.duplicates_button.on_click(toggle_duplicates_filter)
+        state.new_button.on_click(toggle_new_filter)
+        state.active_filter_button.on_click(cycle_active_filter)
         state.macro_search.on_value_change(on_search_change)
         duplicate_warning_button.on_click(open_duplicate_wizard)
 
     def _setup_profile_and_ssh_handlers() -> None:
         """Wire printer profile and SSH editor controls."""
-        refresh_printers_button.on_click(refresh_printer_profile_selector)
-        add_printer_button.on_click(_open_add_printer_editor)
-        test_active_printer_button.on_click(test_standard_profile_connection)
-        standard_cfg_list_button.on_click(open_remote_cfg_list_dialog)
-        standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
-        ssh_profile_select.on_value_change(_load_selected_ssh_profile)
-        ssh_profile_auth_mode_select.on_value_change(_set_auth_mode_fields)
-        hide_printer_editor_button.on_click(_hide_printer_editor)
-        refresh_ssh_profiles_button.on_click(refresh_ssh_profiles_dialog)
-        new_ssh_profile_button.on_click(_open_add_printer_editor)
-        delete_ssh_profile_button.on_click(delete_selected_ssh_profile)
-        activate_ssh_profile_button.on_click(activate_selected_ssh_profile)
-        save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
+        state.refresh_printers_button.on_click(refresh_printer_profile_selector)
+        state.add_printer_button.on_click(_open_add_printer_editor)
+        state.test_active_printer_button.on_click(test_standard_profile_connection)
+        state.standard_cfg_list_button.on_click(open_remote_cfg_list_dialog)
+        state.standard_cfg_list_button.set_visibility(standard_mode_enabled and (not _active_printer_is_virtual()))
+        state.ssh_profile_select.on_value_change(_load_selected_ssh_profile)
+        state.ssh_profile_auth_mode_select.on_value_change(_set_auth_mode_fields)
+        state.hide_printer_editor_button.on_click(_hide_printer_editor)
+        state.refresh_ssh_profiles_button.on_click(refresh_ssh_profiles_dialog)
+        state.new_ssh_profile_button.on_click(_open_add_printer_editor)
+        state.delete_ssh_profile_button.on_click(delete_selected_ssh_profile)
+        state.activate_ssh_profile_button.on_click(activate_selected_ssh_profile)
+        state.save_ssh_profile_button.on_click(save_ssh_profile_from_dialog)
         back_to_printers_button.on_click(open_standard_profile_dialog)
 
     def _setup_operation_handlers() -> None:
@@ -4556,7 +4292,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         confirm_create_pr_button.on_click(perform_create_pr)
         confirm_create_virtual_printer_button.on_click(perform_create_virtual_printer)
         confirm_online_update_button.on_click(perform_online_update_import)
-        purge_deleted_button.on_click(purge_deleted_macros)
+        state.purge_deleted_button.on_click(purge_deleted_macros)
         confirm_restore_button.on_click(perform_restore)
         confirm_delete_button.on_click(perform_delete_backup)
         confirm_printer_delete_button.on_click(_delete_printer_profile)
@@ -4566,8 +4302,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         index_button.on_click(run_index)
         save_config_button.on_click(save_config_to_printer)
         settings_toolbar_button.on_click(open_app_settings_dialog)
-        prev_page_button.on_click(_go_prev_page)
-        next_page_button.on_click(_go_next_page)
+        state.prev_page_button.on_click(_go_prev_page)
+        state.next_page_button.on_click(_go_next_page)
 
     def _setup_event_handlers() -> None:
         """Wire UI callbacks, menu actions, and control event handlers."""

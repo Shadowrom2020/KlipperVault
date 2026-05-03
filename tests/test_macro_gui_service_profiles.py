@@ -608,7 +608,7 @@ def test_query_printer_status_for_profile_uses_profile_moonraker_url(tmp_path: P
         "result": {"status": {"print_stats": {"state": "ready", "message": "idle"}}}
     }
 
-    with patch("klipper_macro_gui_service.MacroGuiService._moonraker_get", return_value=mock_response) as get_mock:
+    with patch("klipper_macro_service_profiles._moonraker_get", return_value=mock_response) as get_mock:
         status = service.query_printer_status_for_profile(profile_id, timeout=1.0)
 
     assert status["profile_id"] == profile_id
