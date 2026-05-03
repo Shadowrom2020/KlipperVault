@@ -428,12 +428,12 @@ def _explain_line(
         return None
 
     if stripped.startswith("{%") and stripped.endswith("%}"):
-        return _explain_template_block(raw_line, line_number)
+        return _explain_template_block(stripped, line_number)
 
     if "{{" in stripped and "}}" in stripped:
         return ExplanationLine(
             line_number=line_number,
-            text=raw_line,
+            text=stripped,
             kind="control",
             confidence="high",
             effects=["template_control"],
@@ -452,7 +452,7 @@ def _explain_line(
         reference_note = "Active definition" if bool(macro_refs[0].get("is_active", False)) else "Stored definition"
         return ExplanationLine(
             line_number=line_number,
-            text=raw_line,
+            text=stripped,
             kind="macro_call",
             confidence="high",
             effects=["macro_call_transfer"],
@@ -476,7 +476,7 @@ def _explain_line(
         )
         return ExplanationLine(
             line_number=line_number,
-            text=raw_line,
+            text=stripped,
             kind="macro_call",
             confidence="high",
             effects=["macro_call_transfer"],
@@ -490,7 +490,7 @@ def _explain_line(
     confidence, effects = _resolve_line_metadata(upper_command, kind, metadata_overrides)
     return ExplanationLine(
         line_number=line_number,
-        text=raw_line,
+        text=stripped,
         kind=kind,
         confidence=confidence,
         effects=effects,

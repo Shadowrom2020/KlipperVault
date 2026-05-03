@@ -150,6 +150,8 @@ def build_online_update_repository_artifacts(
     db_path: Path,
     source_vendor: str,
     source_model: str,
+    include_all_states: bool = False,
+    printer_profile_id: int | None = None,
     repo_url: str | None = None,
     repo_ref: str | None = None,
     manifest_path: str = "",
@@ -167,8 +169,13 @@ def build_online_update_repository_artifacts(
     model = _normalize_component(source_model)
     timestamp = int(now_ts) if now_ts is not None else int(datetime.now(tz=timezone.utc).timestamp())
 
-    macros = load_macro_list(db_path, limit=100000, include_macro_body=True)
-    active_macros = [
+    macros = load_macro_list(
+        db_path,
+        limit=100000,
+        include_macro_body=True,
+        printer_profile_id=printer_profile_id,
+    )
+    exported_macros = macros if include_all_states else [
         macro
         for macro in macros
         if bool(macro.get("is_active", False)) and not bool(macro.get("is_deleted", False))
@@ -205,7 +212,7 @@ def build_online_update_repository_artifacts(
     files_to_delete: list[str] = []
     any_content_changed = False
 
-    for macro in active_macros:
+    for macro in exported_macros:
         macro_name = str(macro.get("macro_name", "")).strip()
         if not macro_name:
             continue

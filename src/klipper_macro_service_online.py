@@ -399,6 +399,8 @@ class OnlineUpdateMixin:
         *,
         source_vendor: str,
         source_model: str,
+        skip_deletions: bool = False,
+        include_all_states: bool = False,
         repo_url: str,
         base_branch: str,
         head_branch: str,
@@ -451,6 +453,8 @@ class OnlineUpdateMixin:
             db_path=self._db_path,
             source_vendor=source_vendor,
             source_model=source_model,
+            include_all_states=include_all_states,
+            printer_profile_id=(int(self._active_printer_profile_id) if int(self._active_printer_profile_id) > 0 else None),
             now_ts=int(time.time()),
             existing_manifest=remote_manifest,
         )
@@ -458,6 +462,9 @@ class OnlineUpdateMixin:
         files_to_write, files_to_delete, macro_count = _prepare_pr_artifacts(
             artifacts=artifacts,
         )
+
+        if skip_deletions:
+            files_to_delete = []
 
         branch_result = create_branch(
             repo_url=clean_repo_url,

@@ -133,7 +133,7 @@ def _iter_included_files(file_path: Path, config_dir: Path) -> Iterable[tuple[Pa
                         yield cfg, True
                     continue
 
-                section_name = line[1:-1].strip()
+                section_name = _extract_section_name_from_line(line)
                 section_type, section_arg = _section_parts(section_name)
                 current_section_type = section_type
 
@@ -262,7 +262,7 @@ def _iter_included_files_from_source(
     for raw_line in str(file_text or "").splitlines():
         line = raw_line.strip()
         if line.startswith("[") and line.endswith("]"):
-            section_name = line[1:-1].strip()
+            section_name = _extract_section_name_from_line(line)
             section_type, section_arg = _section_parts(section_name)
             current_section_type = section_type
             if section_type == "include" and section_arg:
@@ -329,7 +329,7 @@ def _iter_cfg_sections_from_text(file_text: str) -> Iterable[tuple[str, int, Lis
         if _is_section_header_line(line):
             if current_section is not None:
                 yield current_section, current_section_line, current_body
-            current_section = line.strip()[1:-1].strip()
+            current_section = _extract_section_name_from_line(line)
             current_section_line = line_number
             current_body = [line]
             continue
@@ -624,6 +624,17 @@ def _iter_cfg_files(config_dir: Path) -> Iterable[Path]:
                 yield cfg_path
 
 
+def _strip_trailing_blank_and_comment_lines(lines: List[str]) -> List[str]:
+    """Remove trailing lines that are empty or contain only whitespace/comments."""
+    while lines:
+        stripped = lines[-1].strip()
+        if stripped == "" or stripped.startswith("#"):
+            lines.pop()
+        else:
+            break
+    return lines
+
+
 def _parse_key_value(line: str) -> Optional[tuple[str, str]]:
     """Parse one cfg key/value line using ':' or '=' separators."""
     line = line.strip()
@@ -648,6 +659,17 @@ def _section_parts(section_name: str) -> tuple[str, Optional[str]]:
     return section_type, section_arg
 
 
+def _extract_section_name_from_line(line: str) -> str:
+    """Extract section name from one header line, normalizing BOM and spaces."""
+    text = str(line or "")
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    stripped = text.strip()
+    if not (stripped.startswith("[") and stripped.endswith("]")):
+        return ""
+    return stripped[1:-1].strip()
+
+
 def _is_section_header_line(line: str) -> bool:
     """Return True only for real Klipper section header lines.
 
@@ -655,20 +677,23 @@ def _is_section_header_line(line: str) -> bool:
     [gcode_macro PRINT_START]. This avoids truncating gcode content that
     contains bracket-like text inside macro bodies.
     """
+    if not line:
+        return False
+
+    if line[0] == "\ufeff":
+        line = line[1:]
+
     if not line or line[0] in {" ", "\t"}:
         return False
-    stripped = line.strip()
-    if not (stripped.startswith("[") and stripped.endswith("]")):
+    section_name = _extract_section_name_from_line(line)
+    if not section_name:
         return False
-    inner = stripped[1:-1].strip()
-    if not inner:
-        return False
-    if "[" in inner or "]" in inner:
+    if "[" in section_name or "]" in section_name:
         return False
 
     # Only treat lines as section headers when the section type looks like a
     # real Klipper section name, e.g. gcode_macro, delayed_gcode, printer.
-    section_type, _ = _section_parts(inner)
+    section_type, _ = _section_parts(section_name)
     if not re.fullmatch(r"[a-z_][a-z0-9_]*", section_type):
         return False
     return True
@@ -700,12 +725,6 @@ def _gcode_equivalent(left: Optional[str], right: Optional[str]) -> bool:
     if left == right:
         return True
     return _normalize_gcode_for_match(left) == _normalize_gcode_for_match(right)
-
-
-def _is_trailing_gcode_comment_or_blank(line: str) -> bool:
-    """Return True for gcode lines that should be trimmed at block end."""
-    stripped = line.strip()
-    return not stripped or stripped.startswith("#") or stripped.startswith(";")
 
 
 def _relativize_cfg_path(file_path: Path, base_dir: Path) -> str:
@@ -758,8 +777,7 @@ def _build_macro_record(
         elif key.startswith("variable_"):
             variables[key[len("variable_") :]] = value
 
-    while gcode_lines and _is_trailing_gcode_comment_or_blank(gcode_lines[-1]):
-        gcode_lines.pop()
+    _strip_trailing_blank_and_comment_lines(gcode_lines)
     gcode_text = "\n".join(gcode_lines).rstrip("\n") if gcode_lines else None
 
     return MacroRecord(
@@ -789,7 +807,7 @@ def _iter_cfg_sections(file_path: Path) -> Iterable[tuple[str, int, List[str]]]:
                 if current_section is not None:
                     yield current_section, current_section_line, current_body
 
-                current_section = line.strip()[1:-1].strip()
+                current_section = _extract_section_name_from_line(line)
                 current_section_line = line_number
                 current_body = [line]
                 continue
@@ -1753,7 +1771,7 @@ def _printer_cfg_includes_macros_cfg(printer_cfg: Path) -> bool:
         stripped = line.strip()
         if not (stripped.startswith("[") and stripped.endswith("]")):
             continue
-        inner = stripped[1:-1].strip()
+        inner = _extract_section_name_from_line(stripped)
         section_type, section_arg = _section_parts(inner)
         if section_type != "include" or not section_arg:
             continue
@@ -1803,7 +1821,7 @@ def migrate_printer_cfg_macros_to_macros_cfg(config_dir: Path) -> Dict[str, obje
             line_index += 1
             continue
 
-        header = line.strip()[1:-1].strip()
+        header = _extract_section_name_from_line(line)
         section_type, _section_arg = _section_parts(header)
         section_start = line_index
         next_index = line_index + 1
@@ -2150,7 +2168,7 @@ def _parse_macro_section_text(section_text: str) -> Dict[str, object]:
     if not _is_section_header_line(header_line):
         raise ValueError("macro text must start with a [gcode_macro ...] header")
 
-    header = header_line.strip()[1:-1].strip()
+    header = _extract_section_name_from_line(header_line)
     section_type, section_arg = _section_parts(header)
     if section_type != "gcode_macro" or not section_arg:
         raise ValueError("only [gcode_macro ...] sections can be edited")
@@ -2185,9 +2203,7 @@ def _parse_macro_section_text(section_text: str) -> Dict[str, object]:
         elif key.startswith("variable_"):
             variables[key[len("variable_") :]] = value
 
-    while current_gcode_lines and _is_trailing_gcode_comment_or_blank(current_gcode_lines[-1]):
-        current_gcode_lines.pop()
-
+    _strip_trailing_blank_and_comment_lines(current_gcode_lines)
     return {
         "section_type": section_type,
         "macro_name": str(section_arg),
@@ -2197,6 +2213,99 @@ def _parse_macro_section_text(section_text: str) -> Dict[str, object]:
         "variables_json": json.dumps(variables, separators=(",", ":"), sort_keys=True),
         "section_text": normalized_text if normalized_text.endswith("\n") else f"{normalized_text}\n",
     }
+
+
+def _read_macro_section_text(cfg_file: Path, macro_name: str) -> Optional[str]:
+    """Return the last matching [gcode_macro ...] section text from cfg file."""
+    try:
+        lines = cfg_file.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    except FileNotFoundError:
+        return None
+
+    target_name = str(macro_name or "").strip().lower()
+    if not target_name:
+        return None
+
+    capturing = False
+    current_capture: List[str] = []
+    matched_sections: List[str] = []
+    for line in lines:
+        if _is_section_header_line(line):
+            header = _extract_section_name_from_line(line)
+            section_type, section_arg = _section_parts(header)
+            section_name = str(section_arg or "").strip().lower()
+            is_target = section_type == "gcode_macro" and section_name == target_name
+
+            if capturing and not is_target:
+                matched_sections.append("".join(current_capture))
+                current_capture = []
+                capturing = False
+
+            if is_target:
+                capturing = True
+                current_capture = [line]
+                continue
+
+        if capturing:
+            current_capture.append(line)
+
+    if capturing and current_capture:
+        matched_sections.append("".join(current_capture))
+
+    if not matched_sections:
+        return None
+    return matched_sections[-1]
+
+
+def _extract_macro_variable_lines(section_text: str) -> tuple[Dict[str, str], List[str]]:
+    """Return variable assignment lines and stable discovery order from one section text."""
+    variable_lines: Dict[str, str] = {}
+    variable_order: List[str] = []
+    in_gcode_block = False
+
+    for line in str(section_text or "").splitlines():
+        if in_gcode_block:
+            continue
+
+        pair = _parse_key_value(line)
+        if not pair:
+            continue
+
+        key, _value = pair
+        if key == "gcode":
+            in_gcode_block = True
+            continue
+        if not key.startswith("variable_"):
+            continue
+
+        variable_name = key[len("variable_") :]
+        if variable_name in variable_lines:
+            continue
+        variable_lines[variable_name] = line
+        variable_order.append(variable_name)
+
+    return variable_lines, variable_order
+
+
+def _insert_missing_variables_into_section_text(section_text: str, variable_lines: List[str]) -> str:
+    """Insert missing variable assignment lines before gcode while preserving edits."""
+    if not variable_lines:
+        return section_text
+
+    lines = str(section_text or "").splitlines(keepends=True)
+    if not lines:
+        return section_text
+
+    insert_at = len(lines)
+    for idx, line in enumerate(lines[1:], start=1):
+        pair = _parse_key_value(line)
+        if pair and pair[0] == "gcode":
+            insert_at = idx
+            break
+
+    normalized_missing = [line if line.endswith("\n") else f"{line}\n" for line in variable_lines]
+    updated = lines[:insert_at] + normalized_missing + lines[insert_at:]
+    return "".join(updated)
 
 
 def _replace_or_append_macro_section(cfg_file: Path, macro_name: str, section_text: str) -> str:
@@ -2221,7 +2330,7 @@ def _replace_or_append_macro_section(cfg_file: Path, macro_name: str, section_te
 
     for line in lines:
         if _is_section_header_line(line):
-            header = line.strip()[1:-1].strip()
+            header = _extract_section_name_from_line(line)
             section_type, section_arg = _section_parts(header)
             is_target = section_type == "gcode_macro" and str(section_arg or "") == macro_name
             if is_target:
@@ -2349,6 +2458,33 @@ def save_macro_edit(
 
     config_dir = config_dir.expanduser().resolve()
     cfg_file = _safe_cfg_path(config_dir, file_path)
+    existing_section = _read_macro_section_text(cfg_file, macro_name)
+    if existing_section:
+        existing_variable_lines, existing_variable_order = _extract_macro_variable_lines(existing_section)
+        try:
+            parsed_variables = json.loads(str(parsed.get("variables_json", "{}")))
+        except (TypeError, json.JSONDecodeError):
+            parsed_variables = {}
+        if not isinstance(parsed_variables, dict):
+            parsed_variables = {}
+
+        missing_variable_names = [
+            variable_name
+            for variable_name in existing_variable_order
+            if variable_name not in parsed_variables
+        ]
+        if missing_variable_names:
+            missing_variable_lines = [
+                existing_variable_lines[name]
+                for name in missing_variable_names
+                if name in existing_variable_lines
+            ]
+            merged_section_text = _insert_missing_variables_into_section_text(
+                str(parsed["section_text"]),
+                missing_variable_lines,
+            )
+            parsed = _parse_macro_section_text(merged_section_text)
+
     operation = _replace_or_append_macro_section(cfg_file, macro_name, str(parsed["section_text"]))
     return {
         "file_path": file_path,
@@ -2512,7 +2648,7 @@ def _remove_macro_sections_from_cfg(cfg_file: Path, macro_name: str) -> int:
 
     for line in lines:
         if _is_section_header_line(line):
-            header = line.strip()[1:-1].strip()
+            header = _extract_section_name_from_line(line)
             section_type, section_arg = _section_parts(header)
             is_target = section_type == "gcode_macro" and str(section_arg or "") == macro_name
             if is_target:

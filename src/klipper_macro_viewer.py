@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Callable
 
 from nicegui import ui
@@ -416,6 +417,13 @@ class MacroViewer:
             macro_lines.append(f"description: {description}")
         if rename_existing:
             macro_lines.append(f"rename_existing: {rename_existing}")
+        try:
+            variables = json.loads(str(macro.get("variables_json") or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            variables = {}
+        if isinstance(variables, dict):
+            for key in sorted(variables.keys()):
+                macro_lines.append(f"variable_{key}: {variables[key]}")
         if gcode_text:
             macro_lines.append("gcode:")
             for line in gcode_text.splitlines():

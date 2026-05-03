@@ -21,6 +21,7 @@ from klipper_macro_indexer import (
     restore_macro_version,
     run_indexing,
     run_indexing_from_source,
+    save_macro_edit,
 )
 from klipper_vault_config_source import LocalConfigSource
 from klipper_vault_db import open_sqlite_connection
@@ -39,7 +40,7 @@ def _as_rows(value: object) -> list[dict[str, object]]:
     return cast(list[dict[str, object]], value)
 
 
-def test_parse_macros_trims_trailing_comments_and_preserves_indented_brackets(tmp_path: Path) -> None:
+def test_parse_macros_preserves_trailing_comments_and_indented_brackets(tmp_path: Path) -> None:
     cfg_path = tmp_path / "printer.cfg"
     _write(
         cfg_path,
@@ -51,8 +52,8 @@ def test_parse_macros_trims_trailing_comments_and_preserves_indented_brackets(tm
           G28
           [not a real header]
           RESPOND MSG="ready"
-          # trailing comment trimmed
-          ; trailing semicolon trimmed
+          # trailing comment kept
+          ; trailing semicolon kept
 
         [printer]
         kinematics: cartesian
@@ -69,7 +70,30 @@ def test_parse_macros_trims_trailing_comments_and_preserves_indented_brackets(tm
     assert record.line_number == 1
     assert record.description == "Startup macro"
     assert json.loads(record.variables_json) == {"speed": "120"}
-    assert record.gcode == '  G28\n  [not a real header]\n  RESPOND MSG="ready"'
+    assert record.gcode == (
+        '  G28\n'
+        '  [not a real header]\n'
+        '  RESPOND MSG="ready"\n'
+        '  # trailing comment kept\n'
+        '  ; trailing semicolon kept'
+    )
+
+
+def test_parse_macros_from_bom_prefixed_cfg_preserves_variables(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "macro.cfg"
+    cfg_path.write_text(
+        "\ufeff[gcode_macro TEST]\n"
+        "variable_static_mesh_on_next_g29: False\n"
+        "gcode:\n"
+        "  G28\n",
+        encoding="utf-8",
+    )
+
+    records = parse_macros_from_cfg(cfg_path, tmp_path)
+
+    assert len(records) == 1
+    assert records[0].macro_name == "TEST"
+    assert json.loads(records[0].variables_json) == {"static_mesh_on_next_g29": "False"}
 
 
 def test_parse_and_render_macro_preserves_rename_existing_line(tmp_path: Path) -> None:
@@ -641,6 +665,117 @@ def test_restore_macro_version_normalizes_blank_lines_around_macro(tmp_path: Pat
     )
 
 
+def test_save_macro_edit_preserves_existing_variables_when_editor_omits_them(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        cfg_path = config_dir / "printer.cfg"
+        _write(
+                cfg_path,
+                """
+                [gcode_macro TEST]
+                variable_static_mesh_on_next_g29: False
+                gcode:
+                    G28
+                """,
+        )
+
+        save_macro_edit(
+                config_dir=config_dir,
+                file_path="printer.cfg",
+                macro_name="TEST",
+                section_text="""[gcode_macro TEST]
+gcode:
+    G28
+    M117 Edited
+""",
+        )
+
+        saved_text = cfg_path.read_text(encoding="utf-8")
+        assert "variable_static_mesh_on_next_g29: False" in saved_text
+        assert "M117 Edited" in saved_text
+
+
+def test_save_macro_edit_preserves_variables_from_last_duplicate_section(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        cfg_path = config_dir / "printer.cfg"
+        _write(
+                cfg_path,
+                """
+                [gcode_macro TEST]
+                gcode:
+                    RESPOND MSG="first"
+
+                [gcode_macro TEST]
+                variable_static_mesh_on_next_g29: False
+                gcode:
+                    RESPOND MSG="second"
+                """,
+        )
+
+        save_macro_edit(
+                config_dir=config_dir,
+                file_path="printer.cfg",
+                macro_name="TEST",
+                section_text="""[gcode_macro TEST]
+gcode:
+    RESPOND MSG="edited"
+""",
+        )
+
+        saved_text = cfg_path.read_text(encoding="utf-8")
+        assert saved_text.count("[gcode_macro TEST]") == 1
+        assert "variable_static_mesh_on_next_g29: False" in saved_text
+        assert "RESPOND MSG=\"edited\"" in saved_text
+
+
+def test_save_macro_edit_preserves_variables_for_bom_prefixed_cfg(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    cfg_path = config_dir / "macro.cfg"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        "\ufeff[gcode_macro TEST]\n"
+        "variable_static_mesh_on_next_g29: False\n"
+        "gcode:\n"
+        "  G28\n",
+        encoding="utf-8",
+    )
+
+    save_macro_edit(
+        config_dir=config_dir,
+        file_path="macro.cfg",
+        macro_name="TEST",
+        section_text="""[gcode_macro TEST]
+gcode:
+  G28
+  M117 Edited
+""",
+    )
+
+    saved_text = cfg_path.read_text(encoding="utf-8")
+    assert "variable_static_mesh_on_next_g29: False" in saved_text
+    assert "M117 Edited" in saved_text
+
+
+def test_load_macro_list_without_body_still_returns_variables_json(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+        _write(
+                config_dir / "printer.cfg",
+                """
+                [gcode_macro TEST]
+                variable_static_mesh_on_next_g29: False
+                gcode:
+                    G28
+                """,
+        )
+
+        run_indexing(config_dir, db_path)
+        rows = load_macro_list(db_path, include_macro_body=False)
+
+        assert len(rows) == 1
+        assert rows[0]["gcode"] is None
+        assert json.loads(str(rows[0]["variables_json"])) == {"static_mesh_on_next_g29": "False"}
+
+
 def test_remove_inactive_macro_version_removes_selected_inactive_row(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "macros.db"
@@ -919,6 +1054,41 @@ def test_export_and_import_share_marks_rows_new_and_inactive(tmp_path: Path) -> 
     assert "[gcode_macro HELLO]" in restored_cfg
     printer_cfg = (target_config_dir / "printer.cfg").read_text(encoding="utf-8")
     assert "[include macros.cfg]" in printer_cfg
+
+
+def test_import_macro_share_payload_preserves_comment_only_gcode_lines(tmp_path: Path) -> None:
+    payload = {
+        "format": "klippervault.macro-share.v1",
+        "source_printer": {"vendor": "Voron", "model": "V2.4"},
+        "macros": [
+            {
+                "file_path": "printer.cfg",
+                "macro_name": "COMMENTED",
+                "section_text": textwrap.dedent(
+                    """
+                    [gcode_macro COMMENTED]
+                    gcode:
+                      G28
+                      # keep this comment
+                      ; and this semicolon comment
+                    """
+                ).lstrip("\n"),
+            }
+        ],
+    }
+
+    target_db_path = tmp_path / "target_db" / "macros.db"
+    import_result = import_macro_share_payload(target_db_path, payload)
+
+    assert import_result["imported"] == 1
+    imported_rows = load_macro_list(target_db_path)
+    assert len(imported_rows) == 1
+    assert imported_rows[0]["macro_name"] == "COMMENTED"
+    assert imported_rows[0]["gcode"] == (
+        "  G28\n"
+        "  # keep this comment\n"
+        "  ; and this semicolon comment"
+    )
 
 
 def test_reindex_keeps_unactivated_imported_macros_marked_new(tmp_path: Path) -> None:

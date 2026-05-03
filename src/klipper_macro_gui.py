@@ -3142,6 +3142,8 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 service.create_online_update_pull_request,
                 source_vendor=source_vendor,
                 source_model=source_model,
+                skip_deletions=_active_printer_is_virtual(),
+                include_all_states=_active_printer_is_virtual(),
                 repo_url=str(inputs.get("repo_url", "")),
                 base_branch=str(inputs.get("base_branch", "")),
                 head_branch=str(inputs.get("head_branch", "")),

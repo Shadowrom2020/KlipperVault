@@ -373,6 +373,95 @@ def test_create_online_update_pull_request_uses_printer_local_manifest_path() ->
     assert load_manifest_mock.call_args.kwargs.get("file_path") == "voron/trident/manifest.json"
 
 
+def test_create_online_update_pull_request_forwards_include_all_states_flag() -> None:
+    service = _service()
+
+    artifacts = {
+        "manifest": {"manifest_version": "1", "macros": []},
+        "manifest_path": "voron/trident/manifest.json",
+        "files_to_write": {"voron/trident/PRINT_START.json": "{}"},
+        "files_to_delete": [],
+        "macro_count": 1,
+    }
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("klipper_macro_service_online.get_open_pull_request_for_head", return_value=None))
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.load_json_file_from_branch",
+                return_value={"manifest_version": "1", "macros": []},
+            )
+        )
+        build_artifacts_mock = stack.enter_context(
+            patch(
+                "klipper_macro_service_online.build_online_update_repository_artifacts",
+                return_value=artifacts,
+            )
+        )
+        stack.enter_context(patch("klipper_macro_service_online.create_branch", return_value={"already_exists": False}))
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.commit_changed_text_files",
+                return_value={"changed_files": 1, "commit_sha": "abc123", "created": True},
+            )
+        )
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.create_pull_request",
+                return_value={"existing": False, "number": 99, "url": "https://github.com/example/repo/pull/99"},
+            )
+        )
+
+        _create_pr(service, include_all_states=True)
+
+    assert build_artifacts_mock.call_args.kwargs.get("include_all_states") is True
+
+
+def test_create_online_update_pull_request_scopes_artifacts_to_active_printer_profile() -> None:
+    service = _service()
+    service._active_printer_profile_id = 42
+
+    artifacts = {
+        "manifest": {"manifest_version": "1", "macros": []},
+        "manifest_path": "voron/trident/manifest.json",
+        "files_to_write": {"voron/trident/PRINT_START.json": "{}"},
+        "files_to_delete": [],
+        "macro_count": 1,
+    }
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("klipper_macro_service_online.get_open_pull_request_for_head", return_value=None))
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.load_json_file_from_branch",
+                return_value={"manifest_version": "1", "macros": []},
+            )
+        )
+        build_artifacts_mock = stack.enter_context(
+            patch(
+                "klipper_macro_service_online.build_online_update_repository_artifacts",
+                return_value=artifacts,
+            )
+        )
+        stack.enter_context(patch("klipper_macro_service_online.create_branch", return_value={"already_exists": False}))
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.commit_changed_text_files",
+                return_value={"changed_files": 1, "commit_sha": "abc123", "created": True},
+            )
+        )
+        stack.enter_context(
+            patch(
+                "klipper_macro_service_online.create_pull_request",
+                return_value={"existing": False, "number": 99, "url": "https://github.com/example/repo/pull/99"},
+            )
+        )
+
+        _create_pr(service)
+
+    assert build_artifacts_mock.call_args.kwargs.get("printer_profile_id") == 42
+
+
 def test_import_online_updates_activates_selected_identities() -> None:
     service = _service()
 

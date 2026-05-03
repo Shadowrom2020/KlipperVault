@@ -234,7 +234,8 @@ def load_macro_list(
         if include_macro_body:
             body_columns = "m.gcode, m.variables_json"
         else:
-            body_columns = "NULL AS gcode, '{}' AS variables_json"
+            # Keep variable metadata available for safe editor round-trips.
+            body_columns = "NULL AS gcode, m.variables_json"
 
         rows = conn.execute(
             f"""

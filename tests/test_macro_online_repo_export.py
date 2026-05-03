@@ -369,3 +369,60 @@ def test_build_artifacts_keeps_only_target_printer_entries_in_manifest(tmp_path:
     manifest = _manifest_dict(result["manifest"])
     manifest_entries = _manifest_entries(manifest["macros"])
     assert all(entry["vendor"] == "voron" and entry["model"] == "trident" for entry in manifest_entries)
+
+
+def test_build_artifacts_include_all_states_exports_deleted_macros(tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        db_path = tmp_path / "db" / "macros.db"
+
+        _write(
+                config_dir / "printer.cfg",
+                """
+[gcode_macro KEEP]
+gcode:
+    G28
+
+[gcode_macro DROP]
+gcode:
+    M84
+""".lstrip(),
+        )
+        run_indexing(config_dir, db_path)
+
+        _write(
+                config_dir / "printer.cfg",
+                """
+[gcode_macro KEEP]
+gcode:
+    G28
+""".lstrip(),
+        )
+        run_indexing(config_dir, db_path)
+
+        existing_manifest: dict[str, object] = {
+                "manifest_version": "1",
+                "macros": [],
+        }
+
+        default_result = build_online_update_repository_artifacts(
+                db_path=db_path,
+                source_vendor="Voron",
+                source_model="Trident",
+                existing_manifest=existing_manifest,
+                now_ts=1_775_560_000,
+        )
+        default_paths = set(_text_map(default_result["files_to_write"]).keys())
+        assert "voron/trident/KEEP.json" in default_paths
+        assert "voron/trident/DROP.json" not in default_paths
+
+        all_states_result = build_online_update_repository_artifacts(
+                db_path=db_path,
+                source_vendor="Voron",
+                source_model="Trident",
+                include_all_states=True,
+                existing_manifest=existing_manifest,
+                now_ts=1_775_560_000,
+        )
+        all_state_paths = set(_text_map(all_states_result["files_to_write"]).keys())
+        assert "voron/trident/KEEP.json" in all_state_paths
+        assert "voron/trident/DROP.json" in all_state_paths

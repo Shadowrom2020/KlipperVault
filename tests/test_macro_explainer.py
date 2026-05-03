@@ -450,6 +450,24 @@ def test_explain_macro_script_concise_verbosity_shortens_details() -> None:
     assert "It also changes extrusion" not in str(concise["lines"][0]["details"])
 
 
+def test_explain_macro_script_strips_comments_from_line_text_payload() -> None:
+    macro = {
+        "macro_name": "COMMENTED",
+        "gcode": (
+            "# full-line comment should be ignored\n"
+            "G1 X10 Y20 ; trailing semicolon comment\n"
+            "RESPOND MSG=\"value # keep\" # trailing hash comment"
+        ),
+    }
+
+    result = explain_macro_script(macro, [])
+
+    assert result["has_content"] is True
+    assert len(result["lines"]) == 2
+    assert result["lines"][0]["text"] == "G1 X10 Y20"
+    assert result["lines"][1]["text"] == 'RESPOND MSG="value # keep"'
+
+
 def test_command_pack_alias_maps_custom_command_to_existing_behavior() -> None:
     macro = {"macro_name": "PACKED", "gcode": "MY_HOME X"}
     command_pack = {
