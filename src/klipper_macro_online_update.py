@@ -223,6 +223,7 @@ def _bulk_load_local_rows(
     source_vendor: str,
     source_model: str,
     macro_names: List[str],
+    printer_profile_id: int | None = None,
 ) -> Dict[str, tuple]:
     """Batch load latest local rows for multiple macro names in two queries."""
     if not macro_names:
@@ -240,9 +241,16 @@ def _bulk_load_local_rows(
         WHERE lower(source_vendor) = ?
           AND lower(source_model) = ?
           AND macro_name IN ({placeholders})
+                    AND (? IS NULL OR printer_profile_id = ?)
         ORDER BY indexed_at DESC, version DESC
         """,
-        [vendor_norm, model_norm, *macro_names],
+                [
+                        vendor_norm,
+                        model_norm,
+                        *macro_names,
+                        int(printer_profile_id) if printer_profile_id is not None else None,
+                        int(printer_profile_id) if printer_profile_id is not None else None,
+                ],
     ).fetchall()
 
     result: Dict[str, tuple] = {}
@@ -254,6 +262,11 @@ def _bulk_load_local_rows(
     missing = [n for n in macro_names if n not in result]
     if missing:
         fb_ph = ",".join("?" * len(missing))
+        profile_clause = ""
+        profile_params: list[object] = []
+        if printer_profile_id is not None:
+            profile_clause = " AND printer_profile_id = ?"
+            profile_params.append(int(printer_profile_id))
         fb_rows = conn.execute(
             f"""
             SELECT macro_name, section_type, description, rename_existing, gcode,
@@ -261,9 +274,10 @@ def _bulk_load_local_rows(
             FROM macros
             WHERE macro_name IN ({fb_ph})
               AND is_deleted = 0
+              {profile_clause}
             ORDER BY is_active DESC, is_loaded DESC, indexed_at DESC, version DESC
             """,
-            missing,
+            [*missing, *profile_params],
         ).fetchall()
         for row in fb_rows:
             mn = row[0]
@@ -273,7 +287,14 @@ def _bulk_load_local_rows(
     return result
 
 
-def _local_latest_source_row(conn, source_vendor: str, source_model: str, macro_name: str):
+def _local_latest_source_row(
+    conn,
+    source_vendor: str,
+    source_model: str,
+    macro_name: str,
+    *,
+    printer_profile_id: int | None = None,
+):
     """Fetch latest stored row matching source vendor/model/macro identity."""
     vendor_norm = _normalize_identity_component(source_vendor)
     model_norm = _normalize_identity_component(source_model)
@@ -293,10 +314,17 @@ def _local_latest_source_row(conn, source_vendor: str, source_model: str, macro_
         WHERE lower(source_vendor) = ?
           AND lower(source_model) = ?
           AND macro_name = ?
+          AND (? IS NULL OR printer_profile_id = ?)
         ORDER BY indexed_at DESC, version DESC
         LIMIT 1
         """,
-        (vendor_norm, model_norm, macro_name),
+        (
+            vendor_norm,
+            model_norm,
+            macro_name,
+            int(printer_profile_id) if printer_profile_id is not None else None,
+            int(printer_profile_id) if printer_profile_id is not None else None,
+        ),
     ).fetchone()
     if row is not None:
         return row
@@ -318,10 +346,15 @@ def _local_latest_source_row(conn, source_vendor: str, source_model: str, macro_
         FROM macros
         WHERE macro_name = ?
           AND is_deleted = 0
+          AND (? IS NULL OR printer_profile_id = ?)
         ORDER BY is_active DESC, is_loaded DESC, indexed_at DESC, version DESC
         LIMIT 1
         """,
-        (macro_name,),
+        (
+            macro_name,
+            int(printer_profile_id) if printer_profile_id is not None else None,
+            int(printer_profile_id) if printer_profile_id is not None else None,
+        ),
     ).fetchone()
 
 
@@ -386,6 +419,7 @@ def check_online_macro_updates(
     source_vendor: str,
     source_model: str,
     manifest_path: str = "",
+    printer_profile_id: int | None = None,
     now_ts: int | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> Dict[str, object]:
@@ -441,7 +475,13 @@ def check_online_macro_updates(
         ensure_schema=ensure_schema,
         pragmas=("PRAGMA journal_mode=WAL", "PRAGMA synchronous=NORMAL"),
     ) as conn:
-        local_rows = _bulk_load_local_rows(conn, source_vendor, source_model, macro_names)
+        local_rows = _bulk_load_local_rows(
+            conn,
+            source_vendor,
+            source_model,
+            macro_names,
+            printer_profile_id=printer_profile_id,
+        )
 
         for index, (remote_payload, parsed, macro_name, remote_checksum) in enumerate(
             parsed_remotes, start=1
@@ -596,6 +636,7 @@ def import_online_macro_updates(
                 candidate.source_vendor,
                 candidate.source_model,
                 macro_name,
+                printer_profile_id=fallback_printer_profile_id,
             )
             if local_latest is not None:
                 resolved_file_path = str(local_latest[6] or "").strip()
@@ -608,10 +649,16 @@ def import_online_macro_updates(
                     SELECT version, body_checksum, printer_profile_id
                 FROM macros
                 WHERE file_path = ? AND macro_name = ?
+                  AND (? IS NULL OR printer_profile_id = ?)
                 ORDER BY version DESC
                 LIMIT 1
                 """,
-                (file_path, macro_name),
+                (
+                    file_path,
+                    macro_name,
+                    int(fallback_printer_profile_id) if fallback_printer_profile_id is not None else None,
+                    int(fallback_printer_profile_id) if fallback_printer_profile_id is not None else None,
+                ),
             ).fetchone()
             latest_version = int(latest[0]) if latest is not None else 0
             if latest is not None and str(latest[1]) == body_checksum:

@@ -1661,7 +1661,13 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
-        asyncio.create_task(perform_index("macro restore", sync_remote=False))
+        asyncio.create_task(
+            perform_index(
+                "macro restore",
+                sync_remote=False,
+                mark_missing_as_deleted=False,
+            )
+        )
 
     state.viewer.set_restore_version_handler(restore_macro_version_from_viewer)
 
@@ -1697,7 +1703,13 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         _mark_local_changes_pending()
         _mark_reload_required(is_dynamic=_is_dynamic_version_row(version_row))
         state.force_latest_for_key = f"{result['file_path']}::{result['macro_name']}"
-        asyncio.create_task(perform_index("macro edit", sync_remote=False))
+        asyncio.create_task(
+            perform_index(
+                "macro edit",
+                sync_remote=False,
+                mark_missing_as_deleted=False,
+            )
+        )
 
     state.viewer.set_save_macro_edit_handler(save_macro_edit_from_viewer)
 
@@ -2450,7 +2462,12 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         state.last_update_label.set_text(t("Last update: {value}", value=_format_ts(_to_optional_int(stats.get("latest_update_ts")))))
         _refresh_macro_migration_action_visibility()
 
-    async def perform_index(trigger: str, *, sync_remote: bool = True) -> None:
+    async def perform_index(
+        trigger: str,
+        *,
+        sync_remote: bool = True,
+        mark_missing_as_deleted: bool | None = None,
+    ) -> None:
         """Run cfg indexing and refresh UI when complete."""
         if not _ui_still_available():
             return
@@ -2462,7 +2479,11 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
             state.status_label.set_text(t("Scanning macros ({trigger})...", trigger=trigger))
             result = await state._run_with_file_operation_modal(
                 t("Scanning and parsing cfg files"),
-                lambda: service.index(progress_callback=state._set_file_operation_progress, sync_remote=sync_remote),
+                lambda: service.index(
+                    progress_callback=state._set_file_operation_progress,
+                    sync_remote=sync_remote,
+                    mark_missing_as_deleted=mark_missing_as_deleted,
+                ),
             )
             if not _ui_still_available():
                 return
@@ -3273,6 +3294,7 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
                 repo_ref=vault_cfg.online_update_ref,
                 source_vendor=source_vendor,
                 source_model=source_model,
+                auto_import=_active_printer_is_virtual(),
                 progress_callback=report_progress,
             )
         except Exception as exc:
@@ -3285,6 +3307,31 @@ def build_ui(app_version: str = "unknown", use_save_dialog: bool = False) -> Non
         _refresh_online_update_progress_ui()
 
         _set_online_update_summary_from_result(result)
+        if _active_printer_is_virtual():
+            auto_imported = _to_int(result.get("auto_imported", 0))
+            if auto_imported > 0:
+                checked = _to_int(result.get("checked", 0))
+                changed = _to_int(result.get("changed", 0))
+                unchanged = _to_int(result.get("unchanged", 0))
+                state.pending_online_updates = []
+                state.online_update_summary_label.set_text(
+                    t(
+                        "Checked {checked} macro(s): {changed} update(s), {unchanged} unchanged. Imported {imported} update(s) into local database.",
+                        checked=checked,
+                        changed=changed,
+                        unchanged=unchanged,
+                        imported=auto_imported,
+                    )
+                )
+                _render_online_update_candidates()
+                refresh_data()
+                state.status_label.set_text(
+                    t(
+                        "Imported {imported} online update(s) into local database for virtual printer.",
+                        imported=auto_imported,
+                    )
+                )
+                return
         _render_online_update_candidates()
         state.status_label.set_text(t("Online update check complete."))
 

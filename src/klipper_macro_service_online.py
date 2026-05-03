@@ -302,19 +302,45 @@ class OnlineUpdateMixin:
         source_vendor: str,
         source_model: str,
         manifest_path: str = "",
+        auto_import: bool = False,
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict[str, object]:
         """Check GitHub manifest for online macro updates for one printer identity."""
-        return check_online_macro_updates(
+        result = check_online_macro_updates(
             db_path=self._db_path,
             repo_url=repo_url,
             manifest_path=manifest_path,
             repo_ref=repo_ref,
             source_vendor=source_vendor,
             source_model=source_model,
+            printer_profile_id=(int(self._active_printer_profile_id) if int(self._active_printer_profile_id) > 0 else None),
             now_ts=int(time.time()),
             progress_callback=progress_callback,
         )
+
+        if not auto_import:
+            return result
+
+        updates = [
+            item for item in _as_list(result.get("updates", []))
+            if isinstance(item, dict)
+        ]
+        if not updates:
+            result["auto_imported"] = 0
+            result["auto_imported_items"] = []
+            return result
+
+        import_result = import_online_macro_updates(
+            db_path=self._db_path,
+            updates=updates,
+            repo_url=repo_url,
+            repo_ref=repo_ref,
+            printer_profile_id=(int(self._active_printer_profile_id) if int(self._active_printer_profile_id) > 0 else None),
+            now_ts=int(time.time()),
+        )
+        result["auto_imported"] = _as_int(import_result.get("imported", 0))
+        result["auto_imported_items"] = _as_list(import_result.get("imported_items", []))
+        return result
 
     def import_online_updates(
         self,

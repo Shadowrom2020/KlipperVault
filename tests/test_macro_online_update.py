@@ -8,6 +8,7 @@ from klipper_macro_online_update import (
     check_online_macro_updates,
     import_online_macro_updates,
 )
+from klipper_vault_printer_profiles import create_printer_profile
 
 
 class _FakeResponse:
@@ -201,3 +202,103 @@ def test_online_update_restore_overwrites_existing_cfg_file(tmp_path: Path) -> N
     assert "description: New start" in printer_cfg
     assert "M117 Ready" in printer_cfg
     assert not (config_dir / "macros.cfg").exists()
+
+
+def test_online_update_check_and_import_are_scoped_by_printer_profile(tmp_path: Path) -> None:
+    db_path = tmp_path / "db" / "macros.db"
+    repo_url = "https://github.com/example/klipper-macros"
+    repo_ref = "main"
+
+    section_text = (
+        "[gcode_macro PRINT_START]\n"
+        "description: Start print\n"
+        "gcode:\n"
+        "  G28\n"
+        "  M117 Ready\n"
+    )
+
+    real_profile_id = create_printer_profile(
+        db_path,
+        profile_name="Real Printer",
+        vendor="voron",
+        model="trident",
+        is_active=True,
+    )
+    virtual_profile_id = create_printer_profile(
+        db_path,
+        profile_name="Virtual Printer",
+        vendor="voron",
+        model="trident",
+        is_virtual=True,
+    )
+
+    seeded = import_online_macro_updates(
+        db_path,
+        updates=[
+            {
+                "identity": "voron::trident::PRINT_START",
+                "source_vendor": "voron",
+                "source_model": "trident",
+                "section_text": section_text,
+                "source_file_path": "printer.cfg",
+                "remote_path": "voron/trident/PRINT_START.json",
+                "remote_version": "2026-04-07",
+            }
+        ],
+        repo_url=repo_url,
+        repo_ref=repo_ref,
+        printer_profile_id=real_profile_id,
+    )
+    assert seeded["imported"] == 1
+
+    manifest_url = (
+        "https://raw.githubusercontent.com/example/klipper-macros/main/voron/trident/manifest.json"
+    )
+    macro_url = (
+        "https://raw.githubusercontent.com/example/klipper-macros/main/voron/trident/PRINT_START.json"
+    )
+    url_to_payload = {
+        manifest_url: {
+            "format": "klippervault.online.v1",
+            "macros": [
+                {
+                    "vendor": "voron",
+                    "model": "trident",
+                    "macro_name": "PRINT_START",
+                    "path": "voron/trident/PRINT_START.json",
+                    "version": "2026-04-07",
+                }
+            ],
+        },
+        macro_url: {
+            "macro_name": "PRINT_START",
+            "source_file_path": "printer.cfg",
+            "section_text": section_text,
+        },
+    }
+
+    with patch("klipper_macro_online_update.urlopen", _fake_urlopen_factory(url_to_payload)):
+        check_result = check_online_macro_updates(
+            db_path,
+            repo_url=repo_url,
+            repo_ref=repo_ref,
+            source_vendor="voron",
+            source_model="trident",
+            printer_profile_id=virtual_profile_id,
+        )
+
+    assert check_result["checked"] == 1
+    assert check_result["changed"] == 1
+    assert check_result["unchanged"] == 0
+    updates = check_result["updates"]
+    assert isinstance(updates, list)
+    assert len(updates) == 1
+
+    import_result = import_online_macro_updates(
+        db_path,
+        updates=updates,
+        repo_url=repo_url,
+        repo_ref=repo_ref,
+        printer_profile_id=virtual_profile_id,
+    )
+    assert import_result["imported"] == 1

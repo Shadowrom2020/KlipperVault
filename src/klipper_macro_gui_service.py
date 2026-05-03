@@ -175,6 +175,7 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         progress_callback: Callable[[str, int, int], None] | None = None,
         *,
         sync_remote: bool = True,
+        mark_missing_as_deleted: bool | None = None,
     ) -> dict[str, object]:
         """Run config indexing with configured retention settings."""
         sync_result: dict[str, object] | None = None
@@ -182,6 +183,15 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         active_profile = self.get_active_printer_profile()
         is_virtual_printer = isinstance(active_profile, dict) and bool(active_profile.get("is_virtual", False))
         effective_sync_remote = bool(sync_remote) and not is_virtual_printer
+        effective_mark_missing_as_deleted = (
+            False
+            if is_virtual_printer
+            else (
+                bool(mark_missing_as_deleted)
+                if mark_missing_as_deleted is not None
+                else True
+            )
+        )
 
         if self._runtime_mode == "standard" and effective_sync_remote:
             sync_result = self.sync_active_remote_cfg_to_local(
@@ -197,7 +207,7 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
             db_path=self._db_path,
             max_versions=self._version_history_size,
             printer_profile_id=self._active_printer_profile_id,
-            mark_missing_as_deleted=not is_virtual_printer,
+            mark_missing_as_deleted=effective_mark_missing_as_deleted,
             progress_callback=_parse_progress,
         )
         if sync_result is not None:

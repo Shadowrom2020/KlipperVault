@@ -543,3 +543,55 @@ def test_import_online_updates_skips_malformed_items() -> None:
     assert restore_mock.call_count == 0
     assert result["imported"] == 3
     assert result["activated"] == 0
+
+
+def test_check_online_updates_auto_imports_discovered_updates() -> None:
+    service = _service()
+    service._active_printer_profile_id = 7
+
+    check_result = {
+        "checked": 2,
+        "changed": 2,
+        "unchanged": 0,
+        "updates": [
+            {
+                "identity": "voron::trident::PRINT_START",
+                "macro_name": "PRINT_START",
+                "section_text": "[gcode_macro PRINT_START]\ngcode:\n  G28\n",
+                "source_vendor": "voron",
+                "source_model": "trident",
+                "source_file_path": "printer.cfg",
+            },
+            {
+                "identity": "voron::trident::PRINT_END",
+                "macro_name": "PRINT_END",
+                "section_text": "[gcode_macro PRINT_END]\ngcode:\n  M400\n",
+                "source_vendor": "voron",
+                "source_model": "trident",
+                "source_file_path": "printer.cfg",
+            },
+        ],
+    }
+    import_result = {
+        "imported": 2,
+        "imported_items": [
+            {"identity": "voron::trident::PRINT_START", "file_path": "printer.cfg", "macro_name": "PRINT_START", "version": 2},
+            {"identity": "voron::trident::PRINT_END", "file_path": "printer.cfg", "macro_name": "PRINT_END", "version": 2},
+        ],
+    }
+
+    with patch("klipper_macro_service_online.check_online_macro_updates", return_value=check_result):
+        with patch("klipper_macro_service_online.import_online_macro_updates", return_value=import_result) as import_mock:
+            result = service.check_online_updates(
+                repo_url="https://github.com/example/repo",
+                repo_ref="main",
+                source_vendor="Voron",
+                source_model="Trident",
+                auto_import=True,
+            )
+
+    assert import_mock.call_count == 1
+    assert import_mock.call_args.kwargs["printer_profile_id"] == 7
+    assert import_mock.call_args.kwargs["repo_url"] == "https://github.com/example/repo"
+    assert import_mock.call_args.kwargs["repo_ref"] == "main"
+    assert result["auto_imported"] == 2

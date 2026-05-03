@@ -366,6 +366,31 @@ gcode:
         assert all(not bool(macro.get("is_deleted", False)) for macro in macros)
 
 
+def test_standard_index_can_skip_mark_missing_as_deleted(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    _ = service.save_ssh_profile(
+        profile_name="Office Printer",
+        host="printer.local",
+        username="pi",
+        remote_config_dir="/home/pi/printer_data/config",
+        moonraker_url="http://printer.local:7125",
+        auth_mode="key",
+        is_active=True,
+    )
+
+    with (
+        patch("klipper_macro_gui_service.MacroGuiService.sync_active_remote_cfg_to_local", return_value={"synced_files": 0}),
+        patch(
+            "klipper_macro_gui_service.run_indexing_from_source",
+            return_value={"cfg_files_scanned": 1, "macros_inserted": 0, "macros_unchanged": 1},
+        ) as index_mock,
+    ):
+        _ = service.index(sync_remote=False, mark_missing_as_deleted=False)
+
+    assert index_mock.call_count == 1
+    assert index_mock.call_args.kwargs.get("mark_missing_as_deleted") is False
+
+
 def test_virtual_printer_status_does_not_query_moonraker(tmp_path: Path) -> None:
     service = _service(tmp_path)
     service.create_virtual_printer_profile(
