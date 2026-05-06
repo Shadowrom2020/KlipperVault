@@ -14,10 +14,9 @@ MacroGuiService composes three focused mixin classes:
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 import hashlib
-import shutil
-import tempfile
 import atexit
 from pathlib import Path
 from typing import Callable
@@ -48,6 +47,7 @@ from klipper_vault_printer_profiles import (
     ensure_default_printer_profile,
     ensure_printer_profile_schema,
 )
+from klipper_vault_paths import DEFAULT_CONFIG_DIR
 from klipper_type_utils import to_int as _as_int
 from klipper_type_utils import to_text as _as_text
 from klipper_type_utils import cfg_is_protected as _cfg_is_protected
@@ -73,7 +73,8 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         self._version_history_size = version_history_size
         self._runtime_mode = "standard"
         self._moonraker_base_url = moonraker_base_url.rstrip("/")
-        self._cache_base_dir = Path(tempfile.gettempdir()) / "klippervault"
+        self._cache_base_dir = Path(DEFAULT_CONFIG_DIR) / "printer-mirrors"
+        self._cache_base_dir.mkdir(parents=True, exist_ok=True)
         self._active_cache_dir: Path | None = None
         self._active_cache_printer_profile_id: int | None = None
         self._remote_cfg_checksums: dict[str, str] = {}
@@ -119,9 +120,7 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         self._version_history_size = max(int(value), 1)
 
     def cleanup_runtime_cache(self) -> None:
-        """Remove active standard cache directory when available."""
-        if self._active_cache_dir is not None:
-            shutil.rmtree(self._active_cache_dir, ignore_errors=True)
+        """Reset active mirror bookkeeping without deleting on-disk files."""
         self._active_cache_dir = None
         self._active_cache_printer_profile_id = None
         self._remote_cfg_checksums = {}
@@ -140,10 +139,45 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         )
 
     def _cache_dir_for_profile(self, profile_id: int) -> Path:
-        """Create a deterministic per-printer cache directory under system temp."""
+        """Create a deterministic per-printer local mirror directory."""
         target = self._cache_base_dir / f"printer-{int(profile_id)}"
         target.mkdir(parents=True, exist_ok=True)
         return target
+
+    def _remote_state_file_path(self) -> Path:
+        """Return the persisted remote snapshot metadata file for the active mirror."""
+        runtime_dir = self._active_cache_dir
+        if runtime_dir is None:
+            runtime_dir = self._cache_dir_for_profile(int(self._active_printer_profile_id))
+            self._active_cache_dir = runtime_dir
+            self._active_cache_printer_profile_id = int(self._active_printer_profile_id)
+        return runtime_dir / ".klippervault_remote_state.json"
+
+    def _persist_remote_state(self, checksums: dict[str, str]) -> None:
+        """Persist remote checksums so upload safety survives restarts."""
+        payload = {
+            "checksums": dict(sorted((str(path), str(checksum)) for path, checksum in checksums.items())),
+            "updated_at": int(datetime.now().timestamp()),
+        }
+        self._remote_state_file_path().write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _load_persisted_remote_state(self) -> dict[str, str]:
+        """Load persisted remote checksums for the active mirror when available."""
+        state_path = self._remote_state_file_path()
+        if not state_path.exists() or not state_path.is_file():
+            return {}
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        checksums = payload.get("checksums", {})
+        if not isinstance(checksums, dict):
+            return {}
+        return {
+            str(path): str(checksum)
+            for path, checksum in checksums.items()
+            if str(path).strip() and str(checksum).strip()
+        }
 
     def _resolve_runtime_config_dir(self) -> Path:
         """Resolve effective config root based on current runtime mode/profile."""
@@ -156,19 +190,46 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
         if self._active_cache_dir is None:
             raise RuntimeError("Runtime cache directory is not initialized")
         self._active_cache_dir.mkdir(parents=True, exist_ok=True)
+        if not self._remote_cfg_checksums:
+            self._remote_cfg_checksums = self._load_persisted_remote_state()
         return self._active_cache_dir
 
+    @staticmethod
+    def _safe_restart_states() -> set[str]:
+        """Return Moonraker states where automatic restart is allowed."""
+        return {"ready", "standby"}
+
     def _append_restart_policy_result(self, result: dict[str, object], *, uploaded_files: int) -> None:
-        """Apply upload metadata without triggering automatic Klipper restarts."""
+        """Restart Klipper automatically only when Moonraker reports an idle state."""
         if int(uploaded_files) <= 0:
             result["klipper_restarted"] = False
             result["restart_deferred"] = False
             result["restart_message"] = "No restart was triggered because no permitted cfg file was uploaded."
+            result["restart_required"] = False
+            result["dynamic_reload_required"] = False
+            return
+
+        status = self.query_printer_status()
+        state = str(status.get("state", "unknown")).strip().lower()
+        if state in self._safe_restart_states():
+            restart_result = self.restart_klipper()
+            restarted = bool(restart_result.get("ok", False))
+            result["klipper_restarted"] = restarted
+            result["restart_deferred"] = not restarted
+            result["restart_required"] = False
+            result["dynamic_reload_required"] = False
+            result["restart_message"] = (
+                "Config uploaded and Klipper restarted."
+                if restarted
+                else "Config uploaded, but Klipper restart failed."
+            )
             return
 
         result["klipper_restarted"] = False
         result["restart_deferred"] = True
-        result["restart_message"] = "Config uploaded. Restart Klipper manually when you are ready."
+        result["restart_required"] = False
+        result["dynamic_reload_required"] = False
+        result["restart_message"] = f"Config uploaded. Klipper restart skipped while printer state is '{state}'."
 
     def index(
         self,
@@ -369,7 +430,7 @@ class MacroGuiService(PrinterProfileMixin, BackupRestoreMixin, OnlineUpdateMixin
 
     def list_duplicates(self) -> list[dict[str, object]]:
         """Load duplicate macro groups used by resolution wizard."""
-        return load_duplicate_macro_groups(self._db_path, printer_profile_id=self._active_printer_profile_id)
+        return []
 
     def resolve_duplicates(
         self,

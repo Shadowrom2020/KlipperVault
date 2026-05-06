@@ -80,13 +80,20 @@ def ensure_remote_profile_schema(conn) -> None:
 
 
 def upsert_ssh_host_profile(db_path: Path, profile: SshHostProfile) -> int:
-    """Insert or update one SSH host profile by profile name."""
+    """Insert or update one SSH host profile by id or profile name."""
     now = int(time.time())
     with open_sqlite_connection(db_path, ensure_schema=ensure_remote_profile_schema) as conn:
-        existing = conn.execute(
-            "SELECT id FROM ssh_host_profiles WHERE profile_name = ?",
-            (profile.profile_name.strip(),),
-        ).fetchone()
+        existing = None
+        if profile.id is not None:
+            existing = conn.execute(
+                "SELECT id FROM ssh_host_profiles WHERE id = ?",
+                (int(profile.id),),
+            ).fetchone()
+        if existing is None:
+            existing = conn.execute(
+                "SELECT id FROM ssh_host_profiles WHERE profile_name = ?",
+                (profile.profile_name.strip(),),
+            ).fetchone()
 
         if profile.is_active:
             conn.execute("UPDATE ssh_host_profiles SET is_active = 0 WHERE is_active = 1")
@@ -134,7 +141,8 @@ def upsert_ssh_host_profile(db_path: Path, profile: SshHostProfile) -> int:
             conn.execute(
                 """
                 UPDATE ssh_host_profiles
-                SET host = ?,
+                SET profile_name = ?,
+                    host = ?,
                     port = ?,
                     username = ?,
                     remote_config_dir = ?,
@@ -146,6 +154,7 @@ def upsert_ssh_host_profile(db_path: Path, profile: SshHostProfile) -> int:
                 WHERE id = ?
                 """,
                 (
+                    profile.profile_name.strip(),
                     profile.host.strip(),
                     max(1, min(65535, int(profile.port))),
                     profile.username.strip(),

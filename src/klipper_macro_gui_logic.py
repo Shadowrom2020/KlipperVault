@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from klipper_type_utils import to_int as _to_int
 
 
@@ -21,13 +20,8 @@ def macro_key(macro: dict[str, object]) -> str:
 
 def duplicate_names_for_macros(macros: list[dict[str, object]]) -> set[str]:
     """Collect case-insensitive names that appear in multiple active rows."""
-    name_counts = Counter(
-        _display_macro_name(m).lower()
-        for m in macros
-        if not bool(m.get("is_deleted", False))
-        and bool(m.get("is_loaded", True))
-    )
-    return {name for name, count in name_counts.items() if count > 1}
+    _ = macros
+    return set()
 
 
 def filter_macros(
@@ -98,17 +92,14 @@ def find_active_override(
 
 def duplicate_count_from_stats(stats: dict[str, object]) -> int:
     """Calculate duplicate count using existing dashboard aggregates."""
-    distinct_runtime_names = _to_int(stats.get("distinct_runtime_macro_names"), default=-1)
-    if distinct_runtime_names >= 0:
-        return max(_to_int(stats.get("total_macros")) - distinct_runtime_names, 0)
-    return max(_to_int(stats.get("total_macros")) - _to_int(stats.get("distinct_macro_names")), 0)
+    _ = stats
+    return 0
 
 
-_SORT_ORDERS = ("alpha_asc", "alpha_desc", "load_order")
+_SORT_ORDERS = ("alpha_asc", "alpha_desc")
 _SORT_LABELS = {
     "alpha_asc": "A → Z",
     "alpha_desc": "Z → A",
-    "load_order": "Load order",
 }
 
 
@@ -128,12 +119,9 @@ def sort_macros(macros: list[dict[str, object]], order: str) -> list[dict[str, o
 
     ``alpha_asc``  – A→Z by display name (case-insensitive).
     ``alpha_desc`` – Z→A by display name (case-insensitive).
-    ``load_order`` – Klipper's true macro parse order using ``load_order_index``.
     """
     if order == "alpha_asc":
         return sorted(macros, key=lambda m: _display_macro_name(m).lower())
     if order == "alpha_desc":
         return sorted(macros, key=lambda m: _display_macro_name(m).lower(), reverse=True)
-    if order == "load_order":
-        return sorted(macros, key=lambda m: _to_int(m.get("load_order_index", 999999), default=999999))
-    return list(macros)
+    return sorted(macros, key=lambda m: _display_macro_name(m).lower())

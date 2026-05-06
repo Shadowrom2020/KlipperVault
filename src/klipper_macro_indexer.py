@@ -365,6 +365,32 @@ def _parse_macros_from_source_text(
     return results
 
 
+def _collect_macro_records_flat_from_source(config_source: ConfigSource) -> tuple[List[MacroRecord], List[str]]:
+    """Return all macros from all cfg files in deterministic file-scan order."""
+    cfg_files = _list_cfg_files_from_source(config_source)
+    ordered_records: List[MacroRecord] = []
+    for rel_path in cfg_files:
+        file_text = config_source.read_text(rel_path)
+        ordered_records.extend(
+            _parse_macros_from_source_text(
+                rel_path,
+                file_text,
+                is_loaded=True,
+                is_dynamic=False,
+            )
+        )
+    return ordered_records, cfg_files
+
+
+def _collect_macro_records_flat(config_dir: Path) -> tuple[List[MacroRecord], List[Path]]:
+    """Return all macros from all cfg files in deterministic file-scan order."""
+    cfg_files = sorted(_iter_cfg_files(config_dir), key=lambda path: str(path))
+    ordered_records: List[MacroRecord] = []
+    for cfg_file in cfg_files:
+        ordered_records.extend(parse_macros_from_cfg(cfg_file, config_dir, is_loaded=True, is_dynamic=False))
+    return ordered_records, cfg_files
+
+
 def _collect_loaded_macro_records_in_order_from_source(
     config_source: ConfigSource,
     cfg_paths: set[str],
@@ -1512,8 +1538,6 @@ def index_macros(
     # the previous X definition becomes callable as Y.
     runtime_target_by_name: Dict[str, tuple[str, str, str]] = {}
     for rec in records:
-        if not rec.is_loaded:
-            continue
         prev_target = runtime_target_by_name.get(rec.macro_name.lower())
         rename_target = str(rec.rename_existing or "").strip()
         if rename_target and prev_target is not None:
@@ -1560,8 +1584,7 @@ def index_macros(
                 renamed_from = ?
             WHERE file_path = ? AND macro_name = ?
                             AND is_deleted = 0
-                            AND is_loaded = 1
-                                                        AND printer_profile_id = ?
+                            AND printer_profile_id = ?
               AND version = (
                 SELECT MAX(version)
                 FROM macros
@@ -1597,10 +1620,9 @@ def run_indexing(
     if not config_dir.exists() or not config_dir.is_dir():
         raise FileNotFoundError(f"config directory not found: {config_dir}")
 
-    cfg_files, _, _ = _resolve_cfg_file_sets(config_dir)
+    all_records, cfg_files = _collect_macro_records_flat(config_dir)
     if progress_callback is not None:
         progress_callback(1, 3)
-    all_records, _, _ = _collect_macro_records_in_order(config_dir)
     if progress_callback is not None:
         progress_callback(2, 3)
     cfg_count = len(cfg_files)
@@ -1644,11 +1666,9 @@ def run_indexing_from_source(
     if progress_callback is not None:
         progress_callback(0, 4)
 
-    cfg_files, _, _ = _resolve_cfg_file_sets_from_source(config_source)
+    all_records, cfg_files = _collect_macro_records_flat_from_source(config_source)
     if progress_callback is not None:
         progress_callback(1, 4)
-
-    all_records, _, _, _ = _collect_macro_records_in_order_from_source(config_source)
     if progress_callback is not None:
         progress_callback(2, 4)
 

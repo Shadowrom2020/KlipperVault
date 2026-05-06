@@ -10,8 +10,6 @@ from datetime import datetime
 
 from nicegui import ui
 
-from klipper_macro_compare import MacroCompareView
-
 
 @dataclass
 class UIState:
@@ -28,10 +26,9 @@ class UIState:
     force_active_for_key: str | None = None
     cached_macros: list[dict[str, object]] = field(default_factory=list)
     search_query: str = ""
-    show_duplicates_only: bool = False
     show_new_only: bool = False
     active_filter: str = "all"
-    sort_order: str = "load_order"
+    sort_order: str = "alpha_asc"
     is_indexing: bool = False
     deleted_macro_count: int = 0
     list_page_size: int = 200
@@ -40,14 +37,6 @@ class UIState:
     _search_dirty: bool = False
     _cached_versions_key: str | None = None
     _cached_versions: list[dict[str, object]] = field(default_factory=list)
-    cached_duplicate_names: set[str] = field(default_factory=set)
-
-    # ─── Duplicate Resolution State ──────────────────────────────────────────
-    duplicate_wizard_groups: list[dict[str, object]] = field(default_factory=list)
-    duplicate_keep_choices: dict[str, str] = field(default_factory=dict)
-    duplicate_compare_with_choices: dict[str, str] = field(default_factory=dict)
-    duplicate_wizard_index: int = 0
-    duplicate_compare_view: MacroCompareView = field(default_factory=MacroCompareView)
 
     # ─── Printer State ───────────────────────────────────────────────────────
     printer_is_printing: bool = False
@@ -101,7 +90,6 @@ class UIState:
     developer_menu: ui.menu | None = None
     reload_dynamic_macros_button: ui.button | None = None
     restart_klipper_button: ui.button | None = None
-    duplicate_warning_button: ui.button | None = None
     backup_button: ui.button | None = None
     index_button: ui.button | None = None
     save_config_button: ui.button | None = None
@@ -122,7 +110,6 @@ class UIState:
     printer_cards_container: ui.row | None = None
 
     # Macro page controls
-    duplicates_button: ui.button | None = None
     new_button: ui.button | None = None
     active_filter_button: ui.button | None = None
     sort_radio: object | None = None  # ui.radio
@@ -142,14 +129,11 @@ class UIState:
     start_page_status_label: ui.label | None = None
     refresh_printers_button: ui.button | None = None
     add_printer_button: ui.button | None = None
-    test_active_printer_button: ui.button | None = None
-    printer_editor_card: object | None = None  # ui.card
+    printer_editor_dialog: ui.dialog | None = None
     printer_editor_title: ui.label | None = None
     hide_printer_editor_button: ui.button | None = None
     refresh_ssh_profiles_button: ui.button | None = None
-    new_ssh_profile_button: ui.button | None = None
     delete_ssh_profile_button: ui.button | None = None
-    activate_ssh_profile_button: ui.button | None = None
     save_ssh_profile_button: ui.button | None = None
 
     # SSH profile inputs
@@ -217,9 +201,6 @@ class UIState:
     import_cfg_uploader: ui.upload | None = None
     import_cfg_error_label: ui.label | None = None
 
-    load_order_dialog: ui.dialog | None = None
-    load_order_table: ui.aggrid | None = None
-
     create_pr_dialog: ui.dialog | None = None
     pr_repo_url_input: ui.input | None = None
     pr_base_branch_input: ui.input | None = None
@@ -237,10 +218,6 @@ class UIState:
     online_update_error_label: ui.label | None = None
     online_update_activate_checkboxes: dict[str, object] = field(default_factory=dict)
     confirm_online_update_button: ui.button | None = None
-    duplicate_wizard_dialog: ui.dialog | None = None
-    duplicate_wizard_title: ui.label | None = None
-    duplicate_wizard_subtitle: ui.label | None = None
-    duplicate_wizard_error: ui.label | None = None
 
     def get_all_state_vars(self) -> dict[str, object]:
         """Return a dict of all state variable key-value pairs (for debugging)."""

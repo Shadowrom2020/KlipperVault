@@ -211,25 +211,6 @@ def load_macro_list(
         """.strip()
         latest_args = (int(printer_profile_id),)
 
-    load_order_map: Dict[tuple[str, str, int], int] = {}
-    if config_source is not None:
-        try:
-            load_order_map = build_macro_load_order_map_from_source(config_source)
-        except (FileNotFoundError, OSError, ValueError):
-            pass
-    elif config_dir is not None:
-        try:
-            load_order_map = build_macro_load_order_map(config_dir)
-        except (FileNotFoundError, OSError, ValueError):
-            pass
-
-    load_order_name_map: Dict[tuple[str, str], int] = {}
-    for (mapped_file_path, mapped_macro_name, _mapped_line), mapped_index in load_order_map.items():
-        key = (os.path.normpath(str(mapped_file_path)), str(mapped_macro_name))
-        previous = load_order_name_map.get(key)
-        if previous is None or int(mapped_index) < int(previous):
-            load_order_name_map[key] = int(mapped_index)
-
     with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
         if include_macro_body:
             body_columns = "m.gcode, m.variables_json"
@@ -279,7 +260,7 @@ def load_macro_list(
         ).fetchall()
 
     result_rows: List[Dict[str, object]] = []
-    for (
+    for row_index, (
         macro_name,
         file_path,
         version,
@@ -297,12 +278,7 @@ def load_macro_list(
         is_dynamic,
         has_new_version,
         version_count,
-    ) in rows:
-        normalized_file_path = os.path.normpath(str(file_path))
-        load_order_index = load_order_map.get((normalized_file_path, str(macro_name), int(line_number)))
-        if load_order_index is None:
-            load_order_index = load_order_name_map.get((normalized_file_path, str(macro_name)), 999999)
-
+    ) in enumerate(rows):
         result_rows.append(
             {
                 "macro_name": str(macro_name),
@@ -323,7 +299,7 @@ def load_macro_list(
                 "is_dynamic": bool(is_dynamic),
                 "is_new": bool(has_new_version),
                 "version_count": int(version_count),
-                "load_order_index": int(load_order_index),
+                "load_order_index": int(row_index),
             }
         )
 
@@ -418,65 +394,5 @@ def load_duplicate_macro_groups(
     printer_profile_id: int | None = None,
 ) -> List[Dict[str, object]]:
     """Return duplicate macro definitions grouped by macro_name."""
-    if not db_path.exists():
-        return []
-
-    where_profile = ""
-    params: tuple[object, ...] = ()
-    if printer_profile_id is not None:
-        where_profile = "\n                  AND m.printer_profile_id = ?"
-        params = (int(printer_profile_id),)
-
-    with open_sqlite_connection(db_path, ensure_schema=ensure_schema) as conn:
-        rows = conn.execute(
-            f"""
-            WITH latest AS (
-                {_LATEST_VERSION_SUBQUERY}
-            ), latest_rows AS (
-                SELECT m.*
-                FROM macros AS m
-                INNER JOIN latest AS l
-                    ON m.file_path = l.file_path
-                   AND m.macro_name = l.macro_name
-                   AND m.version = l.max_version
-                WHERE m.is_deleted = 0
-                  AND m.is_loaded = 1
-{where_profile}
-                  AND COALESCE(NULLIF(TRIM(m.runtime_macro_name), ''), m.macro_name) = m.macro_name
-            ), duplicated AS (
-                SELECT macro_name
-                FROM latest_rows
-                GROUP BY macro_name
-                HAVING COUNT(*) > 1
-            )
-            SELECT
-                m.macro_name,
-                m.file_path,
-                m.version,
-                m.indexed_at,
-                m.is_active
-            FROM latest_rows AS m
-            INNER JOIN duplicated AS d
-                ON d.macro_name = m.macro_name
-            ORDER BY m.macro_name COLLATE NOCASE ASC, m.file_path ASC
-            """,
-            params,
-        ).fetchall()
-
-    groups: Dict[str, List[Dict[str, object]]] = {}
-    for macro_name, file_path, version, indexed_at, is_active in rows:
-        key = str(macro_name)
-        groups.setdefault(key, []).append(
-            {
-                "macro_name": key,
-                "file_path": str(file_path),
-                "version": int(version),
-                "indexed_at": int(indexed_at),
-                "is_active": bool(is_active),
-            }
-        )
-
-    return [
-        {"macro_name": macro_name, "entries": entries}
-        for macro_name, entries in groups.items()
-    ]
+    _ = (db_path, ensure_schema, printer_profile_id)
+    return []

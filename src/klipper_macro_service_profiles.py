@@ -522,7 +522,13 @@ class PrinterProfileMixin:
             "is_active": bool(activate),
         }
 
-    def activate_printer_profile(self, profile_id: int) -> dict[str, object]:
+    def activate_printer_profile(
+        self,
+        profile_id: int,
+        *,
+        sync_remote_on_activate: bool = True,
+        detect_identity_on_activate: bool = True,
+    ) -> dict[str, object]:
         """Activate one printer profile and refresh service routing state."""
         updated = set_active_printer_profile(self._db_path, int(profile_id))
         if not updated:
@@ -534,10 +540,25 @@ class PrinterProfileMixin:
             set_active_ssh_host_profile(self._db_path, int(profile.ssh_profile_id))
         self._refresh_moonraker_base_url_from_active_profile()
         
-        # Try to auto-detect printer vendor/model if not yet set
-        if profile is None or not bool(profile.is_virtual):
+        # Try to auto-detect printer vendor/model if not yet set.
+        # Callers can skip this to keep UI navigation responsive.
+        if detect_identity_on_activate and (profile is None or not bool(profile.is_virtual)):
             self._try_detect_printer_identity()
-        
+
+        if sync_remote_on_activate and profile is not None and not bool(profile.is_virtual):
+            try:
+                sync_result = self.sync_active_remote_cfg_to_local(prune_missing=True)
+            except Exception as exc:
+                # Keep profile activation successful even when first remote sync fails,
+                # so the UI can stay in macro workspace and let users retry sync/upload.
+                return {
+                    "ok": True,
+                    "profile_id": int(profile_id),
+                    "downloaded_cfg": {},
+                    "sync_error": str(exc),
+                }
+            return {"ok": True, "profile_id": int(profile_id), "downloaded_cfg": sync_result}
+
         return {"ok": True, "profile_id": int(profile_id)}
 
     def delete_printer_profile(self, profile_id: int) -> dict[str, object]:
@@ -732,6 +753,8 @@ class PrinterProfileMixin:
         is_active: bool = False,
         credential_ref: str = "",
         secret_value: str | None = None,
+        existing_profile_id: int | None = None,
+        existing_printer_profile_id: int | None = None,
     ) -> dict[str, object]:
         """Create or update one SSH host profile and optionally persist secret material."""
         profile_name = self._require_non_empty(profile_name, "profile_name is required")
@@ -743,6 +766,12 @@ class PrinterProfileMixin:
         auth_mode = (_as_text(auth_mode).lower() or "key")
         if auth_mode not in {"key", "password"}:
             raise ValueError("auth_mode must be 'key' or 'password'")
+
+        existing_ssh_profile = self._find_ssh_profile(int(existing_profile_id or 0)) if existing_profile_id else None
+        if existing_ssh_profile is not None and not credential_ref:
+            existing_auth_mode = (_as_text(existing_ssh_profile.auth_mode).lower() or "key")
+            if existing_auth_mode == auth_mode and _as_text(existing_ssh_profile.credential_ref):
+                credential_ref = _as_text(existing_ssh_profile.credential_ref)
 
         normalized_credential_ref = _as_text(credential_ref) or _normalize_credential_ref(profile_name, auth_mode)
         credential_backend_name = ""
@@ -765,18 +794,27 @@ class PrinterProfileMixin:
                 auth_mode=auth_mode,
                 credential_ref=normalized_credential_ref,
                 is_active=bool(is_active),
+                id=int(existing_profile_id) if existing_profile_id else None,
             ),
         )
 
         if not credential_backend_name and normalized_credential_ref:
             credential_backend_name = get_credential_backend(self._db_path, normalized_credential_ref) or ""
 
-        ensure_result = self.ensure_printer_profile_for_ssh_profile(
-            ssh_profile_id=int(legacy_ssh_profile_id),
-            profile_name=profile_name,
-            activate=bool(is_active),
-        )
-        printer_profile_id = _as_int(ensure_result.get("profile_id"), default=0)
+        printer_profile_id = int(existing_printer_profile_id or 0)
+        if printer_profile_id > 0:
+            update_printer_profile_identity(
+                self._db_path,
+                profile_id=printer_profile_id,
+                profile_name=profile_name,
+            )
+        else:
+            ensure_result = self.ensure_printer_profile_for_ssh_profile(
+                ssh_profile_id=int(legacy_ssh_profile_id),
+                profile_name=profile_name,
+                activate=bool(is_active),
+            )
+            printer_profile_id = _as_int(ensure_result.get("profile_id"), default=0)
         if printer_profile_id <= 0:
             raise RuntimeError("Failed to create or resolve printer profile")
 
@@ -1016,6 +1054,7 @@ class PrinterProfileMixin:
 
         self._emit_operation_progress(progress_callback, "download", len(remote_files) or 1, len(remote_files) or 1)
         self._remote_cfg_checksums = mirrored_checksums
+        self._persist_remote_state(mirrored_checksums)
 
         return {
             "ok": True,
@@ -1060,11 +1099,12 @@ class PrinterProfileMixin:
         )
 
         expected_remote_checksum = self._remote_cfg_checksums.get(rel_path)
-        if expected_remote_checksum:
-            remote_current_text = remote_source.read_text(rel_path)
-            remote_current_checksum = self._text_checksum(remote_current_text)
-            if remote_current_checksum != expected_remote_checksum:
-                raise RuntimeError(self._remote_conflict_message(rel_path, "remote file changed since last sync"))
+        if not expected_remote_checksum:
+            raise RuntimeError(self._remote_conflict_message(rel_path, "download printer config again before sending changes"))
+        remote_current_text = remote_source.read_text(rel_path)
+        remote_current_checksum = self._text_checksum(remote_current_text)
+        if remote_current_checksum != expected_remote_checksum:
+            raise RuntimeError(self._remote_conflict_message(rel_path, "remote file changed since last sync"))
 
         try:
             remote_source.write_text(rel_path, payload)
@@ -1073,6 +1113,7 @@ class PrinterProfileMixin:
                 f"Failed to upload cfg file '{rel_path}' to '{remote_path}': {exc}"
             ) from exc
         self._remote_cfg_checksums[rel_path] = self._text_checksum(payload)
+        self._persist_remote_state(self._remote_cfg_checksums)
         self._emit_operation_progress(progress_callback, "upload", 1, 1)
         return {
             "uploaded": True,
@@ -1154,20 +1195,20 @@ class PrinterProfileMixin:
                     continue
                 if _cfg_is_protected(rel_posix):
                     continue
-                if self._remote_cfg_checksums:
-                    expected_remote_checksum = self._remote_cfg_checksums.get(rel_posix)
-                    if not expected_remote_checksum:
-                        raise RuntimeError(
-                            self._remote_conflict_message(rel_posix, "remote file appeared after last sync")
-                        )
-                    remote_current_text = remote_source.read_text(rel_posix)
-                    remote_current_checksum = self._text_checksum(remote_current_text)
-                    if remote_current_checksum != expected_remote_checksum:
-                        raise RuntimeError(
-                            self._remote_conflict_message(rel_posix, "remote file changed since last sync")
-                        )
+                expected_remote_checksum = self._remote_cfg_checksums.get(rel_posix)
+                if not expected_remote_checksum:
+                    raise RuntimeError(
+                        self._remote_conflict_message(rel_posix, "remote file appeared after last sync")
+                    )
+                remote_current_text = remote_source.read_text(rel_posix)
+                remote_current_checksum = self._text_checksum(remote_current_text)
+                if remote_current_checksum != expected_remote_checksum:
+                    raise RuntimeError(
+                        self._remote_conflict_message(rel_posix, "remote file changed since last sync")
+                    )
                 if remote_source.remove(rel_posix):
                     self._remote_cfg_checksums.pop(rel_posix, None)
+                    self._persist_remote_state(self._remote_cfg_checksums)
                     removed_remote_paths.append(
                         self._build_remote_cfg_path(
                             _as_text(profile.get("remote_config_dir", "")),
@@ -1224,15 +1265,23 @@ class PrinterProfileMixin:
                 "blocked_by_protected_file": False,
             }
 
+        if not self._remote_cfg_checksums:
+            self._remote_cfg_checksums = self._load_persisted_remote_state()
+        if not self._remote_cfg_checksums:
+            raise RuntimeError("No downloaded printer snapshot is available. Connect to the printer first.")
+
         self._emit_operation_progress(progress_callback, "upload", 0, 1)
-        # Save Config mirrors the local cfg tree to remote, including removals.
         result = self._sync_local_cfg_tree_to_active_remote(
             prune_remote_missing=True,
             allow_protected_upload=allow_protected_upload,
         )
         self._emit_operation_progress(progress_callback, "upload", 1, 1)
-        result["remote_synced"] = bool(_as_int(result.get("uploaded_files", 0), default=0) > 0)
+        result["remote_synced"] = bool(
+            _as_int(result.get("uploaded_files", 0), default=0) > 0
+            or _as_int(result.get("removed_remote_files", 0), default=0) > 0
+        )
         self._append_restart_policy_result(result, uploaded_files=_as_int(result.get("uploaded_files", 0), default=0))
+        self._persist_remote_state(self._remote_cfg_checksums)
         return result
 
     # ------------------------------------------------------------------ #

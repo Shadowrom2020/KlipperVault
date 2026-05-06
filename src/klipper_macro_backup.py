@@ -206,6 +206,35 @@ def _iter_cfg_files(config_dir: Path) -> List[Path]:
     return files
 
 
+def _macro_file_paths_for_backup(conn: sqlite3.Connection, printer_profile_id: int) -> list[str]:
+    """Return latest macro-bearing cfg file paths excluding printer.cfg."""
+    has_macros_table = bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='macros' LIMIT 1"
+        ).fetchone()
+    )
+    if not has_macros_table:
+        return []
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT m.file_path
+        FROM macros AS m
+        INNER JOIN (
+            {_LATEST_VERSION_SUBQUERY}
+        ) AS latest
+            ON m.file_path = latest.file_path
+           AND m.macro_name = latest.macro_name
+           AND m.version = latest.max_version
+        WHERE m.printer_profile_id = ?
+          AND m.is_deleted = 0
+          AND lower(m.file_path) != 'printer.cfg'
+        ORDER BY m.file_path ASC
+        """,
+        (int(printer_profile_id),),
+    ).fetchall()
+    return [str(file_path) for (file_path,) in rows]
+
+
 def _safe_cfg_path(config_dir: Path, rel_path: str) -> Path:
     """Return safe absolute file path inside config_dir for a relative cfg path."""
     candidate = (config_dir / rel_path).resolve()
@@ -263,6 +292,7 @@ def create_macro_backup(
         )
 
         macro_count = 0
+        backup_cfg_paths = _macro_file_paths_for_backup(conn, int(printer_profile_id))
         _report("macros", 1, 3)
         if has_macros_table:
             select_cursor = conn.execute(
@@ -336,35 +366,11 @@ def create_macro_backup(
         _report("cfg", 2, 3)
         if config_source is not None:
             cfg_rows: List[tuple[int, int, str, str]] = []
-            cfg_files = sorted({str(path) for path in config_source.list_cfg_files() if str(path).lower().endswith(".cfg")})
-
-            # File-level backups must always include printer.cfg when available.
-            if "printer.cfg" not in cfg_files:
-                printer_cfg_fallback_added = False
-                if config_dir is not None:
-                    printer_cfg_local = config_dir / "printer.cfg"
-                    if printer_cfg_local.exists() and printer_cfg_local.is_file():
-                        cfg_rows.append(
-                            (
-                                backup_id,
-                                int(printer_profile_id),
-                                "printer.cfg",
-                                printer_cfg_local.read_text(encoding="utf-8", errors="ignore"),
-                            )
-                        )
-                        cfg_files_count += 1
-                        printer_cfg_fallback_added = True
-                if not printer_cfg_fallback_added:
-                    try:
-                        printer_cfg_content = config_source.read_text("printer.cfg")
-                    except Exception:
-                        printer_cfg_content = None
-                    if printer_cfg_content is not None:
-                        cfg_rows.append((backup_id, int(printer_profile_id), "printer.cfg", printer_cfg_content))
-                        cfg_files_count += 1
-
-            for rel_path in cfg_files:
-                file_content = config_source.read_text(str(rel_path))
+            for rel_path in backup_cfg_paths:
+                try:
+                    file_content = config_source.read_text(rel_path)
+                except Exception:
+                    continue
                 cfg_rows.append((backup_id, int(printer_profile_id), str(rel_path), file_content))
                 cfg_files_count += 1
                 if len(cfg_rows) >= _DB_BATCH_SIZE:
@@ -384,12 +390,12 @@ def create_macro_backup(
                     """,
                     cfg_rows,
                 )
-            if cfg_files_count == 0:
-                raise ValueError("backup aborted: no .cfg files found to snapshot")
         elif config_dir is not None and config_dir.exists() and config_dir.is_dir():
             cfg_file_rows: List[tuple[int, int, str, str]] = []
-            for cfg_file in _iter_cfg_files(config_dir):
-                rel_path = str(cfg_file.relative_to(config_dir))
+            for rel_path in backup_cfg_paths:
+                cfg_file = _safe_cfg_path(config_dir, rel_path)
+                if not cfg_file.exists() or not cfg_file.is_file():
+                    continue
                 file_content = cfg_file.read_text(encoding="utf-8", errors="ignore")
                 cfg_file_rows.append((backup_id, int(printer_profile_id), rel_path, file_content))
                 cfg_files_count += 1
@@ -410,10 +416,6 @@ def create_macro_backup(
                     """,
                     cfg_file_rows,
                 )
-            if cfg_files_count == 0:
-                raise ValueError("backup aborted: no .cfg files found to snapshot")
-            if not (config_dir / "printer.cfg").exists():
-                raise ValueError("backup aborted: printer.cfg not found")
         else:
             raise ValueError(f"backup aborted: config directory not found: {config_dir}")
 
@@ -636,7 +638,7 @@ def restore_macro_backup(
         backup_id=int(backup_id),
         printer_profile_id=int(printer_profile_id),
     )
-    overwrite_printer_cfg = bool(printer_cfg_policy.get("will_overwrite_printer_cfg", False))
+    overwrite_printer_cfg = False
 
     with open_sqlite_connection(
         db_path,
@@ -725,7 +727,11 @@ def restore_macro_backup(
                 for rel in config_source.list_cfg_files():
                     if _is_printer_cfg_path(rel) and not overwrite_printer_cfg:
                         continue
-                    if rel not in snapshot_paths and config_source.remove(rel):
+                    try:
+                        current_text = config_source.read_text(rel)
+                    except Exception:
+                        current_text = ""
+                    if rel not in snapshot_paths and _cfg_text_contains_gcode_macros(current_text) and config_source.remove(rel):
                         removed_cfg_files += 1
                         removed_cfg_paths.add(rel)
         elif config_dir is not None:
@@ -772,7 +778,8 @@ def restore_macro_backup(
                     rel = str(cfg_file.relative_to(config_dir))
                     if _is_printer_cfg_path(rel) and not overwrite_printer_cfg:
                         continue
-                    if rel not in snapshot_paths_local:
+                    file_text = cfg_file.read_text(encoding="utf-8", errors="ignore")
+                    if rel not in snapshot_paths_local and _cfg_text_contains_gcode_macros(file_text):
                         cfg_file.unlink(missing_ok=True)
                         removed_cfg_files += 1
                         removed_cfg_paths.add(rel)

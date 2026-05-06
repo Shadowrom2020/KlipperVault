@@ -15,8 +15,9 @@ def _write(path: Path, content: str) -> None:
 def test_backup_creation_listing_and_restore_round_trip(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "vault.db"
-    original_printer_cfg = "[gcode_macro PRINT_TEST]\ngcode:\n  RESPOND MSG=\"backup\"\n"
-    _write(config_dir / "printer.cfg", original_printer_cfg)
+    _write(config_dir / "printer.cfg", "[include macros.cfg]\n[printer]\nkinematics: cartesian\n")
+    original_macros_cfg = "[gcode_macro PRINT_TEST]\ngcode:\n  RESPOND MSG=\"backup\"\n"
+    _write(config_dir / "macros.cfg", original_macros_cfg)
 
     run_indexing(config_dir, db_path)
 
@@ -32,10 +33,10 @@ def test_backup_creation_listing_and_restore_round_trip(tmp_path: Path) -> None:
     assert backups[0]["backup_id"] == backup_id
     assert backups[0]["macro_count"] == 1
     assert items[0]["macro_name"] == "PRINT_TEST"
-    assert items[0]["file_path"] == "printer.cfg"
+    assert items[0]["file_path"] == "macros.cfg"
 
     _write(
-        config_dir / "printer.cfg",
+                config_dir / "macros.cfg",
         """
         [gcode_macro PRINT_TEST]
         gcode:
@@ -51,9 +52,10 @@ def test_backup_creation_listing_and_restore_round_trip(tmp_path: Path) -> None:
     assert restored["backup_name"] == "nightly"
     assert restored["restored_at"] == 222
     assert restored["restored_cfg_files"] == 1
-    assert restored["removed_cfg_files"] == 1
-    assert (config_dir / "printer.cfg").read_text(encoding="utf-8") == original_printer_cfg
-    assert not (config_dir / "extra.cfg").exists()
+    assert restored["removed_cfg_files"] == 0
+    assert (config_dir / "macros.cfg").read_text(encoding="utf-8") == original_macros_cfg
+    assert (config_dir / "printer.cfg").exists()
+    assert (config_dir / "extra.cfg").exists()
     assert len(restored_macros) == 1
     assert restored_macros[0]["macro_name"] == "PRINT_TEST"
 
@@ -61,8 +63,9 @@ def test_backup_creation_listing_and_restore_round_trip(tmp_path: Path) -> None:
 def test_backup_round_trip_with_config_source(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "vault.db"
-    original_printer_cfg = "[gcode_macro PRINT_TEST]\ngcode:\n  RESPOND MSG=\"backup\"\n"
-    _write(config_dir / "printer.cfg", original_printer_cfg)
+    _write(config_dir / "printer.cfg", "[include macros.cfg]\n")
+    original_macros_cfg = "[gcode_macro PRINT_TEST]\ngcode:\n  RESPOND MSG=\"backup\"\n"
+    _write(config_dir / "macros.cfg", original_macros_cfg)
 
     run_indexing(config_dir, db_path)
 
@@ -70,7 +73,7 @@ def test_backup_round_trip_with_config_source(tmp_path: Path) -> None:
     backup = create_macro_backup(db_path, "source-backup", config_source=source, now_ts=333)
 
     _write(
-        config_dir / "printer.cfg",
+        config_dir / "macros.cfg",
         """
         [gcode_macro PRINT_TEST]
         gcode:
@@ -84,16 +87,22 @@ def test_backup_round_trip_with_config_source(tmp_path: Path) -> None:
     assert restored["backup_name"] == "source-backup"
     assert restored["restored_at"] == 444
     assert restored["restored_cfg_files"] == 1
-    assert restored["removed_cfg_files"] == 1
-    assert (config_dir / "printer.cfg").read_text(encoding="utf-8") == original_printer_cfg
-    assert not (config_dir / "extra.cfg").exists()
+    assert restored["removed_cfg_files"] == 0
+    assert (config_dir / "macros.cfg").read_text(encoding="utf-8") == original_macros_cfg
+    assert (config_dir / "extra.cfg").exists()
 
 
-def test_restore_removes_macros_cfg_when_not_present_in_backup(tmp_path: Path) -> None:
+def test_restore_removes_macro_cfg_when_not_present_in_backup(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "vault.db"
     _write(
         config_dir / "printer.cfg",
+        """
+        [include macros.cfg]
+        """,
+    )
+    _write(
+        config_dir / "macros.cfg",
         """
         [gcode_macro START_PRINT]
         gcode:
@@ -107,17 +116,11 @@ def test_restore_removes_macros_cfg_when_not_present_in_backup(tmp_path: Path) -
     assert backup["cfg_file_count"] == 1
 
     _write(
-        config_dir / "macros.cfg",
+        config_dir / "old_macros.cfg",
         """
-        [gcode_macro START_PRINT]
+        [gcode_macro OLD_MACRO]
         gcode:
-            G28
-        """,
-    )
-    _write(
-        config_dir / "printer.cfg",
-        """
-        [include macros.cfg]
+            M117 old
         """,
     )
 
@@ -125,9 +128,9 @@ def test_restore_removes_macros_cfg_when_not_present_in_backup(tmp_path: Path) -
 
     assert restored["restored_cfg_files"] == 1
     assert restored["removed_cfg_files"] == 1
-    assert "macros.cfg" in cast(list[str], restored["removed_cfg_paths"])
-    assert not (config_dir / "macros.cfg").exists()
-    assert "[gcode_macro START_PRINT]" in (config_dir / "printer.cfg").read_text(encoding="utf-8")
+    assert "old_macros.cfg" in cast(list[str], restored["removed_cfg_paths"])
+    assert not (config_dir / "old_macros.cfg").exists()
+    assert (config_dir / "macros.cfg").exists()
 
 def test_restore_does_not_overwrite_printer_cfg_when_backup_has_no_printer_macros(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
@@ -149,6 +152,8 @@ def test_restore_does_not_overwrite_printer_cfg_when_backup_has_no_printer_macro
             G28
         """,
     )
+
+    run_indexing(config_dir, db_path)
 
     backup = create_macro_backup(db_path, "no-printer-macros", config_dir=config_dir, now_ts=11)
     backup_id = cast(int, backup["backup_id"])
@@ -179,4 +184,4 @@ def test_restore_does_not_overwrite_printer_cfg_when_backup_has_no_printer_macro
     assert restored["printer_cfg_overwritten"] is False
     assert "kinematics: cartesian" in (config_dir / "printer.cfg").read_text(encoding="utf-8")
     assert "M117 restored" not in (config_dir / "macros.cfg").read_text(encoding="utf-8")
-    assert not (config_dir / "extra.cfg").exists()
+    assert (config_dir / "extra.cfg").exists()

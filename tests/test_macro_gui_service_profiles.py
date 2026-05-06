@@ -83,6 +83,53 @@ def test_activate_profile_switches_active_row(tmp_path: Path) -> None:
     assert active["profile_name"] == "B"
 
 
+def test_save_profile_updates_existing_profile_when_renamed(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    created = service.save_ssh_profile(
+        profile_name="Office Printer",
+        host="office.local",
+        username="pi",
+        remote_config_dir="/office/config",
+        moonraker_url="http://office.local:7125",
+        auth_mode="password",
+        secret_value="pw123",
+        is_active=True,
+    )
+
+    update_identity = service.update_active_printer_identity(vendor="Voron", model="2.4")
+    assert update_identity["ok"] is True
+
+    updated = service.save_ssh_profile(
+        profile_name="Workshop Printer",
+        host="workshop.local",
+        username="pi",
+        remote_config_dir="/workshop/config",
+        moonraker_url="http://workshop.local:7125",
+        auth_mode="password",
+        is_active=True,
+        existing_profile_id=_as_int(created["profile_id"]),
+        existing_printer_profile_id=_as_int(created["printer_profile_id"]),
+    )
+
+    assert updated["ok"] is True
+    assert _as_int(updated["profile_id"]) == _as_int(created["profile_id"])
+    assert _as_int(updated["printer_profile_id"]) == _as_int(created["printer_profile_id"])
+
+    ssh_profiles = service.list_ssh_profiles()
+    assert len(ssh_profiles) == 1
+    assert ssh_profiles[0]["profile_name"] == "Workshop Printer"
+    assert ssh_profiles[0]["host"] == "workshop.local"
+    assert ssh_profiles[0]["has_secret"] is True
+
+    printer_profiles = service.list_printer_profiles()
+    named_profiles = [profile for profile in printer_profiles if profile["profile_name"] != "Default Printer"]
+    assert len(named_profiles) == 1
+    assert named_profiles[0]["profile_name"] == "Workshop Printer"
+    assert named_profiles[0]["vendor"] == "Voron"
+    assert named_profiles[0]["model"] == "2.4"
+
+
 def test_resolve_secret_metadata(tmp_path: Path) -> None:
     service = _service(tmp_path)
 

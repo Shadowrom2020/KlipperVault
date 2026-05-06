@@ -369,19 +369,50 @@ def update_printer_profile_identity(
     db_path: Path,
     *,
     profile_id: int,
-    vendor: str,
-    model: str,
+    profile_name: str | None = None,
+    vendor: str | None = None,
+    model: str | None = None,
 ) -> bool:
-    """Update vendor/model for one profile."""
+    """Update profile identity fields for one profile."""
+    normalized_profile_name = str(profile_name or "").strip()
     with open_sqlite_connection(db_path, ensure_schema=ensure_printer_profile_schema) as conn:
-        updated = conn.execute(
-            """
-            UPDATE printer_profiles
-            SET vendor = ?, model = ?, updated_at = ?
-            WHERE id = ? AND is_archived = 0
-            """,
-            (str(vendor or "").strip(), str(model or "").strip(), int(time.time()), int(profile_id)),
-        ).rowcount
+        if normalized_profile_name and vendor is not None and model is not None:
+            updated = conn.execute(
+                """
+                UPDATE printer_profiles
+                SET profile_name = ?, vendor = ?, model = ?, updated_at = ?
+                WHERE id = ? AND is_archived = 0
+                """,
+                (
+                    normalized_profile_name,
+                    str(vendor or "").strip(),
+                    str(model or "").strip(),
+                    int(time.time()),
+                    int(profile_id),
+                ),
+            ).rowcount
+        elif normalized_profile_name:
+            updated = conn.execute(
+                """
+                UPDATE printer_profiles
+                SET profile_name = ?, updated_at = ?
+                WHERE id = ? AND is_archived = 0
+                """,
+                (
+                    normalized_profile_name,
+                    int(time.time()),
+                    int(profile_id),
+                ),
+            ).rowcount
+        else:
+            updated = conn.execute(
+                """
+                UPDATE printer_profiles
+                SET vendor = ?, model = ?, updated_at = ?
+                WHERE id = ? AND is_archived = 0
+                """,
+                (str(vendor or "").strip(), str(model or "").strip(), int(time.time()), int(profile_id)),
+            ).rowcount
         conn.commit()
         return bool(updated)
 

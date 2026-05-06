@@ -56,7 +56,7 @@ class BackupRestoreMixin:
     # ------------------------------------------------------------------
 
     def create_backup(self, name: str, progress_callback=None) -> dict[str, object]:
-        """Create a named backup snapshot from current macro state."""
+        """Create a named backup snapshot from the current local mirror."""
         runtime_config_dir = self._resolve_runtime_config_dir()
         runtime_source = self._runtime_local_config_source()
 
@@ -65,17 +65,6 @@ class BackupRestoreMixin:
                 progress_callback("sync", 0, 3)
             except Exception:
                 _LOG.debug("Progress callback failed while reporting backup sync start", exc_info=True)
-
-        # In standard mode, backups must reflect the current printer cfg
-        # tree, not potentially stale runtime cache files.
-        if str(self._runtime_mode).strip().lower() == "standard":
-            try:
-                self.sync_active_remote_cfg_to_local(prune_missing=True)
-            except Exception:
-                # Allow local/test flows without active SSH profile to proceed
-                # when runtime cache already has cfg files.
-                if not runtime_source.list_cfg_files():
-                    raise
 
         return create_macro_backup(
             db_path=self._db_path,

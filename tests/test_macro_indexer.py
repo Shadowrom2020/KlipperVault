@@ -438,7 +438,7 @@ def test_run_indexing_respects_inline_include_order_for_active_macro(tmp_path: P
         assert rows_by_path["parent.cfg"]["is_active"] is True
 
 
-def test_run_indexing_marks_unreferenced_cfg_macros_not_loaded(tmp_path: Path) -> None:
+def test_run_indexing_scans_all_cfg_files_and_last_definition_wins(tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
         db_path = tmp_path / "db" / "macros.db"
         _write(
@@ -472,13 +472,13 @@ def test_run_indexing_marks_unreferenced_cfg_macros_not_loaded(tmp_path: Path) -
         assert set(rows_by_path) == {"loaded.cfg", "orphan.cfg"}
         assert rows_by_path["loaded.cfg"]["is_loaded"] is True
         assert rows_by_path["loaded.cfg"]["is_dynamic"] is False
-        assert rows_by_path["loaded.cfg"]["is_active"] is True
-        assert rows_by_path["orphan.cfg"]["is_loaded"] is False
+        assert rows_by_path["loaded.cfg"]["is_active"] is False
+        assert rows_by_path["orphan.cfg"]["is_loaded"] is True
         assert rows_by_path["orphan.cfg"]["is_dynamic"] is False
-        assert rows_by_path["orphan.cfg"]["is_active"] is False
+        assert rows_by_path["orphan.cfg"]["is_active"] is True
 
 
-def test_run_indexing_treats_dynamicmacros_configs_as_loaded(tmp_path: Path) -> None:
+    def test_run_indexing_treats_dynamicmacros_configs_as_regular_cfg_files(tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
         db_path = tmp_path / "db" / "macros.db"
         _write(
@@ -512,11 +512,11 @@ def test_run_indexing_treats_dynamicmacros_configs_as_loaded(tmp_path: Path) -> 
         assert result["cfg_files_scanned"] == 3
         assert set(rows_by_path) == {"generated.cfg", "orphan.cfg"}
         assert rows_by_path["generated.cfg"]["is_loaded"] is True
-        assert rows_by_path["generated.cfg"]["is_dynamic"] is True
+        assert rows_by_path["generated.cfg"]["is_dynamic"] is False
         assert rows_by_path["generated.cfg"]["is_active"] is True
-        assert rows_by_path["orphan.cfg"]["is_loaded"] is False
+        assert rows_by_path["orphan.cfg"]["is_loaded"] is True
         assert rows_by_path["orphan.cfg"]["is_dynamic"] is False
-        assert rows_by_path["orphan.cfg"]["is_active"] is False
+        assert rows_by_path["orphan.cfg"]["is_active"] is True
 
 
 def test_run_indexing_reports_dynamic_insert_count(tmp_path: Path) -> None:
@@ -550,7 +550,7 @@ def test_run_indexing_reports_dynamic_insert_count(tmp_path: Path) -> None:
         result = run_indexing(config_dir, db_path)
 
         assert result["macros_inserted"] == 2
-        assert result["dynamic_macros_inserted"] == 1
+        assert result["dynamic_macros_inserted"] == 0
 
 
 def test_run_indexing_ignores_dot_dynamicmacros_cfg(tmp_path: Path) -> None:
@@ -880,9 +880,7 @@ def test_load_duplicate_macro_groups_scoped_by_printer_profile(tmp_path: Path) -
     scoped_p1 = load_duplicate_macro_groups(db_path, printer_profile_id=1)
     scoped_p2 = load_duplicate_macro_groups(db_path, printer_profile_id=2)
 
-    assert len(scoped_p1) == 1
-    assert scoped_p1[0]["macro_name"] == "HELLO"
-    assert len(_as_rows(scoped_p1[0]["entries"])) == 2
+    assert scoped_p1 == []
     assert scoped_p2 == []
 
 
@@ -1190,8 +1188,8 @@ def test_load_macro_list_marks_identity_new_when_older_pending_version_exists(tm
     assert macros[0]["is_active"] is True
 
 
-def test_load_macro_list_attaches_true_macro_load_order_when_config_dir_given(tmp_path: Path) -> None:
-    """load_macro_list enriches each macro with true macro-level load order."""
+def test_load_macro_list_uses_stable_query_order_when_config_dir_given(tmp_path: Path) -> None:
+    """load_macro_list exposes a stable query order index for UI sorting."""
     config_dir = tmp_path / "config"
     db_path = tmp_path / "db" / "macros.db"
     _write(
@@ -1227,23 +1225,23 @@ def test_load_macro_list_attaches_true_macro_load_order_when_config_dir_given(tm
     macros = load_macro_list(db_path, config_dir=config_dir)
     by_name = {row["macro_name"]: row for row in macros}
 
-    assert by_name["PRINTER_MACRO"]["load_order_index"] == 0
+    assert by_name["AFTER_INCLUDE_MACRO"]["load_order_index"] == 0
     assert by_name["BEFORE_INCLUDE"]["load_order_index"] == 1
-    assert by_name["SUB_MACRO"]["load_order_index"] == 2
-    assert by_name["AFTER_INCLUDE_MACRO"]["load_order_index"] == 3
-    assert by_name["PRINTER_TAIL_MACRO"]["load_order_index"] == 4
+    assert by_name["PRINTER_MACRO"]["load_order_index"] == 2
+    assert by_name["PRINTER_TAIL_MACRO"]["load_order_index"] == 3
+    assert by_name["SUB_MACRO"]["load_order_index"] == 4
 
     macros_by_load_order = sorted(macros, key=lambda row: _as_int(row["load_order_index"]))
     assert [row["macro_name"] for row in macros_by_load_order] == [
-        "PRINTER_MACRO",
-        "BEFORE_INCLUDE",
-        "SUB_MACRO",
         "AFTER_INCLUDE_MACRO",
+        "BEFORE_INCLUDE",
+        "PRINTER_MACRO",
         "PRINTER_TAIL_MACRO",
+        "SUB_MACRO",
     ]
 
 
-def test_load_macro_list_attaches_load_order_with_config_source(tmp_path: Path) -> None:
+def test_load_macro_list_uses_stable_query_order_with_config_source(tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
         db_path = tmp_path / "db" / "macros.db"
         _write(
@@ -1270,8 +1268,8 @@ def test_load_macro_list_attaches_load_order_with_config_source(tmp_path: Path) 
         macros = load_macro_list(db_path, config_source=source)
         by_name = {row["macro_name"]: row for row in macros}
 
-        assert by_name["ROOT_MACRO"]["load_order_index"] == 0
-        assert by_name["INCLUDED_MACRO"]["load_order_index"] == 1
+        assert by_name["INCLUDED_MACRO"]["load_order_index"] == 0
+        assert by_name["ROOT_MACRO"]["load_order_index"] == 1
 
 
 def test_get_cfg_load_order_from_source_matches_path_order(tmp_path: Path) -> None:
@@ -1371,7 +1369,7 @@ def test_run_indexing_from_source_indexes_cfg_tree(tmp_path: Path) -> None:
     assert macros[0]["macro_name"] == "PRINT_START"
 
 
-def test_run_indexing_from_source_treats_dynamicmacros_configs_as_loaded(tmp_path: Path) -> None:
+def test_run_indexing_from_source_treats_dynamicmacros_configs_as_regular_cfg_files(tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
         db_path = tmp_path / "db" / "vault.db"
         _write(
@@ -1405,9 +1403,9 @@ def test_run_indexing_from_source_treats_dynamicmacros_configs_as_loaded(tmp_pat
 
         assert result["cfg_files_scanned"] == 3
         assert rows_by_path["generated.cfg"]["is_loaded"] is True
-        assert rows_by_path["generated.cfg"]["is_dynamic"] is True
+        assert rows_by_path["generated.cfg"]["is_dynamic"] is False
         assert rows_by_path["generated.cfg"]["is_active"] is True
-        assert rows_by_path["orphan.cfg"]["is_loaded"] is False
+        assert rows_by_path["orphan.cfg"]["is_loaded"] is True
         assert rows_by_path["orphan.cfg"]["is_dynamic"] is False
 
 
