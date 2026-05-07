@@ -1,6 +1,10 @@
 # KlipperVault
 
-![KlipperVault logo](assets/logo.svg)
+I decided to cancel this project due to time constraints and personal reasons.
+I'll leave the repository up for anyone who wants to use it.
+Feel free to fork the repo and continue development.
+
+## Project canceled!
 
 KlipperVault is a lightweight web UI for managing Klipper `gcode_macro` definitions with version history, safe editing workflows, backup/restore, duplicate handling, and Mainsail integration.
 
